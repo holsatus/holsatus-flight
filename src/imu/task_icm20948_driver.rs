@@ -1,5 +1,6 @@
 use defmt::*;
 
+use embassy_sync::pubsub::PubSubChannel;
 use embassy_time::Ticker;
 use embassy_rp::{peripherals::I2C1, i2c};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
@@ -8,6 +9,12 @@ use icm20948_async::{AccelerometerRange, AccelerometerDlp, AccelerometerUnit, Gy
 use nalgebra::Vector3;
 use crate::channels;
 use crate::cfg;
+use crate::channels::Ch;
+
+use super::Dof6ImuData;
+
+pub static ICM20948_IMU_READING: Ch<Dof6ImuData<f32>,1> = PubSubChannel::new();
+pub static ICM20948_MAG_READING: Ch<Vector3<f32>,1> = PubSubChannel::new();
 
 #[embassy_executor::task]
 pub async fn imu_reader(
