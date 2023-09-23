@@ -4,54 +4,54 @@
 
 use defmt::*;
 use embassy_time::{Ticker, Duration};
-use crate::signals;
+use crate::{channels, cfg};
 
-use crate::task_motor_governor::{MotorState, ArmedState};
+use crate::task_motor_governor::{MotorState, ArmedState, DisarmReason};
 
 static TASK_ID : &str = "FLIGHT_DETECTOR";
 
 #[embassy_executor::task]
 pub async fn flight_detector(
-    mut in_motor_state: signals::MotorStateSub,
-    out_flight_mode: signals::FlightModePub,
+    mut s_motor_state: channels::MotorStateSub,
+    p_flight_mode: channels::FlightModePub,
 ) {
 
-    let mut flight_state = FlightState::Ground;
+    let mut flight_mode = FlightMode::Ground;
+    let mut ticker = Ticker::every(Duration::from_hz(5));
+    let mut motor_state = MotorState::Disarmed(DisarmReason::NotInitialized);
 
-    let mut ticker = Ticker::every(Duration::from_hz(20));
-    
     info!("{} : Entering main loop",TASK_ID);
     loop {
 
-        let motor_state = in_motor_state.next_message_pure().await;
+        if let Some(s) = s_motor_state.try_next_message_pure() { motor_state = s }
 
-
-        match flight_state {
-            FlightState::Ground => {
+        match flight_mode {
+            FlightMode::Ground => {
                 if let MotorState::Armed(ArmedState::Running(m)) = motor_state {
-                    let z_thrust = (m.0 + m.1 + m.2 + m.3)/4; 
-                    if z_thrust > 750 {
-                        flight_state = FlightState::Flying;
-                        out_flight_mode.publish_immediate(flight_state.clone());
-                        info!("{} : Changing flight mode to: {}",TASK_ID,flight_state);
+                    let [m1,m2,m3,m4] = m;
+                    let z_thrust = (m1 + m2 + m3 + m4)/4; 
+                    if z_thrust > cfg::TAKEOFF_ESTIMATOR_THRUST {
+                        flight_mode = FlightMode::Flying;
+                        info!("{} : Changing flight mode to: {}",TASK_ID,flight_mode);
                     }
                 }
             },
-            FlightState::Flying => {
+            FlightMode::Flying => {
                 if let MotorState::Disarmed(_) = motor_state {
-                    flight_state = FlightState::Ground;
-                    out_flight_mode.publish_immediate(flight_state.clone());
-                    info!("{} : Changing flight mode to: {}",TASK_ID,flight_state);
+                    flight_mode = FlightMode::Ground;
+                    info!("{} : Changing flight mode to: {}",TASK_ID,flight_mode);
                 }
-            },
+            }
         }
 
+        p_flight_mode.publish_immediate(flight_mode.clone());
         ticker.next().await;
+        
     }
 }
 
 #[derive(Clone,Copy,PartialEq,Format)]
-pub enum FlightState {
+pub enum FlightMode {
     Ground,
     Flying
 }

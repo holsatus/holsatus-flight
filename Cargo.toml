@@ -1,14 +1,13 @@
 [package]
 edition = "2021"
-name = "rusty-quad"
+name = "holsatus-flight"
 authors = ["Peter Krull"]
-version = "0.1.2"
+version = "0.2.0"
 
 [features]
 default = ["icm20948-async"]
 mag = []
 icm20948-async = []
-debug_print = []
 
 [dependencies]
 cortex-m = "0.7.7"

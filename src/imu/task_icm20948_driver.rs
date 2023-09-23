@@ -1,17 +1,19 @@
 use defmt::*;
 
-use embassy_time::{Ticker, Duration};
+use embassy_time::Ticker;
 use embassy_rp::{peripherals::I2C1, i2c};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex as CSMutex;
 use icm20948_async::{AccelerometerRange, AccelerometerDlp, AccelerometerUnit, GyroscopeRange, GyroscopeDlp, GyroscopeUnit, Icm20948, IcmError};
-use crate::signals;
+use nalgebra::Vector3;
+use crate::channels;
+use crate::cfg;
 
 #[embassy_executor::task]
 pub async fn imu_reader(
     i2c: I2cDevice<'static,CSMutex, i2c::I2c<'static, I2C1, i2c::Async>>,
-    out_imu_reading: signals::ImuReadingPub,
-    sample_time : Duration
+    p_imu_reading: channels::Pub<super::Dof6ImuData<f32>,1>,
+    _p_mag_reading: channels::Pub<Vector3<f32>,1>, // Unused for now
 ) {
     info!("IMU_READER : start");
 
@@ -81,11 +83,21 @@ pub async fn imu_reader(
     }
 
     // Continuously read IMU data at constant sample rate
-    let mut ticker = Ticker::every(sample_time);
+    let mut ticker = Ticker::every(cfg::ATTITUDE_LOOP_TIME_DUR);
     info!("IMU_READER : Entering main loop");
     loop {
         if let Ok(imu_data) = imu.read_all().await {
-            out_imu_reading.publish_immediate(imu_data);
+
+            let imu_data_converted = super::Dof6ImuData {
+                acc: imu_data.acc,
+                gyr: imu_data.gyr,
+            };
+
+            p_imu_reading.publish_immediate(imu_data_converted);
+            
+            #[cfg(feature = "mag")] {
+                p_mag_reading.publish_immediate(imu_data.mag);
+            }
         }
         ticker.next().await;
     }

@@ -1,25 +1,25 @@
 use embassy_rp::gpio::{Output, AnyPin, Level};
 use embassy_time::{Duration, Timer};
-use crate::signals;
+use crate::channels;
 
 #[embassy_executor::task]
 pub async fn blinker(
-    mut in_blinker_mode : signals::BlinkerModeSub,
-    pin : AnyPin
+    mut s_blinker_mode : channels::BlinkerModeSub,
+    out_led_pin : AnyPin
 ) {
 
     let mut blinker_mode = BlinkerMode::None;
 
-    let mut led = Output::new(pin,Level::Low);
+    let mut led = Output::new(out_led_pin,Level::Low);
     loop { 
 
         // Try to read new blinker mode
-        if let Some(b) = in_blinker_mode.try_next_message_pure() {blinker_mode = b}
+        if let Some(b) = s_blinker_mode.try_next_message_pure() {blinker_mode = b}
 
         match blinker_mode {
             BlinkerMode::None => {
                 led.set_low();
-                blinker_mode = in_blinker_mode.next_message_pure().await;
+                blinker_mode = s_blinker_mode.next_message_pure().await;
             },
             BlinkerMode::OneFast => one_fast(&mut led).await,
             BlinkerMode::TwoFast => two_fast(&mut led).await,

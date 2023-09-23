@@ -4,21 +4,13 @@
 #![no_std]
 #![no_main]
 
+use defmt::unwrap;
 use defmt_rtt as _;
 use panic_probe as _;
 use embassy_futures as _;
 
-use embassy_time::Duration;
-
-const IMU_SAMPLE_TIME: Duration = Duration::from_hz(500);
-
-#[cfg(not(feature = "mag"))]
-type ImuData = icm20948_async::Data6Dof;
-#[cfg(feature = "mag")]
-type ImuData = icm20948_async::Data9Dof;
-
 // Load module for cross-task channels
-mod signals;
+mod channels;
 
 // Static i2c mutex for shared-bus functionality
 use static_cell::StaticCell;
@@ -31,17 +23,18 @@ static SHARED_ASYNC_I2C : StaticCell<Mutex<CSRMutex, I2c<I2C1, Async>>> = Static
 mod task_blinker;
 mod task_attitude_controller;
 mod task_motor_governor;
-mod task_imu_reader;
 mod task_sbus_reader;
 mod task_state_estimator;
 mod task_commander;
 mod task_motor_mixing;
 mod task_flight_detector;
+mod task_printer;
 
 // Import misc modules
 mod functions;
 mod sbus_cmd;
 mod imu;
+mod cfg;
 
 #[embassy_executor::main]
 async fn main(spawner: embassy_executor::Spawner) {
@@ -52,15 +45,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         use dshot_pio::dshot_embassy_rp::DshotPio;
         use embassy_rp::{pio::*,bind_interrupts,peripherals::PIO0};
         bind_interrupts!(struct Pio0Irqs {PIO0_IRQ_0 => InterruptHandler<PIO0>;});
-        DshotPio::<4,_>::new(
-            p.PIO0,
-            Pio0Irqs,
-            p.PIN_13,
-            p.PIN_7,
-            p.PIN_6,
-            p.PIN_12,
-            (52, 0)
-        )
+        DshotPio::<4,_>::new(p.PIO0, Pio0Irqs, p.PIN_13, p.PIN_7, p.PIN_6, p.PIN_12, cfg::PIO_DSHOT_SPEED.clk_div())
     };
 
     // Configure and setup sbus compatible uart RX connection
@@ -94,89 +79,96 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     use crate::task_commander::commander;
     spawner.must_spawn(commander(
-        signals::SBUS_CMD.subscriber().unwrap(), 
-        signals::MOTOR_STATE.subscriber().unwrap(),
-        signals::ATTITUDE_SENSE.subscriber().unwrap(), 
-        signals::FLIGHT_MODE.subscriber().unwrap(),
-        signals::MOTOR_ARM.publisher().unwrap(), 
-        signals::MOTOR_DIR.publisher().unwrap(),
-        signals::THRUST_ACTUATE.publisher().unwrap(),
-        signals::BLINKER_MODE.publisher().unwrap(),
-        signals::ATTITUDE_INT_RESET.publisher().unwrap(),
-        signals::ATTITUDE_STAB_MODE.publisher().unwrap(),
+        unwrap!(channels::SBUS_CMD.subscriber()), 
+        unwrap!(channels::MOTOR_STATE.subscriber()),
+        unwrap!(channels::ATTITUDE_SENSE.subscriber()), 
+        unwrap!(channels::FLIGHT_MODE.subscriber()),
+        unwrap!(channels::MOTOR_ARM.publisher()), 
+        unwrap!(channels::MOTOR_DIR.publisher()),
+        unwrap!(channels::THRUST_ACTUATE.publisher()),
+        unwrap!(channels::BLINKER_MODE.publisher()),
+        unwrap!(channels::ATTITUDE_INT_RESET.publisher()),
+        unwrap!(channels::ATTITUDE_STAB_MODE.publisher()),
     ));
 
     use crate::task_sbus_reader::sbus_reader;
     spawner.must_spawn(sbus_reader(
         uart_rx_sbus,
-        signals::SBUS_CMD.publisher().unwrap(),
-        Duration::from_millis(500),
+        unwrap!(channels::SBUS_CMD.publisher()),
     ));
 
-    use crate::task_imu_reader::imu_reader;
-    spawner.must_spawn(imu_reader(
+    use crate::imu::imu_driver;
+    spawner.must_spawn(imu_driver(
+        spawner.clone(),
         i2c_bus_imu,
-        signals::IMU_READING.publisher().unwrap(),
-        IMU_SAMPLE_TIME
+        unwrap!(channels::IMU_READING.publisher()),
     ));
 
     use crate::task_state_estimator::state_estimator;
     spawner.must_spawn(state_estimator(
-        signals::IMU_READING.subscriber().unwrap(), 
-        signals::ATTITUDE_SENSE.publisher().unwrap(), 
-        IMU_SAMPLE_TIME
+        unwrap!(channels::IMU_READING.subscriber()), 
+        unwrap!(channels::ATTITUDE_SENSE.publisher()), 
     ));
 
     use crate::task_attitude_controller::attitude_controller;
     spawner.must_spawn(attitude_controller(
-        signals::ATTITUDE_SENSE.subscriber().unwrap(),
-        signals::ATTITUDE_INT_RESET.subscriber().unwrap(),
-        signals::ATTITUDE_STAB_MODE.subscriber().unwrap(),
-        signals::ATTITUDE_ACTUATE.publisher().unwrap(),
-        IMU_SAMPLE_TIME
+        unwrap!(channels::ATTITUDE_SENSE.subscriber()),
+        unwrap!(channels::ATTITUDE_INT_RESET.subscriber()),
+        unwrap!(channels::ATTITUDE_STAB_MODE.subscriber()),
+        unwrap!(channels::ATTITUDE_ACTUATE.publisher()),
     ));
 
     use crate::task_motor_mixing::motor_mixing;
     spawner.must_spawn(motor_mixing(
-        signals::THRUST_ACTUATE.subscriber().unwrap(),
-        signals::ATTITUDE_ACTUATE.subscriber().unwrap(),
-        signals::MOTOR_ARM.subscriber().unwrap(),
-        signals::MOTOR_SPEED.publisher().unwrap(),
+        unwrap!(channels::THRUST_ACTUATE.subscriber()),
+        unwrap!(channels::ATTITUDE_ACTUATE.subscriber()),
+        unwrap!(channels::MOTOR_ARM.subscriber()),
+        unwrap!(channels::MOTOR_SPEED.publisher()),
     ));
 
     use crate::task_motor_governor::motor_governor;
     spawner.must_spawn(motor_governor(
-        signals::MOTOR_SPEED.subscriber().unwrap(),
-        signals::MOTOR_DIR.subscriber().unwrap(),
-        signals::MOTOR_STATE.publisher().unwrap(),
+        unwrap!(channels::MOTOR_SPEED.subscriber()),
+        unwrap!(channels::MOTOR_DIR.subscriber()),
+        unwrap!(channels::MOTOR_STATE.publisher()),
         quad_pio_motors,
-        Duration::from_millis(100),
     ));
 
     use crate::task_blinker::blinker;
     spawner.must_spawn(blinker(
-        signals::BLINKER_MODE.subscriber().unwrap(),
+        unwrap!(channels::BLINKER_MODE.subscriber()),
         p.PIN_25.degrade()
     ));
 
     use crate::task_flight_detector::flight_detector;
     spawner.must_spawn(flight_detector(
-        signals::MOTOR_STATE.subscriber().unwrap(),
-        signals::FLIGHT_MODE.publisher().unwrap(),
+        unwrap!(channels::MOTOR_STATE.subscriber()),
+        unwrap!(channels::FLIGHT_MODE.publisher())
     ));
 
-    // Ensure all signal subscribers are used
-    assert!(signals::IMU_READING.subscriber().is_err());
-    assert!(signals::ATTITUDE_SENSE.subscriber().is_err());
-    assert!(signals::ATTITUDE_ACTUATE.subscriber().is_err());
-    assert!(signals::ATTITUDE_INT_RESET.subscriber().is_err());
-    assert!(signals::ATTITUDE_STAB_MODE.subscriber().is_err());
-    assert!(signals::MOTOR_SPEED.subscriber().is_err());
-    assert!(signals::MOTOR_ARM.subscriber().is_err());
-    assert!(signals::MOTOR_DIR.subscriber().is_err());
-    assert!(signals::MOTOR_STATE.subscriber().is_err());
-    assert!(signals::SBUS_CMD.subscriber().is_err());
-    assert!(signals::THRUST_ACTUATE.subscriber().is_err());
-    assert!(signals::BLINKER_MODE.subscriber().is_err());
+    use crate::task_printer::printer;
+    spawner.must_spawn(printer(
+        unwrap!(channels::IMU_READING.subscriber()),
+        unwrap!(channels::ATTITUDE_SENSE.subscriber()),
+        unwrap!(channels::ATTITUDE_ACTUATE.subscriber()),
+        unwrap!(channels::ATTITUDE_STAB_MODE.subscriber()),
+        unwrap!(channels::THRUST_ACTUATE.subscriber()),
+        unwrap!(channels::MOTOR_STATE.subscriber()),
+        unwrap!(channels::FLIGHT_MODE.subscriber()),
+    ));
+
+    // Ensure all channel subscribers are used
+    assert!(channels::IMU_READING.subscriber().is_err());
+    assert!(channels::ATTITUDE_SENSE.subscriber().is_err());
+    assert!(channels::ATTITUDE_ACTUATE.subscriber().is_err());
+    assert!(channels::ATTITUDE_INT_RESET.subscriber().is_err());
+    assert!(channels::ATTITUDE_STAB_MODE.subscriber().is_err());
+    assert!(channels::MOTOR_SPEED.subscriber().is_err());
+    assert!(channels::MOTOR_ARM.subscriber().is_err());
+    assert!(channels::MOTOR_DIR.subscriber().is_err());
+    assert!(channels::MOTOR_STATE.subscriber().is_err());
+    assert!(channels::SBUS_CMD.subscriber().is_err());
+    assert!(channels::THRUST_ACTUATE.subscriber().is_err());
+    assert!(channels::BLINKER_MODE.subscriber().is_err());
 
 }

@@ -1,17 +1,18 @@
 ///*
-/// This file can be used as a prototype (template) for new tasks 
+/// This file should be used as a template for new tasks 
 ///*/
 
 use defmt::*;
+use crate::channels;
 
-static TASK_ID : &str = "PROTOTYPE(CHANGE THIS)";
+static TASK_ID : &str = "[PROTOTYPE]";
 
 #[embassy_executor::task]
 pub async fn prototype(
-    in_sg_attitude_sense: &'static crate::SgAttitudeSense,
+    mut sub_attitude_sense: channels::SgAttitudeSense,
 ) {
 
-    info!("{} : Entering main loop",TASK_ID);
+    info!("{}: Entering main loop",TASK_ID);
     loop {
 
         // Place looping code here, never break out of this loop!
