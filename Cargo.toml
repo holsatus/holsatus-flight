@@ -6,8 +6,8 @@ version = "0.2.0"
 
 [features]
 default = ["icm20948-async"]
-mag = []
 icm20948-async = []
+mag = []
 
 [dependencies]
 cortex-m = "0.7.7"
@@ -49,6 +49,7 @@ embassy-executor = { git = "https://github.com/embassy-rs/embassy", features = [
     "integrated-timers",
     "arch-cortex-m",
     "executor-thread",
+    "executor-interrupt",
     "nightly"
 ]}
 embassy-time = { git = "https://github.com/embassy-rs/embassy", features = [
@@ -62,7 +63,6 @@ embassy-rp = { git = "https://github.com/embassy-rs/embassy", features = [
     "unstable-pac",
     "time-driver",
     "critical-section-impl",
-    # "intrinsics",
 ]}
 embassy-futures = { git = "https://github.com/embassy-rs/embassy" }
 futures = { version = "0.3.26", default-features = false, features = [

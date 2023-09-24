@@ -1,14 +1,19 @@
 
 use core::f32::consts::PI;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::pubsub::PubSubChannel;
+use embassy_time::Instant;
 use nalgebra::Vector3;
 use pid_controller_rs::Pid;
 use crate::channels;
 use crate::cfg;
+use crate::functions;
 
 use defmt::*;
 
 #[derive(Clone, Debug, Copy, PartialEq)]
 pub enum StabilizationMode {
+    Inactive,
     Horizon(Vector3<f32>),
     Acro(Vector3<f32>)
 }
@@ -19,18 +24,7 @@ impl Format for StabilizationMode {
     }
 }
 
-impl StabilizationMode {
-    pub fn same_variant_as(&self, rhs: &StabilizationMode) -> bool {
-        self.variant() == rhs.variant()
-    }
-
-    fn variant (&self) -> usize {
-        match self {
-            StabilizationMode::Horizon(_) => 0,
-            StabilizationMode::Acro(_) => 1,
-        }
-    }
-}
+pub static FREQUENCY_SIG: PubSubChannel<CriticalSectionRawMutex,f32,1,1,1> = PubSubChannel::new();
 
 static TASK_ID : &str = "ATTITUDE_CONTROLLER";
 
@@ -52,6 +46,10 @@ pub async fn attitude_controller(
     let mut pid_roll_inner = Pid::new( 30., 1.0, 0.01, true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_lp_filter(0.01);
     let mut pid_yaw_outer = Pid::new( 8., 0.001, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_circular(-PI, PI);
     let mut pid_yaw_inner = Pid::new( 60., 1.0, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_circular(-PI, PI).set_lp_filter(0.01);
+
+    let mut prev_time = Instant::now();
+    let mut average_frequency = 0.0;
+    let freq_publisher = FREQUENCY_SIG.immediate_publisher();
 
     info!("{} : Entering main loop",TASK_ID);
     loop {
@@ -75,7 +73,10 @@ pub async fn attitude_controller(
             StabilizationMode::Horizon(reference) => {
 
                 // Run outer part of cascaded control loop
-                let outer_error = reference - att_angle;
+                let mut outer_error = reference - att_angle;
+                outer_error.iter_mut().for_each(|x|{
+                    *x = functions::wrap(*x, -PI, PI);
+                });
                 let inner_reference = Vector3::new(
                     pid_roll_outer.update( outer_error.x ),
                     pid_pitch_outer.update( outer_error.y ),
@@ -100,7 +101,21 @@ pub async fn attitude_controller(
                     pid_yaw_inner.update( error.z )
                 )
             }
+            
+            StabilizationMode::Inactive => {
+                pid_pitch_outer.reset_integral();   pid_pitch_inner.reset_integral();
+                pid_roll_outer.reset_integral();    pid_roll_inner.reset_integral();
+                pid_yaw_outer.reset_integral();     pid_yaw_inner.reset_integral();
+                Vector3::default()
+            },
         });
+         
+        // Calculate loop time
+        let time_now = Instant::now();
+        let time_passed = time_now.duration_since(prev_time);
+        average_frequency = 0.999*average_frequency + 0.001*(1e6 / time_passed.as_micros() as f64);
+        prev_time = time_now;
+        freq_publisher.publish_immediate(average_frequency as f32);
     }
 }
 

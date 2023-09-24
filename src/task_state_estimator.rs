@@ -53,8 +53,6 @@ pub async fn state_estimator(
                 warn!("{} : Error in AHRS filter -> {}",TASK_ID,e)
             },
         }
-
-
     }
 }
 

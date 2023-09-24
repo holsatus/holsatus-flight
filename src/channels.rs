@@ -77,6 +77,12 @@ pub type MotorArmPub = Pub<MotorArmType,MOTOR_ARM_NUM>;
 pub type MotorArmSub = Sub<MotorArmType,MOTOR_ARM_NUM>;
 pub static MOTOR_ARM : Ch<MotorArmType,MOTOR_ARM_NUM> = PubSubChannel::new();
 
+const MOTOR_SPIN_CHECK_NUM: usize = 1;
+pub type MotorSpinCheckType = bool;
+pub type MotorSpinCheckPub = Pub<MotorSpinCheckType,MOTOR_SPIN_CHECK_NUM>;
+pub type MotorSpinCheckSub = Sub<MotorSpinCheckType,MOTOR_SPIN_CHECK_NUM>;
+pub static MOTOR_SPIN_CHECK : Ch<MotorSpinCheckType,MOTOR_SPIN_CHECK_NUM> = PubSubChannel::new();
+
 const MOTOR_DIR_NUM: usize = 1;
 pub type MotorDirType = (bool,bool,bool,bool);
 pub type MotorDirPub = Pub<MotorDirType,MOTOR_DIR_NUM>;
@@ -120,3 +126,18 @@ pub type ChPrototypeXPub = Pub<ChPrototypeXType,1,CH_PROTOTYPE_X_NUM,1>;
 pub type ChPrototypeXSub = Sub<ChPrototypeXType,1,CH_PROTOTYPE_X_NUM,1>;
 pub static CH_PROTOTYPE_X : Ch<ChPrototypeXType,1,CH_PROTOTYPE_X_NUM,1> = PubSubChannel::new();
 */
+
+pub fn assert_all_subscribers_used() {
+    assert!(IMU_READING.subscriber().is_err());
+    assert!(ATTITUDE_SENSE.subscriber().is_err());
+    assert!(ATTITUDE_ACTUATE.subscriber().is_err());
+    assert!(ATTITUDE_INT_RESET.subscriber().is_err());
+    assert!(ATTITUDE_STAB_MODE.subscriber().is_err());
+    assert!(MOTOR_SPEED.subscriber().is_err());
+    assert!(MOTOR_ARM.subscriber().is_err());
+    assert!(MOTOR_DIR.subscriber().is_err());
+    assert!(MOTOR_STATE.subscriber().is_err());
+    assert!(SBUS_CMD.subscriber().is_err());
+    assert!(THRUST_ACTUATE.subscriber().is_err());
+    assert!(BLINKER_MODE.subscriber().is_err());
+}

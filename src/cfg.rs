@@ -3,7 +3,7 @@ use nalgebra::Matrix3;
 
 pub static SBUS_PARSE_TIMEOUT: Duration = Duration::from_millis(500);
 pub static MOTOR_GOV_TIMEOUT: Duration = Duration::from_millis(100);
-pub static ATTITUDE_LOOP_TIME_DUR: Duration = Duration::from_hz(500);
+pub static ATTITUDE_LOOP_TIME_DUR: Duration = Duration::from_hz(250);
 pub static ATTITUDE_LOOP_TIME_SECS: f32 = ATTITUDE_LOOP_TIME_DUR.as_micros() as f32 / 1e6;
 
 pub static TAKEOFF_ESTIMATOR_THRUST: u16 = 700;

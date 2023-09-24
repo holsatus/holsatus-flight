@@ -1,5 +1,6 @@
 use crate::functions;
 use defmt::{self as _, Format};
+use nalgebra::ComplexField;
 
 #[derive(Debug, Format, Clone, Copy, Default, PartialEq)]
 pub struct SbusCmd {
@@ -36,11 +37,7 @@ pub fn convert(packet: &sbus::SBusPacket) -> Option<SbusCmd> {
 
 fn sbus_range(x: u16, tol: f32) -> f32 {
     let y = functions::map(f32::from(x), 172., 1810., -1., 1.);
-    if y > tol || y < -tol {
-        y
-    } else {
-        0.0
-    }
+    if y.abs() > tol { y } else { 0.0 }
 }
 
 fn sbus_range_thrust(x: u16) -> f32 {

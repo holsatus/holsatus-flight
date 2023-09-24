@@ -5,8 +5,8 @@ use embassy_time::{Timer, Duration};
 use nalgebra::Vector3;
 
 use crate::{
-    task_attitude_controller::StabilizationMode::{Horizon,Acro, self},
-    functions::{map, self},
+    task_attitude_controller::StabilizationMode::*,
+    functions::{map, self, variant_eq},
     sbus_cmd::TriSwitch,
     task_blinker::BlinkerMode,
     channels, task_flight_detector::FlightMode, task_motor_governor::{MotorState, ArmedState, DisarmReason}
@@ -26,14 +26,16 @@ pub async fn commander(
     p_blinker_mode: channels::BlinkerModePub,
     p_attitude_int_reset : channels::AttitudeIntResetPub,
     p_attitude_stab_mode : channels::AttitudeStabModePub,
+    p_motor_spin_check: channels::MotorSpinCheckPub,
 ) {
 
     p_motor_dir.publish_immediate((true,true,false,false));
     p_blinker_mode.publish_immediate(BlinkerMode::OnOffFast);
 
     let mut ref_yaw = 0.0;
-    let mut current_stab_mode: Option<StabilizationMode> = None;
+    let mut current_stab_mode = Inactive;
     let mut current_motor_state = MotorState::Disarmed(DisarmReason::NotInitialized);
+    let mut saved_flight_mode = FlightMode::Ground;
 
     info!("{} : Entering main loop",TASK_ID);
     loop {
@@ -48,6 +50,9 @@ pub async fn commander(
 
                 p_motor_arm.publish_immediate(!cmd.sw_b.is_idle());
 
+                // Engage motor spin test routine based on switch E
+                p_motor_spin_check.publish_immediate(cmd.sw_e.is_active() && saved_flight_mode == FlightMode::Ground );
+
                 // Modify thrust mode based on switch position 
                 let thrust = match cmd.sw_c {
                     TriSwitch::Idle   => map(thrust_curve(cmd.thrust), 0., 1., 400., 1000.),
@@ -59,10 +64,10 @@ pub async fn commander(
 
                 let stab_mode = match cmd.sw_f {
                     TriSwitch::Idle | TriSwitch::Middle => {
-                        ref_yaw = functions::wrap(ref_yaw - cmd.yaw*0.01, -PI, PI);
+                        ref_yaw = functions::wrap(ref_yaw + cmd.yaw*0.01, -PI, PI);
                         Horizon(Vector3::new(
                             roll_curve(cmd.roll),
-                            pitch_curve(cmd.pitch),
+                            pitch_curve(-cmd.pitch),
                             yaw_curve(ref_yaw)
                         ))
                     },
@@ -78,10 +83,10 @@ pub async fn commander(
                 p_attitude_stab_mode.publish_immediate(stab_mode);
 
                 // Check if stabilization mode has changed or is uninitialized
-                if current_stab_mode.is_some_and(|c| !c.same_variant_as(&stab_mode)) || current_stab_mode.is_none() {
-                    let mode_str = match stab_mode { Horizon(_) => "Horizon", Acro(_) => "Acro" };
+                if variant_eq(&current_stab_mode,&stab_mode) {
+                    let mode_str = match stab_mode {Horizon(_) => "Horizon", Acro(_) => "Acro", Inactive => "Inactive" };
                     info!("{} : Stabilization mode changed -> {}",TASK_ID,mode_str);
-                    current_stab_mode = Some(stab_mode);
+                    current_stab_mode = stab_mode;
                     reset_controllers = true;
                 }
             },
@@ -97,6 +102,7 @@ pub async fn commander(
 
         // Reset controller if craft just changed flight mode
         if let Some(flight_mode) = s_flight_mode.try_next_message_pure() {
+            saved_flight_mode = flight_mode;
             if flight_mode == FlightMode::Ground {
                 reset_controllers = true;
             }
@@ -104,7 +110,7 @@ pub async fn commander(
 
         // Reset controller integrals if motors was just armed
         if let Some(motor_state) = s_motor_state.try_next_message_pure() {
-            if !functions::variant_eq(&current_motor_state, &motor_state) {
+            if !variant_eq(&current_motor_state, &motor_state) {
                 current_motor_state = motor_state;
                 reset_controllers = true;
             }

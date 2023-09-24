@@ -1,11 +1,10 @@
 use defmt::*;
 
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::pubsub::PubSubChannel;
+use embassy_time::Instant;
 use embassy_time::Ticker;
-use embassy_rp::{peripherals::I2C1, i2c};
-use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex as CSMutex;
-use icm20948_async::{AccelerometerRange, AccelerometerDlp, AccelerometerUnit, GyroscopeRange, GyroscopeDlp, GyroscopeUnit, Icm20948, IcmError};
+use icm20948_async::*;
 use nalgebra::Vector3;
 use crate::channels;
 use crate::cfg;
@@ -16,13 +15,17 @@ use super::Dof6ImuData;
 pub static ICM20948_IMU_READING: Ch<Dof6ImuData<f32>,1> = PubSubChannel::new();
 pub static ICM20948_MAG_READING: Ch<Vector3<f32>,1> = PubSubChannel::new();
 
+pub static FREQUENCY_SIG: PubSubChannel<CriticalSectionRawMutex,f32,1,1,1> = PubSubChannel::new();
+
+static TASK_ID : &str = "[ICM20948-DRIVER]";
+
 #[embassy_executor::task]
 pub async fn imu_reader(
-    i2c: I2cDevice<'static,CSMutex, i2c::I2c<'static, I2C1, i2c::Async>>,
+    i2c: super::SharedImuI2cType,
     p_imu_reading: channels::Pub<super::Dof6ImuData<f32>,1>,
     _p_mag_reading: channels::Pub<Vector3<f32>,1>, // Unused for now
 ) {
-    info!("IMU_READER : start");
+    info!("{}: Starting driver",TASK_ID);
 
     // Create and await IMU object
     let imu_configured = Icm20948::new(i2c)
@@ -48,21 +51,21 @@ pub async fn imu_reader(
         Ok(imu) => imu,
         Err(error) => {
             match error {
-                IcmError::BusError(_)   => error!("IMU_READER : IMU encountered a communication bus error"),
-                IcmError::ImuSetupError => error!("IMU_READER : IMU encountered an error during setup"),
-                IcmError::MagSetupError => error!("IMU_READER : IMU encountered an error during mag setup")
+                IcmError::BusError(_)   => error!("{}: Communication bus error",TASK_ID),
+                IcmError::ImuSetupError => error!("{}: Error during setup",TASK_ID),
+                IcmError::MagSetupError => error!("{}: Error during mag setup",TASK_ID)
             } return;
         }
     };
 
     // Calibrate gyroscope offsets using 100 samples
-    info!("IMU_READER : Reading gyroscopes, keep still");
+    info!("{}: Reading gyroscopes, keep still",TASK_ID);
     let _gyr_cal = imu.gyr_calibrate(100).await.is_ok();
 
     // Magnetometer calibration scope
     #[cfg(feature = "mag")] {
         // Condition to start calibrating magnetometer
-        info!("IMU_READER : Please rotate drone to calibrate magnetometer");
+        info!("{}: Please rotate drone to calibrate magnetometer",TASK_ID);
         loop {
             if let Ok(acc) = imu.read_acc().await {
                 if acc[2] < 0. {
@@ -89,9 +92,13 @@ pub async fn imu_reader(
         }
     }
 
-    // Continuously read IMU data at constant sample rate
+    let mut prev_time = Instant::now();
+    let mut average_frequency = 0.0;
+    let freq_publisher = FREQUENCY_SIG.immediate_publisher();
+
+    // Read IMU data at constant sample rate
     let mut ticker = Ticker::every(cfg::ATTITUDE_LOOP_TIME_DUR);
-    info!("IMU_READER : Entering main loop");
+    info!("{}: Entering main loop",TASK_ID);
     loop {
         if let Ok(imu_data) = imu.read_all().await {
 
@@ -102,10 +109,20 @@ pub async fn imu_reader(
 
             p_imu_reading.publish_immediate(imu_data_converted);
             
+            // Calculate loop time
+            let time_now = Instant::now();
+            let time_passed = time_now.duration_since(prev_time);
+            average_frequency = 0.999*average_frequency + 0.001*(1e6 / time_passed.as_micros() as f64);
+            prev_time = time_now;
+            freq_publisher.publish_immediate(average_frequency as f32);
+
             #[cfg(feature = "mag")] {
                 p_mag_reading.publish_immediate(imu_data.mag);
             }
+        } else {
+            warn!("Something went wrong reading the IMU!")
         }
+
         ticker.next().await;
     }
 }
