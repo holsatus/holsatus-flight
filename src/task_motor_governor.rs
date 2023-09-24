@@ -53,8 +53,7 @@ pub async fn motor_governor(
 
                 // Motor speed message received correctly
                 Ok(Some(speeds)) => {
-                    // out_dshot_pio.throttle_clamp(speeds);
-                    out_dshot_pio.throttle_clamp([0,0,0,0]);
+                    out_dshot_pio.throttle_clamp(speeds);
                     p_motor_state.publish_immediate(MotorState::Armed(ArmedState::Running(speeds)));
                 },
 
