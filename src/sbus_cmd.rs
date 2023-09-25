@@ -35,9 +35,9 @@ pub fn convert(packet: &sbus::SBusPacket) -> Option<SbusCmd> {
     }
 }
 
-fn sbus_range(x: u16, tol: f32) -> f32 {
+fn sbus_range(x: u16, min_tol: f32) -> f32 {
     let y = functions::map(f32::from(x), 172., 1810., -1., 1.);
-    if y.abs() > tol { y } else { 0.0 }
+    if y.abs() > min_tol { y } else { 0.0 }
 }
 
 fn sbus_range_thrust(x: u16) -> f32 {

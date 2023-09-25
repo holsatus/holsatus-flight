@@ -10,19 +10,19 @@ use crate::channels;
 use crate::cfg;
 use crate::channels::Ch;
 
-use super::Dof6ImuData;
+use crate::imu::Dof6ImuData;
 
 pub static ICM20948_IMU_READING: Ch<Dof6ImuData<f32>,1> = PubSubChannel::new();
 pub static ICM20948_MAG_READING: Ch<Vector3<f32>,1> = PubSubChannel::new();
 
 pub static FREQUENCY_SIG: PubSubChannel<CriticalSectionRawMutex,f32,1,1,1> = PubSubChannel::new();
 
-static TASK_ID : &str = "[ICM20948-DRIVER]";
+static TASK_ID : &str = "[ICM20948_DRIVER]";
 
 #[embassy_executor::task]
 pub async fn imu_reader(
-    i2c: super::SharedImuI2cType,
-    p_imu_reading: channels::Pub<super::Dof6ImuData<f32>,1>,
+    i2c: crate::imu::SharedImuI2cType,
+    p_icm20948_imu_reading: channels::Pub<Dof6ImuData<f32>,1>,
     _p_mag_reading: channels::Pub<Vector3<f32>,1>, // Unused for now
 ) {
     info!("{}: Starting driver",TASK_ID);
@@ -102,12 +102,12 @@ pub async fn imu_reader(
     loop {
         if let Ok(imu_data) = imu.read_all().await {
 
-            let imu_data_converted = super::Dof6ImuData {
+            let imu_data_converted = Dof6ImuData {
                 acc: imu_data.acc,
                 gyr: imu_data.gyr,
             };
 
-            p_imu_reading.publish_immediate(imu_data_converted);
+            p_icm20948_imu_reading.publish_immediate(imu_data_converted);
             
             // Calculate loop time
             let time_now = Instant::now();

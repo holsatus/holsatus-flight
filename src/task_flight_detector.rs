@@ -1,14 +1,10 @@
-///*
-/// This file can be used as a prototype (template) for new tasks 
-///*/
-
 use defmt::*;
 use embassy_time::{Ticker, Duration};
 use crate::{channels, cfg};
 
 use crate::task_motor_governor::{MotorState, ArmedState, DisarmReason};
 
-static TASK_ID : &str = "FLIGHT_DETECTOR";
+static TASK_ID : &str = "[FLIGHT_DETECTOR]";
 
 #[embassy_executor::task]
 pub async fn flight_detector(
@@ -17,10 +13,10 @@ pub async fn flight_detector(
 ) {
 
     let mut flight_mode = FlightMode::Ground;
-    let mut ticker = Ticker::every(Duration::from_hz(5));
     let mut motor_state = MotorState::Disarmed(DisarmReason::NotInitialized);
-
-    info!("{} : Entering main loop",TASK_ID);
+    
+    let mut ticker = Ticker::every(Duration::from_hz(10));
+    info!("{}: Entering main loop",TASK_ID);
     loop {
 
         if let Some(s) = s_motor_state.try_next_message_pure() { motor_state = s }
@@ -32,14 +28,14 @@ pub async fn flight_detector(
                     let z_thrust = (m1 + m2 + m3 + m4)/4; 
                     if z_thrust > cfg::TAKEOFF_ESTIMATOR_THRUST {
                         flight_mode = FlightMode::Flying;
-                        info!("{} : Changing flight mode to: {}",TASK_ID,flight_mode);
+                        info!("{}: Changing flight mode to: {}",TASK_ID,flight_mode);
                     }
                 }
             },
             FlightMode::Flying => {
                 if let MotorState::Disarmed(_) = motor_state {
                     flight_mode = FlightMode::Ground;
-                    info!("{} : Changing flight mode to: {}",TASK_ID,flight_mode);
+                    info!("{}: Changing flight mode to: {}",TASK_ID,flight_mode);
                 }
             }
         }

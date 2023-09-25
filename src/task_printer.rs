@@ -2,7 +2,7 @@ use defmt::*;
 use embassy_time::{Ticker, Duration};
 use crate::channels;
 
-static TASK_ID : &str = "[LOGGER]";
+static TASK_ID : &str = "[PRINTER]";
 
 #[embassy_executor::task]
 pub async fn printer(
@@ -16,7 +16,7 @@ pub async fn printer(
 ) {
 
     let mut sub_con_frequency = crate::task_attitude_controller::FREQUENCY_SIG.subscriber().unwrap();
-    let mut sub_icm_frequency = crate::imu::task_icm20948_driver::FREQUENCY_SIG.subscriber().unwrap();
+    let mut sub_icm_frequency = crate::drivers::task_icm20948_driver::FREQUENCY_SIG.subscriber().unwrap();
 
     let mut imu_reading:Option<channels::ImuReadingType> = sub_imu_reading.try_next_message_pure();
     let mut attitude_sense:Option<channels::AttitudeSenseType> = sub_attitude_sense.try_next_message_pure();

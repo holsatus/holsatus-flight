@@ -6,18 +6,17 @@ use nalgebra::Vector3;
 use static_cell::StaticCell;
 use crate::{channels, cfg};
 
-#[cfg(feature = "icm20948-async")]
-pub mod task_icm20948_driver;
-
 #[derive(Clone,Debug)]
 pub struct Dof6ImuData<T> {
     pub acc : Vector3<T>,
     pub gyr : Vector3<T>,
 }
 
+// mod accel_cal_routine;
+
 use defmt::*;
 
-static TASK_ID : &str = "[IMU-MASTER]";
+static TASK_ID : &str = "[IMU_MASTER]";
 
 // Shared i2c driver for all IMU devices
 static SHARED_ASYNC_I2C : StaticCell<Mutex<CSRMutex, I2c<'_, I2C1, Async>>> = StaticCell::new();
@@ -36,16 +35,18 @@ pub async fn imu_driver(
     let icm20948_i2c_bus = I2cDevice::new(shared_i2c);
 
     #[cfg(feature = "icm20948-async")]
-    let mut sub_icm20948 = unwrap!(task_icm20948_driver::ICM20948_IMU_READING.subscriber());
+    let mut sub_icm20948 = unwrap!(
+        crate::drivers::task_icm20948_driver::ICM20948_IMU_READING.subscriber()
+    );
     
     #[cfg(feature = "icm20948-async")]
-    spawner.must_spawn(task_icm20948_driver::imu_reader(
+    spawner.must_spawn(crate::drivers::task_icm20948_driver::imu_reader(
         icm20948_i2c_bus, 
-        unwrap!(task_icm20948_driver::ICM20948_IMU_READING.publisher()),
-        unwrap!(task_icm20948_driver::ICM20948_MAG_READING.publisher())
+        unwrap!(crate::drivers::task_icm20948_driver::ICM20948_IMU_READING.publisher()),
+        unwrap!(crate::drivers::task_icm20948_driver::ICM20948_MAG_READING.publisher())
     ));
     
-    info!("{} : Entering main loop",TASK_ID);
+    info!("{}: Entering main loop",TASK_ID);
     #[cfg(any(feature = "icm20948-async"))]
     loop {
 

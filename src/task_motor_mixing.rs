@@ -5,8 +5,7 @@ use nalgebra::Vector3;
 
 use crate::channels;
 
-static TASK_ID : &str = "MOTOR_MIXING";
-
+static TASK_ID : &str = "[MOTOR_MIXING]";
 
 #[embassy_executor::task]
 pub async fn motor_mixing(
@@ -22,7 +21,7 @@ pub async fn motor_mixing(
     let mut attitude = Vector3::new(0., 0., 0.);
     let mut thrust = 0.0;
 
-    info!("{} : Entering main loop",TASK_ID);
+    info!("{}: Entering main loop",TASK_ID);
     loop {
         
         match select(s_attitude_actuate.next_message_pure(), s_thrust_actuate.next_message_pure()).await {
@@ -30,7 +29,7 @@ pub async fn motor_mixing(
             Either::Second(t) => thrust = t,
         }
 
-        let command = motor_mixing_matrix_inverted(thrust, attitude, 70., 2047.);
+        let command = motor_mixing_matrix_inverted(thrust, attitude, 70., 1200.);
 
         if let Some(arm) = s_motor_arm.try_next_message_pure() {
             arm_motors = arm
@@ -85,31 +84,33 @@ fn motor_mixing_matrix_inverted(thrust: f32, attitude: Vector3<f32>, min: f32, m
 
 async fn motor_spin_check_routine(p_motor_speed: &channels::MotorSpeedPub) {
 
-    // Spin motor 1
+    info!("{}: Engaging motor spin check routine",TASK_ID);
+
+    // Spin motor 1 for one second
     for _ in 0..100 {
         p_motor_speed.publish_immediate(Some([70,0,0,0]));
         Timer::after(Duration::from_hz(100)).await;
     }
 
-    // Spin motor 3
+    // Spin motor 3 for one second
     for _ in 0..100 {
         p_motor_speed.publish_immediate(Some([0,70,0,0]));
         Timer::after(Duration::from_hz(100)).await;
     }
 
-    // Spin motor 3
+    // Spin motor 3 for one second
     for _ in 0..100 {
         p_motor_speed.publish_immediate(Some([0,0,70,0]));
         Timer::after(Duration::from_hz(100)).await;
     }
 
-    // Spin motor 4
+    // Spin motor 4 for one second
     for _ in 0..100 {
         p_motor_speed.publish_immediate(Some([0,0,0,70]));
         Timer::after(Duration::from_hz(100)).await;
     }
 
-    // Wait 1 second
+    // Idle motors for one second
     for _ in 0..100 {
         p_motor_speed.publish_immediate(Some([0,0,0,0]));
         Timer::after(Duration::from_hz(100)).await;

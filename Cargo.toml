@@ -7,6 +7,7 @@ version = "0.2.0"
 [features]
 default = ["icm20948-async"]
 icm20948-async = []
+dual-core = []
 mag = []
 
 [dependencies]
@@ -26,7 +27,9 @@ pio = "0.2"
 dshot-pio = { git = "https://github.com/peterkrull/dshot-pio", features = ["embassy-rp"]}
 icm20948-async = { git = "https://github.com/peterkrull/icm20948-async" }
 mag-calibrator-rs = { git = "https://github.com/peterkrull/mag-calibrator-rs" }
-pid-controller-rs = { git = "https://github.com/peterkrull/pid-controller-rs" }
+pid-controller-rs = { path = "../pid-controller-rs" }
+
+arraydeque = { version = "0.5", default-features = false }
 
 # Forked
 sbus = { git = "https://github.com/peterkrull/sbus" }
@@ -35,9 +38,12 @@ ahrs = { git = "https://github.com/peterkrull/ahrs-rs", default-features = false
 # Attitude and estimation
 nmea0183 = { version = "0.3.0", default-features = false }
 
+bitflags = "2.4.0"
+
 # Linear algebra
 nalgebra = { version = "0.32", default-features = false, features = ["libm"] }
 num-traits = { version = "0.2", default-features = false, features = ["libm"] }
+num = { version = "0.4.1", default-features = false, features = ["libm"] }
 
 # Async & Embassy related
 embedded-hal-async = "1.0.0-rc.1"

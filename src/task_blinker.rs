@@ -1,26 +1,23 @@
-use embassy_rp::gpio::{Output, AnyPin, Level};
-use embassy_time::{Duration, Timer};
 use crate::channels;
+use embassy_rp::gpio::{AnyPin, Level, Output};
+use embassy_time::{Duration, Timer};
 
 #[embassy_executor::task]
-pub async fn blinker(
-    mut s_blinker_mode : channels::BlinkerModeSub,
-    out_led_pin : AnyPin
-) {
-
+pub async fn blinker(mut s_blinker_mode: channels::BlinkerModeSub, out_led_pin: AnyPin) {
     let mut blinker_mode = BlinkerMode::None;
 
-    let mut led = Output::new(out_led_pin,Level::Low);
-    loop { 
-
+    let mut led = Output::new(out_led_pin, Level::Low);
+    loop {
         // Try to read new blinker mode
-        if let Some(b) = s_blinker_mode.try_next_message_pure() {blinker_mode = b}
+        if let Some(b) = s_blinker_mode.try_next_message_pure() {
+            blinker_mode = b
+        }
 
         match blinker_mode {
             BlinkerMode::None => {
                 led.set_low();
                 blinker_mode = s_blinker_mode.next_message_pure().await;
-            },
+            }
             BlinkerMode::OneFast => one_fast(&mut led).await,
             BlinkerMode::TwoFast => two_fast(&mut led).await,
             BlinkerMode::ThreeFast => three_fast(&mut led).await,
@@ -31,8 +28,7 @@ pub async fn blinker(
 }
 
 #[allow(unused)]
-async fn one_fast<'a>(led: &mut Output<'a,AnyPin>) {
-
+async fn one_fast<'a>(led: &mut Output<'a, AnyPin>) {
     led.set_high(); // Short high
     Timer::after(Duration::from_millis(50)).await;
 
@@ -41,7 +37,7 @@ async fn one_fast<'a>(led: &mut Output<'a,AnyPin>) {
 }
 
 #[allow(unused)]
-async fn two_fast<'a>(led: &mut Output<'a,AnyPin>) {
+async fn two_fast<'a>(led: &mut Output<'a, AnyPin>) {
     led.set_high(); // Short high
     Timer::after(Duration::from_millis(50)).await;
 
@@ -56,7 +52,7 @@ async fn two_fast<'a>(led: &mut Output<'a,AnyPin>) {
 }
 
 #[allow(unused)]
-async fn three_fast<'a>(led: &mut Output<'a,AnyPin>) {
+async fn three_fast<'a>(led: &mut Output<'a, AnyPin>) {
     led.set_high(); // Short high
     Timer::after(Duration::from_millis(50)).await;
 
@@ -77,7 +73,7 @@ async fn three_fast<'a>(led: &mut Output<'a,AnyPin>) {
 }
 
 #[allow(unused)]
-async fn on_off_fast<'a>(led: &mut Output<'a,AnyPin>) {
+async fn on_off_fast<'a>(led: &mut Output<'a, AnyPin>) {
     led.set_high(); // Short high
     Timer::after(Duration::from_millis(100)).await;
 
@@ -86,7 +82,7 @@ async fn on_off_fast<'a>(led: &mut Output<'a,AnyPin>) {
 }
 
 #[allow(unused)]
-async fn on_off_slow<'a>(led: &mut Output<'a,AnyPin>) {
+async fn on_off_slow<'a>(led: &mut Output<'a, AnyPin>) {
     led.set_high(); // Short high
     Timer::after(Duration::from_millis(100)).await;
 
@@ -95,7 +91,7 @@ async fn on_off_slow<'a>(led: &mut Output<'a,AnyPin>) {
 }
 
 #[allow(unused)]
-#[derive(Clone,Copy)]
+#[derive(Clone, Copy)]
 pub enum BlinkerMode {
     None,
     OneFast,

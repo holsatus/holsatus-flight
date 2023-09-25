@@ -7,7 +7,6 @@ use nalgebra::Vector3;
 use pid_controller_rs::Pid;
 use crate::channels;
 use crate::cfg;
-use crate::functions;
 
 use defmt::*;
 
@@ -26,12 +25,12 @@ impl Format for StabilizationMode {
 
 pub static FREQUENCY_SIG: PubSubChannel<CriticalSectionRawMutex,f32,1,1,1> = PubSubChannel::new();
 
-static TASK_ID : &str = "ATTITUDE_CONTROLLER";
+static TASK_ID : &str = "[ATTITUDE_CONTROLLER]";
 
 #[embassy_executor::task]
 pub async fn attitude_controller(
     mut s_attitude_sense: channels::AttitudeSenseSub,
-    mut s_attitude_int_reset : channels::AttitudeIntResetSub,
+    mut s_attitude_int_enable : channels::AttitudeIntEnableSub,
     mut s_attitude_stab_mode : channels::AttitudeStabModeSub,
     p_attitude_actuate: channels::AttitudeActuatePub,
 ) {
@@ -40,28 +39,34 @@ pub async fn attitude_controller(
     let mut stabilization_mode = s_attitude_stab_mode.next_message_pure().await;
 
     // Setup controllers for pitch, roll and yaw, using a cascaded controller scheme.
-    let mut pid_pitch_outer = Pid::new( 10., 0.1, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS );
-    let mut pid_pitch_inner = Pid::new( 40., 1.0, 0.01, true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_lp_filter(0.01);
-    let mut pid_roll_outer = Pid::new( 10., 0.1, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS );
-    let mut pid_roll_inner = Pid::new( 30., 1.0, 0.01, true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_lp_filter(0.01);
-    let mut pid_yaw_outer = Pid::new( 8., 0.001, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_circular(-PI, PI);
-    let mut pid_yaw_inner = Pid::new( 60., 1.0, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_circular(-PI, PI).set_lp_filter(0.01);
+    let mut pid_pitch_outer:Pid<_,_,_,_,_>  = Pid::new( 10., 0.1, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_wrapping(-PI, PI);
+    let mut pid_pitch_inner:Pid<_,_,_,_,_>  = Pid::new( 40., 1.0, 0.01, true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_lp_filter(0.01);
+    let mut pid_roll_outer: Pid<_,_,_,_,_>  = Pid::new( 10., 0.1, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_wrapping(-PI, PI);
+    let mut pid_roll_inner: Pid<_,_,_,_,_>  = Pid::new( 30., 1.0, 0.01, true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_lp_filter(0.01);
+    let mut pid_yaw_outer:  Pid<_,_,_,_,_>  = Pid::new( 8., 1e-3, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_wrapping(-PI, PI);
+    let mut pid_yaw_inner:  Pid<_,_,_,_,_>  = Pid::new( 60., 1.0, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_lp_filter(0.01);
 
     let mut prev_time = Instant::now();
     let mut average_frequency = 0.0;
     let freq_publisher = FREQUENCY_SIG.immediate_publisher();
 
-    info!("{} : Entering main loop",TASK_ID);
+    let mut integral_enabled = true;
+
+    info!("{}: Entering main loop",TASK_ID);
     loop {
 
         // Update reference signal (and stabilization mode) from channel
         crate::channels::update_from_channel(&mut s_attitude_stab_mode, &mut stabilization_mode );
 
-        // Reset integrators if signaled to do so
-        if let Some(true) = s_attitude_int_reset.try_next_message_pure() {
-            pid_pitch_outer.reset_integral();   pid_pitch_inner.reset_integral();
-            pid_roll_outer.reset_integral();    pid_roll_inner.reset_integral();
-            pid_yaw_outer.reset_integral();     pid_yaw_inner.reset_integral();
+        // Enable/disable and reset integrators if signaled to do so
+        if let Some(enable) = s_attitude_int_enable.try_next_message_pure() {
+            if enable != integral_enabled {
+                integral_enabled = enable;
+                info!("{}: Setting integrals enabled -> {}",TASK_ID, enable);
+                pid_pitch_outer.enable_reset_integral(enable);  pid_pitch_inner.enable_reset_integral(enable);
+                pid_roll_outer.enable_reset_integral(enable);   pid_roll_inner.enable_reset_integral(enable);
+                pid_yaw_outer.enable_reset_integral(enable);    pid_yaw_inner.enable_reset_integral(enable);
+            }
         }
 
         // Wait for new measurements to arrive
@@ -73,10 +78,7 @@ pub async fn attitude_controller(
             StabilizationMode::Horizon(reference) => {
 
                 // Run outer part of cascaded control loop
-                let mut outer_error = reference - att_angle;
-                outer_error.iter_mut().for_each(|x|{
-                    *x = functions::wrap(*x, -PI, PI);
-                });
+                let outer_error = reference - att_angle;
                 let inner_reference = Vector3::new(
                     pid_roll_outer.update( outer_error.x ),
                     pid_pitch_outer.update( outer_error.y ),

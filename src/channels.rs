@@ -53,11 +53,11 @@ pub type AttitudeActuatePub = Pub<AttitudeActuateType,ATTITUDE_ACTUATE_NUM>;
 pub type AttitudeActuateSub = Sub<AttitudeActuateType,ATTITUDE_ACTUATE_NUM>;
 pub static ATTITUDE_ACTUATE : Ch<AttitudeActuateType,ATTITUDE_ACTUATE_NUM> = PubSubChannel::new();
 
-const ATTITUDE_INT_RESET_NUM: usize = 1;
-pub type AttitudeIntResetType = bool;
-pub type AttitudeIntResetPub = Pub<AttitudeIntResetType,ATTITUDE_INT_RESET_NUM>;
-pub type AttitudeIntResetSub = Sub<AttitudeIntResetType,ATTITUDE_INT_RESET_NUM>;
-pub static ATTITUDE_INT_RESET : Ch<AttitudeIntResetType,ATTITUDE_INT_RESET_NUM> = PubSubChannel::new();
+const ATTITUDE_INT_ENABLE_NUM: usize = 1;
+pub type AttitudeIntEnableType = bool;
+pub type AttitudeIntEnablePub = Pub<AttitudeIntEnableType,ATTITUDE_INT_ENABLE_NUM>;
+pub type AttitudeIntEnableSub = Sub<AttitudeIntEnableType,ATTITUDE_INT_ENABLE_NUM>;
+pub static ATTITUDE_INT_ENABLE : Ch<AttitudeIntEnableType,ATTITUDE_INT_ENABLE_NUM> = PubSubChannel::new();
 
 const ATTITUDE_STAB_MODE_NUM: usize = 2;
 pub type AttitudeStabModeType = crate::task_attitude_controller::StabilizationMode;
@@ -122,22 +122,24 @@ pub static FLIGHT_MODE : Ch<FlightModeType,FLIGHT_MODE_NUM> = PubSubChannel::new
 /* DO NOT MODIFY PROTOTYPE
 const CH_PROTOTYPE_X_NUM: usize = 1;
 pub type ChPrototypeXType = bool;
-pub type ChPrototypeXPub = Pub<ChPrototypeXType,1,CH_PROTOTYPE_X_NUM,1>;
-pub type ChPrototypeXSub = Sub<ChPrototypeXType,1,CH_PROTOTYPE_X_NUM,1>;
-pub static CH_PROTOTYPE_X : Ch<ChPrototypeXType,1,CH_PROTOTYPE_X_NUM,1> = PubSubChannel::new();
+pub type ChPrototypeXPub = Pub<ChPrototypeXType,CH_PROTOTYPE_X_NUM>;
+pub type ChPrototypeXSub = Sub<ChPrototypeXType,CH_PROTOTYPE_X_NUM>;
+pub static CH_PROTOTYPE_X : Ch<ChPrototypeXType,CH_PROTOTYPE_X_NUM> = PubSubChannel::new();
 */
 
 pub fn assert_all_subscribers_used() {
     assert!(IMU_READING.subscriber().is_err());
     assert!(ATTITUDE_SENSE.subscriber().is_err());
     assert!(ATTITUDE_ACTUATE.subscriber().is_err());
-    assert!(ATTITUDE_INT_RESET.subscriber().is_err());
+    assert!(ATTITUDE_INT_ENABLE.subscriber().is_err());
     assert!(ATTITUDE_STAB_MODE.subscriber().is_err());
     assert!(MOTOR_SPEED.subscriber().is_err());
     assert!(MOTOR_ARM.subscriber().is_err());
+    assert!(MOTOR_SPIN_CHECK.subscriber().is_err());
     assert!(MOTOR_DIR.subscriber().is_err());
     assert!(MOTOR_STATE.subscriber().is_err());
     assert!(SBUS_CMD.subscriber().is_err());
     assert!(THRUST_ACTUATE.subscriber().is_err());
     assert!(BLINKER_MODE.subscriber().is_err());
+    assert!(FLIGHT_MODE.subscriber().is_err());
 }
