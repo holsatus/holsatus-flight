@@ -8,7 +8,7 @@ unsafe fn any_as_u8<T: Sized>(orig: &T) -> &[u8] {
 }
 
 /// Write `data` of type into RP2040 flash storage at address `offset`.
-pub(crate) fn write<I,M,T,const F: usize>(flash: &mut Flash<I,M,F>, data: T, offset: u32)
+pub(crate) unsafe fn write<I,M,T,const F: usize>(flash: &mut Flash<I,M,F>, data: T, offset: u32)
 where
     I: Instance,
     M: Mode
@@ -18,7 +18,10 @@ where
     defmt::unwrap!(flash.blocking_erase(offset, offset + ERASE_SIZE as u32));
 
     // Convert struct into slice of u8
-    let data_u8 = unsafe { any_as_u8(&data) };
+    let data_u8 = core::slice::from_raw_parts(
+        (&data as *const T) as *const u8,
+        ::core::mem::size_of::<T>(),
+    );
 
     // Create a fixed size buffer for entire erased area
     let mut buf = [0u8; ERASE_SIZE];
@@ -44,6 +47,6 @@ where
     // Read memory into buffer
     defmt::unwrap!(flash.blocking_read(offset, &mut data_u8));
 
-    // Force data to become type C
+    // Force data to become type T
     core::mem::transmute_copy(&data_u8) // UNSAFE
 }
