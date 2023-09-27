@@ -1,14 +1,7 @@
 use embassy_rp::flash::{Flash,Instance,Mode,ERASE_SIZE};
 
-unsafe fn any_as_u8<T: Sized>(orig: &T) -> &[u8] {
-    core::slice::from_raw_parts(
-        (orig as *const T) as *const u8,
-        ::core::mem::size_of::<T>(),
-    )
-}
-
 /// Write `data` of type into RP2040 flash storage at address `offset`.
-pub(crate) unsafe fn write<I,M,T,const F: usize>(flash: &mut Flash<I,M,F>, data: T, offset: u32)
+pub(crate) unsafe fn write<I,M,T,const F: usize>(flash: &mut Flash<I,M,F>, data: &T, offset: u32)
 where
     I: Instance,
     M: Mode
@@ -19,7 +12,7 @@ where
 
     // Convert struct into slice of u8
     let data_u8 = core::slice::from_raw_parts(
-        (&data as *const T) as *const u8,
+        (data as *const T) as *const u8,
         ::core::mem::size_of::<T>(),
     );
 
