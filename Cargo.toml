@@ -27,7 +27,7 @@ pio = "0.2"
 dshot-pio = { git = "https://github.com/peterkrull/dshot-pio", features = ["embassy-rp"]}
 icm20948-async = { git = "https://github.com/peterkrull/icm20948-async" }
 mag-calibrator-rs = { git = "https://github.com/peterkrull/mag-calibrator-rs" }
-pid-controller-rs = { path = "../pid-controller-rs" }
+pid-controller-rs = { git = "https://github.com/peterkrull/pid-controller-rs" }
 
 arraydeque = { version = "0.5", default-features = false }
 
