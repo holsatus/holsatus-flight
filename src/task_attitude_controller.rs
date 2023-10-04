@@ -6,7 +6,7 @@ use embassy_time::Instant;
 use nalgebra::Vector3;
 use pid_controller_rs::Pid;
 use crate::channels;
-use crate::cfg;
+use crate::config::definitions::ATTITUDE_LOOP_TIME_SECS;
 
 use defmt::*;
 
@@ -35,16 +35,16 @@ pub async fn attitude_controller(
     p_attitude_actuate: channels::AttitudeActuatePub,
 ) {
 
-    // Aquire satbilization mode
+    // Acquire stabilization mode
     let mut stabilization_mode = s_attitude_stab_mode.next_message_pure().await;
 
     // Setup controllers for pitch, roll and yaw, using a cascaded controller scheme.
-    let mut pid_pitch_outer:Pid<_,_,_,_,_>  = Pid::new( 10., 0.1, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_wrapping(-PI, PI);
-    let mut pid_pitch_inner:Pid<_,_,_,_,_>  = Pid::new( 40., 1.0, 0.01, true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_lp_filter(0.01);
-    let mut pid_roll_outer: Pid<_,_,_,_,_>  = Pid::new( 10., 0.1, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_wrapping(-PI, PI);
-    let mut pid_roll_inner: Pid<_,_,_,_,_>  = Pid::new( 30., 1.0, 0.01, true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_lp_filter(0.01);
-    let mut pid_yaw_outer:  Pid<_,_,_,_,_>  = Pid::new( 8., 1e-3, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_wrapping(-PI, PI);
-    let mut pid_yaw_inner:  Pid<_,_,_,_,_>  = Pid::new( 60., 1.0, 0., true, cfg::ATTITUDE_LOOP_TIME_SECS ).set_lp_filter(0.01);
+    let mut pid_pitch_outer:Pid<_,_,_,_,_>  = Pid::new( 10., 0.1, 0., true, ATTITUDE_LOOP_TIME_SECS ).set_wrapping(-PI, PI);
+    let mut pid_pitch_inner:Pid<_,_,_,_,_>  = Pid::new( 40., 1.0, 0.01, true, ATTITUDE_LOOP_TIME_SECS ).set_lp_filter(0.01);
+    let mut pid_roll_outer: Pid<_,_,_,_,_>  = Pid::new( 10., 0.1, 0., true, ATTITUDE_LOOP_TIME_SECS ).set_wrapping(-PI, PI);
+    let mut pid_roll_inner: Pid<_,_,_,_,_>  = Pid::new( 30., 1.0, 0.01, true, ATTITUDE_LOOP_TIME_SECS ).set_lp_filter(0.01);
+    let mut pid_yaw_outer:  Pid<_,_,_,_,_>  = Pid::new( 8., 1e-3, 0., true, ATTITUDE_LOOP_TIME_SECS ).set_wrapping(-PI, PI);
+    let mut pid_yaw_inner:  Pid<_,_,_,_,_>  = Pid::new( 60., 1.0, 0., true, ATTITUDE_LOOP_TIME_SECS ).set_lp_filter(0.01);
 
     let mut prev_time = Instant::now();
     let mut average_frequency = 0.0;
@@ -56,7 +56,7 @@ pub async fn attitude_controller(
     loop {
 
         // Update reference signal (and stabilization mode) from channel
-        crate::channels::update_from_channel(&mut s_attitude_stab_mode, &mut stabilization_mode );
+        channels::update_from_channel(&mut s_attitude_stab_mode, &mut stabilization_mode );
 
         // Enable/disable and reset integrators if signaled to do so
         if let Some(enable) = s_attitude_int_enable.try_next_message_pure() {

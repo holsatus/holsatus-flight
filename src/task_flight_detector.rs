@@ -1,6 +1,6 @@
 use defmt::*;
 use embassy_time::{Ticker, Duration};
-use crate::{channels, cfg};
+use crate::{channels, config};
 
 use crate::task_motor_governor::{MotorState, ArmedState, DisarmReason};
 
@@ -26,7 +26,7 @@ pub async fn flight_detector(
                 if let MotorState::Armed(ArmedState::Running(m)) = motor_state {
                     let [m1,m2,m3,m4] = m;
                     let z_thrust = (m1 + m2 + m3 + m4)/4; 
-                    if z_thrust > cfg::TAKEOFF_ESTIMATOR_THRUST {
+                    if z_thrust > config::definitions::TAKEOFF_ESTIMATOR_THRUST {
                         flight_mode = FlightMode::Flying;
                         info!("{}: Changing flight mode to: {}",TASK_ID,flight_mode);
                     }

@@ -1,14 +1,18 @@
+#![allow(incomplete_features)]
 #![feature(type_changing_struct_update)]
 #![feature(type_alias_impl_trait)]
+#![feature(generic_const_exprs)]
 #![feature(async_fn_in_trait)]
 #![feature(async_closure)]
 #![no_std]
 #![no_main]
 
-use defmt::unwrap;
+use config::definitions::Configuration;
+use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures as _;
+use embassy_time::{Timer, Duration};
 use panic_probe as _;
 
 // Load module for cross-task channels
@@ -18,8 +22,8 @@ mod channels;
 use embassy_rp::{
     gpio::Pin,
     i2c::I2c,
-    peripherals::I2C1,
 };
+use static_cell::StaticCell;
 
 // Import task modules
 mod task_attitude_controller;
@@ -33,14 +37,15 @@ mod task_sbus_reader;
 mod task_state_estimator;
 
 // Import misc modules
-mod cfg;
 mod functions;
 mod imu;
+mod mag;
 mod sbus_cmd;
 mod drivers;
+mod config;
+mod mavlink;
 
 // Crate stack and executor for CORE1 (high priority attitude loop)
-
 #[cfg(feature = "dual-core")]
 mod core1 {
     use static_cell::StaticCell;
@@ -50,9 +55,30 @@ mod core1 {
     pub static EXECUTOR: StaticCell<Executor> = StaticCell::new();
 }
 
+static CONFIG: StaticCell<Configuration> = StaticCell::new();
+
 #[embassy_executor::main]
-async fn main(spawner: embassy_executor::Spawner) {
+async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
+
+    Timer::after(Duration::from_millis(1000)).await;
+
+    // Setup flash storage object
+    let mut flash = {
+        use embassy_rp::flash::{Flash,Async};
+        Flash::<_, Async, { config::definitions::FLASH_AMT }>::new(p.FLASH, p.DMA_CH2)
+    };
+
+    // Grab static immutable reference to loaded config
+    let config_ref = &*CONFIG.init(config::load_config(&mut flash));
+    println!("{}",Debug2Format(&config_ref));
+
+    // Spawn task to handle flash storage of configuration
+    spawner.must_spawn(config::config_master(
+        flash,
+        unwrap!(channels::IMU0_FEATURES.subscriber()),
+        unwrap!(channels::MAG0_FEATURES.subscriber()),
+    ));
 
     // Create quad-motor PIO runner
     let quad_pio_motors = {
@@ -62,11 +88,11 @@ async fn main(spawner: embassy_executor::Spawner) {
         DshotPio::<4, _>::new(
             p.PIO0,
             Pio0Irqs,
-            p.PIN_7,
-            p.PIN_13,
+            p.PIN_10,
+            p.PIN_11,
             p.PIN_12,
-            p.PIN_6,
-            cfg::PIO_DSHOT_SPEED.clk_div(),
+            p.PIN_13,
+            config_ref.dshot_speed.clk_div(),
         )
     };
 
@@ -83,19 +109,26 @@ async fn main(spawner: embassy_executor::Spawner) {
         UartRx::new(p.UART1, p.PIN_9, Uart1Irqs, p.DMA_CH0, sbus_uart_config)
     };
 
-    // Configure and setup shared async I2C communication for CORE1
-    let async_i2c_imu = {
-        use embassy_rp::{bind_interrupts, i2c};
-        bind_interrupts!(struct I2c1Irqs {I2C1_IRQ => i2c::InterruptHandler<I2C1>;});
-        let mut i2c_config = i2c::Config::default();
-        i2c_config.frequency = 400_000; // High speed i2c
-        I2c::new_async(p.I2C1, p.PIN_11, p.PIN_10, I2c1Irqs, i2c_config)
+    let uart_mavlink = {
+        use embassy_rp::{uart::*,bind_interrupts,peripherals::UART0};
+        bind_interrupts!(struct Uart0Irqs {UART0_IRQ => InterruptHandler<UART0>;});
+        Uart::new(p.UART0, p.PIN_0, p.PIN_1,Uart0Irqs, p.DMA_CH3, p.DMA_CH4, Config::default())
     };
 
+    // Configure and setup shared async I2C communication for CORE1
+    let async_i2c_imu = {
+        use embassy_rp::{bind_interrupts, i2c,peripherals::I2C0};
+        bind_interrupts!(struct I2c0Irqs {I2C0_IRQ => i2c::InterruptHandler<I2C0>;});
+        let mut i2c_config = i2c::Config::default();
+        i2c_config.frequency = 400_000; // High speed i2c
+        I2c::new_async(p.I2C0, p.PIN_17, p.PIN_16, I2c0Irqs, i2c_config)
+    };
+
+    // Configure ADC for reading battery state (not implemented)
     let (
-        adc,
-        battery_read_ch,
-        current_read_ch
+        _adc,
+        _battery_read_ch,
+        _current_read_ch
     ) = {
         use embassy_rp::{bind_interrupts,adc::{InterruptHandler,self},gpio::Pull};
         bind_interrupts!(struct AdcIrqs {ADC_IRQ_FIFO => InterruptHandler;});
@@ -108,29 +141,36 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     // Define high priority tasks
     let high_prio_tasks = |spawner:Spawner| {
-        use crate::imu::imu_driver;
-        spawner.must_spawn(imu_driver(
+        spawner.must_spawn(crate::imu::imu_master(
             spawner.clone(),
             async_i2c_imu,
+            config_ref,
+            unwrap!(channels::DO_GYRO_CAL.subscriber()),
             unwrap!(channels::IMU_READING.publisher()),
+            unwrap!(channels::IMU0_FEATURES.publisher()),
         ));
 
-        use crate::task_state_estimator::state_estimator;
-        spawner.must_spawn(state_estimator(
+        spawner.must_spawn(crate::mag::mag_master(
+            config_ref,
+            unwrap!(channels::DO_MAG_CAL.subscriber()),
+            unwrap!(channels::MAG_READING.publisher()),
+            unwrap!(channels::MAG0_FEATURES.publisher()),
+        ));
+
+        spawner.must_spawn(crate::task_state_estimator::state_estimator(
             unwrap!(channels::IMU_READING.subscriber()),
+            unwrap!(channels::MAG_READING.subscriber()),
             unwrap!(channels::ATTITUDE_SENSE.publisher()),
         ));
 
-        use crate::task_attitude_controller::attitude_controller;
-        spawner.must_spawn(attitude_controller(
+        spawner.must_spawn(crate::task_attitude_controller::attitude_controller(
             unwrap!(channels::ATTITUDE_SENSE.subscriber()),
             unwrap!(channels::ATTITUDE_INT_ENABLE.subscriber()),
             unwrap!(channels::ATTITUDE_STAB_MODE.subscriber()),
             unwrap!(channels::ATTITUDE_ACTUATE.publisher()),
         ));
 
-        use crate::task_motor_mixing::motor_mixing;
-        spawner.must_spawn(motor_mixing(
+        spawner.must_spawn(crate::task_motor_mixing::motor_mixing(
             unwrap!(channels::THRUST_ACTUATE.subscriber()),
             unwrap!(channels::ATTITUDE_ACTUATE.subscriber()),
             unwrap!(channels::MOTOR_ARM.subscriber()),
@@ -138,8 +178,7 @@ async fn main(spawner: embassy_executor::Spawner) {
             unwrap!(channels::MOTOR_SPEED.publisher()),
         ));
 
-        use crate::task_motor_governor::motor_governor;
-        spawner.must_spawn(motor_governor(
+        spawner.must_spawn(crate::task_motor_governor::motor_governor(
             unwrap!(channels::MOTOR_SPEED.subscriber()),
             unwrap!(channels::MOTOR_DIR.subscriber()),
             unwrap!(channels::MOTOR_STATE.publisher()),
@@ -156,14 +195,15 @@ async fn main(spawner: embassy_executor::Spawner) {
             executor1.run(|spawner_core1| { high_prio_tasks(spawner_core1) });
         });
     }
+
     // Spawning of high priority tasks on CORE0
     #[cfg(not(feature = "dual-core"))]
     high_prio_tasks(spawner);
 
     // Spawning of low priority tasks on CORE0
-
-    use crate::task_commander::commander;
-    spawner.must_spawn(commander(
+    spawner.must_spawn(crate::task_commander::commander(
+        spawner.clone(),
+        config_ref,
         unwrap!(channels::SBUS_CMD.subscriber()),
         unwrap!(channels::MOTOR_STATE.subscriber()),
         unwrap!(channels::ATTITUDE_SENSE.subscriber()),
@@ -175,29 +215,34 @@ async fn main(spawner: embassy_executor::Spawner) {
         unwrap!(channels::ATTITUDE_INT_ENABLE.publisher()),
         unwrap!(channels::ATTITUDE_STAB_MODE.publisher()),
         unwrap!(channels::MOTOR_SPIN_CHECK.publisher()),
+        unwrap!(channels::DO_GYRO_CAL.publisher()),
+        unwrap!(channels::DO_MAG_CAL.publisher())
     ));
 
-    use crate::task_sbus_reader::sbus_reader;
-    spawner.must_spawn(sbus_reader(
+    spawner.must_spawn(mavlink::mavlink_task(
+        spawner.clone(),
+        config_ref,
+        uart_mavlink,
+    ));
+
+    spawner.must_spawn(crate::task_sbus_reader::sbus_reader(
         uart_rx_sbus,
         unwrap!(channels::SBUS_CMD.publisher()),
     ));
 
-    use crate::task_blinker::blinker;
-    spawner.must_spawn(blinker(
+    spawner.must_spawn(crate::task_blinker::blinker(
         unwrap!(channels::BLINKER_MODE.subscriber()),
         p.PIN_25.degrade(),
     ));
 
-    use crate::task_flight_detector::flight_detector;
-    spawner.must_spawn(flight_detector(
+    spawner.must_spawn(crate::task_flight_detector::flight_detector(
         unwrap!(channels::MOTOR_STATE.subscriber()),
         unwrap!(channels::FLIGHT_MODE.publisher()),
     ));
 
-    use crate::task_printer::printer;
-    spawner.must_spawn(printer(
+    spawner.must_spawn(crate::task_printer::printer(
         unwrap!(channels::IMU_READING.subscriber()),
+        unwrap!(channels::MAG_READING.subscriber()),
         unwrap!(channels::ATTITUDE_SENSE.subscriber()),
         unwrap!(channels::ATTITUDE_ACTUATE.subscriber()),
         unwrap!(channels::ATTITUDE_STAB_MODE.subscriber()),

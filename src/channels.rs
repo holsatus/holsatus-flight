@@ -1,6 +1,6 @@
 /*
 
-    The communication channel type commonly used on this firmware is the Embassy PubSubChannel.
+    The communication channel type commonly used in Holsatus is the Embassy PubSubChannel.
 
     This module defines the channel types which interconnect all Embassy tasks, and act as the only
     method for tasks to communicate values and states. By using the PubSubChannel type with a single
@@ -8,7 +8,6 @@
     subscribers can access at will, by either awaiting a change in the value, or simply by checking.
 
 */
-
 
 use embassy_sync::{
     pubsub::{PubSubChannel,Publisher,Subscriber},
@@ -35,11 +34,22 @@ pub type Pub<T,const N: usize> = Publisher<'static,ChannelMutex,T,1,N,1>;
 pub type Sub<T,const N: usize> = Subscriber<'static,ChannelMutex,T,1,N,1>;
 pub type Ch<T,const N: usize> = PubSubChannel<ChannelMutex,T,1,N,1>;
 
+// Short-hand type alias for queued PubSubChannel
+pub type PubQ<T,const Q: usize,const N: usize> = Publisher<'static,ChannelMutex,T,Q,1,N>;
+pub type SubQ<T,const Q: usize,const N: usize> = Subscriber<'static,ChannelMutex,T,Q,1,N>;
+pub type ChQ<T,const Q: usize,const N: usize> = PubSubChannel<ChannelMutex,T,Q,1,N>;
+
 const IMU_READING_NUM: usize = 2;
 pub type ImuReadingType = crate::imu::Dof6ImuData<f32>;
 pub type ImuReadingPub = Pub<ImuReadingType,IMU_READING_NUM>;
 pub type ImuReadingSub = Sub<ImuReadingType,IMU_READING_NUM>;
 pub static IMU_READING : Ch<ImuReadingType,IMU_READING_NUM> = PubSubChannel::new();
+
+const MAG_READING_NUM: usize = 2;
+pub type MagReadingType = Vector3<f32>;
+pub type MagReadingPub = Pub<MagReadingType,MAG_READING_NUM>;
+pub type MagReadingSub = Sub<MagReadingType,MAG_READING_NUM>;
+pub static MAG_READING : Ch<MagReadingType,MAG_READING_NUM> = PubSubChannel::new();
 
 const ATTITUDE_SENSE_NUM: usize = 3;
 pub type AttitudeSenseType = (Vector3<f32>,Vector3<f32>);
@@ -84,7 +94,7 @@ pub type MotorSpinCheckSub = Sub<MotorSpinCheckType,MOTOR_SPIN_CHECK_NUM>;
 pub static MOTOR_SPIN_CHECK : Ch<MotorSpinCheckType,MOTOR_SPIN_CHECK_NUM> = PubSubChannel::new();
 
 const MOTOR_DIR_NUM: usize = 1;
-pub type MotorDirType = (bool,bool,bool,bool);
+pub type MotorDirType = [bool;4];
 pub type MotorDirPub = Pub<MotorDirType,MOTOR_DIR_NUM>;
 pub type MotorDirSub = Sub<MotorDirType,MOTOR_DIR_NUM>;
 pub static MOTOR_DIR : Ch<MotorDirType,MOTOR_DIR_NUM> = PubSubChannel::new();
@@ -119,12 +129,36 @@ pub type FlightModePub = Pub<FlightModeType,FLIGHT_MODE_NUM>;
 pub type FlightModeSub = Sub<FlightModeType,FLIGHT_MODE_NUM>;
 pub static FLIGHT_MODE : Ch<FlightModeType,FLIGHT_MODE_NUM> = PubSubChannel::new();
 
+const IMU0_FEATURES_NUM: usize = 1;
+pub type Imu0FeaturesType = crate::config::definitions::ImuFeatures;
+pub type Imu0FeaturesPub = Pub<Imu0FeaturesType,IMU0_FEATURES_NUM>;
+pub type Imu0FeaturesSub = Sub<Imu0FeaturesType,IMU0_FEATURES_NUM>;
+pub static IMU0_FEATURES : Ch<Imu0FeaturesType,IMU0_FEATURES_NUM> = PubSubChannel::new();
+
+const MAG0_FEATURES_NUM: usize = 1;
+pub type Mag0FeaturesType = crate::config::definitions::MagFeatures;
+pub type Mag0FeaturesPub = Pub<Mag0FeaturesType,MAG0_FEATURES_NUM>;
+pub type Mag0FeaturesSub = Sub<Mag0FeaturesType,MAG0_FEATURES_NUM>;
+pub static MAG0_FEATURES : Ch<Mag0FeaturesType,MAG0_FEATURES_NUM> = PubSubChannel::new();
+
+const DO_GYRO_CAL_NUM: usize = 1;
+pub type DoGyroCalType = bool;
+pub type DoGyroCalPub = Pub<DoGyroCalType,DO_GYRO_CAL_NUM>;
+pub type DoGyroCalSub = Sub<DoGyroCalType,DO_GYRO_CAL_NUM>;
+pub static DO_GYRO_CAL : Ch<DoGyroCalType,DO_GYRO_CAL_NUM> = PubSubChannel::new();
+
+const DO_MAG_CAL_NUM: usize = 1;
+pub type DoMagCalType = bool;
+pub type DoMagCalPub = Pub<DoMagCalType,DO_MAG_CAL_NUM>;
+pub type DoMagCalSub = Sub<DoMagCalType,DO_MAG_CAL_NUM>;
+pub static DO_MAG_CAL : Ch<DoMagCalType,DO_MAG_CAL_NUM> = PubSubChannel::new();
+
 /* DO NOT MODIFY PROTOTYPE
-const CH_PROTOTYPE_X_NUM: usize = 1;
-pub type ChPrototypeXType = bool;
-pub type ChPrototypeXPub = Pub<ChPrototypeXType,CH_PROTOTYPE_X_NUM>;
-pub type ChPrototypeXSub = Sub<ChPrototypeXType,CH_PROTOTYPE_X_NUM>;
-pub static CH_PROTOTYPE_X : Ch<ChPrototypeXType,CH_PROTOTYPE_X_NUM> = PubSubChannel::new();
+const PROTOTYPE_X_NUM: usize = 1;
+pub type PrototypeXType = bool;
+pub type PrototypeXPub = Pub<PrototypeXType,PROTOTYPE_X_NUM>;
+pub type PrototypeXSub = Sub<PrototypeXType,PROTOTYPE_X_NUM>;
+pub static PROTOTYPE_X : Ch<PrototypeXType,PROTOTYPE_X_NUM> = PubSubChannel::new();
 */
 
 pub fn assert_all_subscribers_used() {

@@ -1,4 +1,4 @@
-use crate::cfg;
+use crate::config;
 use crate::channels;
 use defmt::{info, warn, Format};
 use dshot_pio::{dshot_embassy_rp::DshotPio, DshotPioTrait};
@@ -40,7 +40,7 @@ pub async fn motor_governor(
         // Set motor directions for the four motors
         info!("{} : Setting motor directions", TASK_ID);
         for _i in 0..10 {
-            out_dshot_pio.reverse(cfg_reverse_motor.into());
+            out_dshot_pio.reverse(cfg_reverse_motor);
             Timer::after(Duration::from_millis(50)).await;
         }
 
@@ -49,7 +49,7 @@ pub async fn motor_governor(
 
         info!("{} : Entering main loop", TASK_ID);
         loop {
-            match with_timeout(cfg::MOTOR_GOV_TIMEOUT, s_motor_speed.next_message_pure()).await {
+            match with_timeout(config::definitions::MOTOR_GOV_TIMEOUT, s_motor_speed.next_message_pure()).await {
                 // Motor speed message received correctly
                 Ok(Some(speeds)) => {
                     out_dshot_pio.throttle_clamp(speeds);

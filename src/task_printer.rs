@@ -1,5 +1,5 @@
 use defmt::*;
-use embassy_time::{Ticker, Duration};
+use embassy_time::{Ticker, Duration, Instant};
 use crate::channels;
 
 static TASK_ID : &str = "[PRINTER]";
@@ -7,6 +7,7 @@ static TASK_ID : &str = "[PRINTER]";
 #[embassy_executor::task]
 pub async fn printer(
     mut sub_imu_reading: channels::ImuReadingSub,
+    mut sub_mag_reading: channels::MagReadingSub,
     mut sub_attitude_sense: channels::AttitudeSenseSub,
     mut sub_attitude_actuate: channels::AttitudeActuateSub,
     mut sub_attitude_stab_mode: channels::AttitudeStabModeSub,
@@ -19,6 +20,7 @@ pub async fn printer(
     let mut sub_icm_frequency = crate::drivers::task_icm20948_driver::FREQUENCY_SIG.subscriber().unwrap();
 
     let mut imu_reading:Option<channels::ImuReadingType> = sub_imu_reading.try_next_message_pure();
+    let mut mag_reading:Option<channels::MagReadingType> = sub_mag_reading.try_next_message_pure();
     let mut attitude_sense:Option<channels::AttitudeSenseType> = sub_attitude_sense.try_next_message_pure();
     let mut attitude_actuate:Option<channels::AttitudeActuateType> = sub_attitude_actuate.try_next_message_pure();
     let mut attitude_stab_mode:Option<channels::AttitudeStabModeType> = sub_attitude_stab_mode.try_next_message_pure();
@@ -32,7 +34,11 @@ pub async fn printer(
     info!("{}: Entering main loop",TASK_ID);
     loop {
 
+        // Contrary to other tasks, start out by waiting
+        ticker.next().await;
+
         if let Some(value) = sub_imu_reading.try_next_message_pure() {imu_reading = Some(value);}
+        if let Some(value) = sub_mag_reading.try_next_message_pure() {mag_reading = Some(value);}
         if let Some(value) = sub_attitude_sense.try_next_message_pure() {attitude_sense = Some(value);}
         if let Some(value) = sub_attitude_actuate.try_next_message_pure() {attitude_actuate = Some(value);}
         if let Some(value) = sub_attitude_stab_mode.try_next_message_pure() {attitude_stab_mode = Some(value);}
@@ -42,8 +48,9 @@ pub async fn printer(
         if let Some(value) = sub_con_frequency.try_next_message_pure() { con_frequency = Some(value); }
         if let Some(value) = sub_icm_frequency.try_next_message_pure() { icm_frequency = Some(value); }
 
-        debug!("\nImuData:{}\nAttitudeSens:{}\nAttitudeAct:{}\nAttitudeStab:{}\nThrustActuate:{}\nMotorState:{}\nFlightMode:{}\nConFrequency:{}\nIcmFrequency:{}",
+        debug!("\nImuData:{}\nMagData:{}\nAttitudeSens:{}\nAttitudeAct:{}\nAttitudeStab:{}\nThrustActuate:{}\nMotorState:{}\nFlightMode:{}\nConFrequency:{}\nIcmFrequency:{}\nTime:{}",
             Debug2Format(&imu_reading),
+            Debug2Format(&mag_reading),
             Debug2Format(&attitude_sense),
             Debug2Format(&attitude_actuate),
             Debug2Format(&attitude_stab_mode),
@@ -51,10 +58,8 @@ pub async fn printer(
             motor_state,
             flight_mode,
             con_frequency,
-            icm_frequency
+            icm_frequency,
+            Instant::now().as_millis(),
         );
-
-        ticker.next().await;
-
     }
 }

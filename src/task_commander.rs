@@ -1,17 +1,19 @@
 use core::f32::consts::PI;
 
 use defmt::*;
-use embassy_time::{Duration, Timer};
+use embassy_executor::Spawner;
+use embassy_sync::pubsub::PubSubChannel;
+use embassy_time::{Duration, Timer, Ticker, Instant};
 use nalgebra::Vector3;
 
 use crate::{
-    channels,
+    channels::{self, Sub, Ch, Pub},
     functions::{self, map, variant_eq},
-    sbus_cmd::TriSwitch,
+    sbus_cmd::{TriSwitch, SbusCmd},
     task_attitude_controller::StabilizationMode::*,
     task_blinker::BlinkerMode,
     task_flight_detector::FlightMode,
-    task_motor_governor::{ArmedState, DisarmReason, MotorState},
+    task_motor_governor::{ArmedState, DisarmReason, MotorState}, config::definitions::Configuration,
 };
 
 use bitflags::bitflags;
@@ -30,6 +32,8 @@ static TASK_ID: &str = "[COMMANDER]";
 
 #[embassy_executor::task]
 pub async fn commander(
+    spawner: Spawner,
+    config: &'static Configuration,
     mut s_sbus_cmd: channels::SbusCmdSub,
     mut s_motor_state: channels::MotorStateSub,
     mut s_attitude_sense: channels::AttitudeSenseSub,
@@ -41,8 +45,11 @@ pub async fn commander(
     p_attitude_int_reset: channels::AttitudeIntEnablePub,
     p_attitude_stab_mode: channels::AttitudeStabModePub,
     p_motor_spin_check: channels::MotorSpinCheckPub,
+    p_do_gyro_cal: channels::DoGyroCalPub,
+    p_do_mag_cal: channels::DoMagCalPub,
 ) {
-    p_motor_dir.publish_immediate((true, true, false, false));
+
+    p_motor_dir.publish_immediate(config.motor_dir);
     p_blinker_mode.publish_immediate(BlinkerMode::OnOffFast);
 
     let mut ref_yaw = 0.0;
@@ -52,6 +59,14 @@ pub async fn commander(
     
     let mut enable_con_int_flag = EnableIntFlag::empty();
 
+    let p_gesture_detector = unwrap!(GD_SBUS.publisher());
+    let mut s_gesture_detector = unwrap!(GESTURE_DETECTED.subscriber());
+
+    spawner.must_spawn(stick_gestures(
+        unwrap!(GD_SBUS.subscriber()),
+        unwrap!(GESTURE_DETECTED.publisher())
+    ));
+
     info!("{}: Entering main loop", TASK_ID);
     loop {
 
@@ -59,6 +74,8 @@ pub async fn commander(
         match s_sbus_cmd.next_message_pure().await {
             // Valid command received, send arming switch
             Ok(cmd) => {
+
+                p_gesture_detector.publish_immediate(cmd);
 
                 enable_con_int_flag.set(EnableIntFlag::SbusFailSafe, false);
 
@@ -141,6 +158,17 @@ pub async fn commander(
         if ! enable_con_int_flag.is_empty() {
             ref_yaw = s_attitude_sense.next_message_pure().await.0.z;
         }
+
+        // Detect stick gestures and do proper callback
+        if let Some(gesture) = s_gesture_detector.try_next_message_pure() {
+            if saved_flight_mode == FlightMode::Ground {
+                match gesture {
+                    StickGesture::BottomInward  => p_do_gyro_cal.publish_immediate(true),
+                    StickGesture::BottomRight   => p_do_mag_cal.publish_immediate(true),
+                    _ => {},
+                }
+            }
+        }
     }
 }
 
@@ -158,4 +186,69 @@ fn yaw_curve(input: f32) -> f32 {
 
 fn thrust_curve(input: f32) -> f32 {
     input
+}
+
+#[derive(Debug,PartialEq,Clone,Copy)]
+enum StickGesture {
+    BottomInward,
+    BottomOutward,
+    BottomRight,
+    BottomLeft,
+    None
+}
+
+///*
+/// This file should be used as a template for new tasks 
+///*/
+
+
+static GD_SBUS: Ch<SbusCmd,1> = PubSubChannel::new();
+static GESTURE_DETECTED: Ch<StickGesture,1> = PubSubChannel::new();
+
+static TASK2_ID : &str = "[STICK_GESTURES]";
+
+#[embassy_executor::task]
+pub async fn stick_gestures(
+    mut s_sbus_command: Sub<SbusCmd,1>,
+    p_ground_gestures: Pub<StickGesture,1>,
+) {
+
+    let mut ticker = Ticker::every(Duration::from_hz(10));
+    
+    let mut last_region = StickGesture::None;
+    let mut time_entered_region = Instant::now();
+    
+    info!("{}: Entering main loop",TASK2_ID);
+    loop {
+
+        let cmd = s_sbus_command.next_message_pure().await;
+
+        // Match stick regions to specific gestures
+        let region = match (cmd.thrust,cmd.yaw,cmd.pitch,cmd.roll) {
+            (t,y,p,r) if t <  0.1 && y < -0.8 && p < -0.8 && r < -0.8 => StickGesture::BottomLeft,
+            (t,y,p,r) if t <  0.1 && y >  0.8 && p < -0.8 && r < -0.8 => StickGesture::BottomInward,
+            (t,y,p,r) if t <  0.1 && y >  0.8 && p < -0.8 && r >  0.8 => StickGesture::BottomRight,
+            (t,y,p,r) if t <  0.1 && y < -0.8 && p < -0.8 && r >  0.8 => StickGesture::BottomOutward,
+            (_,_,_,_) => StickGesture::None
+        };
+
+        // Check if sticks have been in same region for at least 1 second
+        if region != StickGesture::None && region == last_region {
+            if Instant::now().duration_since(time_entered_region) > Duration::from_secs(1) {
+
+                info!("{}: Now doing gesture: {}",TASK2_ID,Debug2Format(&region));
+                
+                // Publish gesture
+                p_ground_gestures.publish_immediate(region);
+
+                // Wait for 2 seconds before recognizing new gestures
+                Timer::after(Duration::from_secs(2)).await;
+            }
+        } else {
+            time_entered_region = Instant::now()
+        }
+
+        last_region = region;
+        ticker.next().await;
+    }
 }

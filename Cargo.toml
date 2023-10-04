@@ -5,7 +5,7 @@ authors = ["Peter Krull"]
 version = "0.2.0"
 
 [features]
-default = ["icm20948-async"]
+default = ["icm20948-async","mag","dual-core"]
 icm20948-async = []
 dual-core = []
 mag = []
@@ -26,7 +26,7 @@ pio = "0.2"
 # self-developed (or forked)
 dshot-pio = { git = "https://github.com/peterkrull/dshot-pio", features = ["embassy-rp"]}
 icm20948-async = { git = "https://github.com/peterkrull/icm20948-async" }
-mag-calibrator-rs = { git = "https://github.com/peterkrull/mag-calibrator-rs" }
+mag-calibrator-rs = { path = "../mag-calibrator-rs" }
 pid-controller-rs = { git = "https://github.com/peterkrull/pid-controller-rs" }
 
 arraydeque = { version = "0.5", default-features = false }
@@ -34,9 +34,6 @@ arraydeque = { version = "0.5", default-features = false }
 # Forked
 sbus = { git = "https://github.com/peterkrull/sbus" }
 ahrs = { git = "https://github.com/peterkrull/ahrs-rs", default-features = false}
-
-# Attitude and estimation
-nmea0183 = { version = "0.3.0", default-features = false }
 
 bitflags = "2.4.0"
 
@@ -46,37 +43,18 @@ num-traits = { version = "0.2", default-features = false, features = ["libm"] }
 num = { version = "0.4.1", default-features = false, features = ["libm"] }
 
 # Async & Embassy related
+embassy-sync =          { git = "https://github.com/embassy-rs/embassy", features = ["defmt"]}
+embassy-time =          { git = "https://github.com/embassy-rs/embassy", features = ["defmt","defmt-timestamp-uptime"]}
+embassy-executor =      { git = "https://github.com/embassy-rs/embassy", features = ["defmt","nightly","integrated-timers","arch-cortex-m","executor-thread","executor-interrupt"]}
+embassy-rp =            { git = "https://github.com/embassy-rs/embassy", features = ["defmt","nightly","unstable-traits","unstable-pac","time-driver","critical-section-impl"]}
+embassy-futures =       { git = "https://github.com/embassy-rs/embassy" }
+embassy-embedded-hal =  { git = "https://github.com/embassy-rs/embassy" }
+
 embedded-hal-async = "1.0.0-rc.1"
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", features = [
-    "defmt",
-]}
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", features = [
-    "defmt",
-    "integrated-timers",
-    "arch-cortex-m",
-    "executor-thread",
-    "executor-interrupt",
-    "nightly"
-]}
-embassy-time = { git = "https://github.com/embassy-rs/embassy", features = [
-    "defmt",
-    "defmt-timestamp-uptime",
-]}
-embassy-rp = { git = "https://github.com/embassy-rs/embassy", features = [
-    "defmt",
-    "unstable-traits",
-    "nightly",
-    "unstable-pac",
-    "time-driver",
-    "critical-section-impl",
-]}
-embassy-futures = { git = "https://github.com/embassy-rs/embassy" }
-futures = { version = "0.3.26", default-features = false, features = [
-    "async-await",
-    "cfg-target-has-atomic",
-    "unstable",
-] }
-embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy" }
+
+mavlink = {version = "0.12", default-features = false, features = ["common","embedded"]}
+
+futures = { version = "0.3.26", default-features = false, features = ["async-await","cfg-target-has-atomic","unstable",]}
 
 static_cell = "1.0.0"
 
@@ -91,7 +69,7 @@ overflow-checks = true
 # cargo build/run --release
 [profile.release]
 codegen-units = 1
-debug = 2
+debug = false
 debug-assertions = false
 incremental = false
 lto = 'fat'
