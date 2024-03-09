@@ -1,103 +1,95 @@
-#![allow(incomplete_features)]
-#![feature(type_changing_struct_update)]
-#![feature(type_alias_impl_trait)]
-#![feature(generic_const_exprs)]
-#![feature(async_fn_in_trait)]
-#![feature(async_closure)]
 #![no_std]
 #![no_main]
 
-use config::definitions::Configuration;
 use defmt::*;
 use defmt_rtt as _;
-use embassy_executor::Spawner;
 use embassy_futures as _;
-use embassy_time::{Timer, Duration};
 use panic_probe as _;
 
-// Load module for cross-task channels
-mod channels;
-
-// Static i2c mutex for shared-bus functionality
-use embassy_rp::{
-    gpio::Pin,
-    i2c::I2c,
-};
+use embassy_rp::config::Config;
 use static_cell::StaticCell;
 
-// Import task modules
-mod task_attitude_controller;
-mod task_blinker;
-mod task_commander;
-mod task_flight_detector;
-mod task_motor_governor;
-mod task_motor_mixing;
-mod task_printer;
-mod task_sbus_reader;
-mod task_state_estimator;
+// Static reference to the SPI0 bus
+use embassy_rp::{
+    peripherals::SPI0,
+    spi::{Async, Spi},
+};
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
+static SPI_BUS: StaticCell<Mutex<ThreadModeRawMutex, Spi<SPI0, Async>>> = StaticCell::new();
 
-// Import misc modules
-mod functions;
-mod imu;
-mod mag;
-mod sbus_cmd;
-mod drivers;
-mod config;
-mod mavlink;
-
-// Crate stack and executor for CORE1 (high priority attitude loop)
-#[cfg(feature = "dual-core")]
-mod core1 {
-    use static_cell::StaticCell;
-    use embassy_executor::Executor;
-    use embassy_rp::multicore::Stack;
-    pub static mut STACK: Stack<{ 1024 * 16 }> = Stack::new();
-    pub static EXECUTOR: StaticCell<Executor> = StaticCell::new();
+// Suggested fix to prevent deadlock after flashing on the RP2040
+#[cortex_m_rt::pre_init]
+unsafe fn pre_init() {
+    // Reset spinlock 31
+    core::arch::asm!(
+        "
+        ldr r0, =1
+        ldr r1, =0xd000017c
+        str r0, [r1]
+    "
+    );
 }
 
-static CONFIG: StaticCell<Configuration> = StaticCell::new();
+#[cfg(feature = "overclock")]
+trait Overclock<T> {
+    fn overclock() -> T;
+}
+
+#[cfg(feature = "overclock")]
+impl Overclock<embassy_rp::config::Config> for embassy_rp::config::Config {
+    fn overclock() -> Self {
+        let mut config = Self::default();
+        if let Some(xosc) = config.clocks.xosc.as_mut() {
+            if let Some(sys_pll) = xosc.sys_pll.as_mut() {
+                sys_pll.post_div2 = 1;
+            }
+        }
+        config
+    }
+}
 
 #[embassy_executor::main]
-async fn main(spawner: Spawner) {
-    let p = embassy_rp::init(Default::default());
-
-    Timer::after(Duration::from_millis(1000)).await;
-
-    // Setup flash storage object
-    let mut flash = {
-        use embassy_rp::flash::{Flash,Async};
-        Flash::<_, Async, { config::definitions::FLASH_AMT }>::new(p.FLASH, p.DMA_CH2)
+async fn main(spawner: embassy_executor::Spawner) {
+    // Initialize the RP2040 with default configuration
+    #[cfg(not(feature = "overclock"))]
+    let p = {
+        info!("Initializing RP2040 with default configuration");
+        embassy_rp::init(Config::default())
     };
 
-    // Grab static immutable reference to loaded config
-    let config_ref = &*CONFIG.init(config::load_config(&mut flash));
-    println!("{}",Debug2Format(&config_ref));
+    // Initialize the RP2040 with 2x overclock
+    #[cfg(feature = "overclock")]
+    let p = {
+        info!("Initializing RP2040 with 2x overclock");
+        embassy_rp::init(Config::overclock())
+    };
 
-    // Spawn task to handle flash storage of configuration
-    spawner.must_spawn(config::config_master(
-        flash,
-        unwrap!(channels::IMU0_FEATURES.subscriber()),
-        unwrap!(channels::MAG0_FEATURES.subscriber()),
-    ));
+    info!("[MAIN]: Starting main task, 2 second delay...");
+    use embassy_time::{Duration, Timer};
+    Timer::after(Duration::from_secs(2)).await;
+
+    // Setup flash storage object
+    let flash = {
+        use embassy_rp::flash::{Async, Flash};
+        Flash::<_, Async, { holsatus_flight::config::FLASH_AMT }>::new(p.FLASH, p.DMA_CH0)
+    };
+
+    // Load the configuration from flash and initialize the static reference
+    spawner.must_spawn(holsatus_flight::t_config_master::config_master(flash));
+    let config = holsatus_flight::messaging::STATIC_CONFIG_REF.spin_get().await;
 
     // Create quad-motor PIO runner
-    let quad_pio_motors = {
-        use dshot_pio::dshot_embassy_rp::DshotPio;
+    let driver_dshot_pio = {
+        use holsatus_flight::drivers::rp2040::dshot_pio::DshotPio;
         use embassy_rp::{bind_interrupts, peripherals::PIO0, pio::*};
         bind_interrupts!(struct Pio0Irqs {PIO0_IRQ_0 => InterruptHandler<PIO0>;});
-        DshotPio::<4, _>::new(
-            p.PIO0,
-            Pio0Irqs,
-            p.PIN_10,
-            p.PIN_11,
-            p.PIN_12,
-            p.PIN_13,
-            config_ref.dshot_speed.clk_div(),
+        DshotPio::<4, _>::new(p.PIO0, Pio0Irqs, p.PIN_10, p.PIN_11, p.PIN_12, p.PIN_13, config.dshot_speed.clk_div(),
         )
     };
 
     // Configure and setup sbus compatible uart RX connection
     let uart_rx_sbus = {
+        use embassy_rp::uart::{Config, DataBits, Parity, StopBits};
         use embassy_rp::{bind_interrupts, peripherals::UART1, uart::*};
         bind_interrupts!(struct Uart1Irqs {UART1_IRQ => InterruptHandler<UART1>;});
         let mut sbus_uart_config = Config::default();
@@ -106,150 +98,69 @@ async fn main(spawner: Spawner) {
         sbus_uart_config.stop_bits = StopBits::STOP2;
         sbus_uart_config.parity = Parity::ParityEven;
         sbus_uart_config.invert_rx = true;
-        UartRx::new(p.UART1, p.PIN_9, Uart1Irqs, p.DMA_CH0, sbus_uart_config)
+        UartRx::<_, Async>::new(p.UART1, p.PIN_9, Uart1Irqs, p.DMA_CH1, sbus_uart_config)
     };
 
-    let uart_mavlink = {
-        use embassy_rp::{uart::*,bind_interrupts,peripherals::UART0};
+    // Configure and setup Mavlink-compatible UART connection
+    let _uart_mavlink = {
+        use embassy_rp::{bind_interrupts, peripherals::UART0, uart::*};
         bind_interrupts!(struct Uart0Irqs {UART0_IRQ => InterruptHandler<UART0>;});
-        Uart::new(p.UART0, p.PIN_0, p.PIN_1,Uart0Irqs, p.DMA_CH3, p.DMA_CH4, Config::default())
+        let mut uart_config = Config::default();
+        uart_config.baudrate = 1_000_000;
+        Uart::new(p.UART0, p.PIN_0, p.PIN_1, Uart0Irqs, p.DMA_CH2, p.DMA_CH3, uart_config)
     };
 
-    // Configure and setup shared async I2C communication for CORE1
-    let async_i2c_imu = {
-        use embassy_rp::{bind_interrupts, i2c,peripherals::I2C0};
+    // Configure and setup shared async I2C communication for CORE0
+    let i2c_async = {
+        use embassy_rp::{bind_interrupts, i2c, peripherals::I2C0};
         bind_interrupts!(struct I2c0Irqs {I2C0_IRQ => i2c::InterruptHandler<I2C0>;});
         let mut i2c_config = i2c::Config::default();
         i2c_config.frequency = 400_000; // High speed i2c
-        I2c::new_async(p.I2C0, p.PIN_17, p.PIN_16, I2c0Irqs, i2c_config)
+        i2c::I2c::new_async(p.I2C0, p.PIN_17, p.PIN_16, I2c0Irqs, i2c_config)
     };
 
-    // Configure ADC for reading battery state (not implemented)
-    let (
-        _adc,
-        _battery_read_ch,
-        _current_read_ch
-    ) = {
-        use embassy_rp::{bind_interrupts,adc::{InterruptHandler,self},gpio::Pull};
-        bind_interrupts!(struct AdcIrqs {ADC_IRQ_FIFO => InterruptHandler;});
-        (
-            adc::Adc::new(p.ADC, AdcIrqs, Default::default()),
-            adc::Channel::new_pin(p.PIN_26, Pull::None),
-            adc::Channel::new_pin(p.PIN_27, Pull::None)
-        )
+    // Configure and setup shared async SPI communication for CORE0
+    let _async_spi_imu = {
+        let mut spi_config = embassy_rp::spi::Config::default();
+        spi_config.frequency = 7_000_000; // High speed spi
+        let spi_bus = embassy_rp::spi::Spi::new(
+            p.SPI0, p.PIN_2, p.PIN_3, p.PIN_4, p.DMA_CH4, p.DMA_CH5, spi_config,
+        );
+        let static_spi_bus_ref = SPI_BUS.init(Mutex::new(spi_bus));
+        let cs_pin = embassy_rp::gpio::Output::new(p.PIN_15, embassy_rp::gpio::Level::High);
+        embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice::new(static_spi_bus_ref, cs_pin)
     };
 
-    // Define high priority tasks
-    let high_prio_tasks = |spawner:Spawner| {
-        spawner.must_spawn(crate::imu::imu_master(
-            spawner.clone(),
-            async_i2c_imu,
-            config_ref,
-            unwrap!(channels::DO_GYRO_CAL.subscriber()),
-            unwrap!(channels::IMU_READING.publisher()),
-            unwrap!(channels::IMU0_FEATURES.publisher()),
-        ));
-
-        spawner.must_spawn(crate::mag::mag_master(
-            config_ref,
-            unwrap!(channels::DO_MAG_CAL.subscriber()),
-            unwrap!(channels::MAG_READING.publisher()),
-            unwrap!(channels::MAG0_FEATURES.publisher()),
-        ));
-
-        spawner.must_spawn(crate::task_state_estimator::state_estimator(
-            unwrap!(channels::IMU_READING.subscriber()),
-            unwrap!(channels::MAG_READING.subscriber()),
-            unwrap!(channels::ATTITUDE_SENSE.publisher()),
-        ));
-
-        spawner.must_spawn(crate::task_attitude_controller::attitude_controller(
-            unwrap!(channels::ATTITUDE_SENSE.subscriber()),
-            unwrap!(channels::ATTITUDE_INT_ENABLE.subscriber()),
-            unwrap!(channels::ATTITUDE_STAB_MODE.subscriber()),
-            unwrap!(channels::ATTITUDE_ACTUATE.publisher()),
-        ));
-
-        spawner.must_spawn(crate::task_motor_mixing::motor_mixing(
-            unwrap!(channels::THRUST_ACTUATE.subscriber()),
-            unwrap!(channels::ATTITUDE_ACTUATE.subscriber()),
-            unwrap!(channels::MOTOR_ARM.subscriber()),
-            unwrap!(channels::MOTOR_SPIN_CHECK.subscriber()),
-            unwrap!(channels::MOTOR_SPEED.publisher()),
-        ));
-
-        spawner.must_spawn(crate::task_motor_governor::motor_governor(
-            unwrap!(channels::MOTOR_SPEED.subscriber()),
-            unwrap!(channels::MOTOR_DIR.subscriber()),
-            unwrap!(channels::MOTOR_STATE.publisher()),
-            quad_pio_motors,
-        ));
-    };
-
-    // Spawning of high priority tasks on CORE1
-    #[cfg(feature = "dual-core")] {
-        use embassy_rp::multicore::spawn_core1;
-        use embassy_executor::Executor;
-        spawn_core1(p.CORE1, unsafe { &mut core1::STACK }, move || {
-            let executor1 = core1::EXECUTOR.init(Executor::new());
-            executor1.run(|spawner_core1| { high_prio_tasks(spawner_core1) });
-        });
-    }
-
-    // Spawning of high priority tasks on CORE0
-    #[cfg(not(feature = "dual-core"))]
-    high_prio_tasks(spawner);
-
-    // Spawning of low priority tasks on CORE0
-    spawner.must_spawn(crate::task_commander::commander(
-        spawner.clone(),
-        config_ref,
-        unwrap!(channels::SBUS_CMD.subscriber()),
-        unwrap!(channels::MOTOR_STATE.subscriber()),
-        unwrap!(channels::ATTITUDE_SENSE.subscriber()),
-        unwrap!(channels::FLIGHT_MODE.subscriber()),
-        unwrap!(channels::MOTOR_ARM.publisher()),
-        unwrap!(channels::MOTOR_DIR.publisher()),
-        unwrap!(channels::THRUST_ACTUATE.publisher()),
-        unwrap!(channels::BLINKER_MODE.publisher()),
-        unwrap!(channels::ATTITUDE_INT_ENABLE.publisher()),
-        unwrap!(channels::ATTITUDE_STAB_MODE.publisher()),
-        unwrap!(channels::MOTOR_SPIN_CHECK.publisher()),
-        unwrap!(channels::DO_GYRO_CAL.publisher()),
-        unwrap!(channels::DO_MAG_CAL.publisher())
-    ));
-
-    spawner.must_spawn(mavlink::mavlink_task(
-        spawner.clone(),
-        config_ref,
-        uart_mavlink,
-    ));
-
-    spawner.must_spawn(crate::task_sbus_reader::sbus_reader(
+    // Initilize the core0 main task (sensors, control loop, remote control, etc.)
+    spawner.must_spawn(holsatus_flight::main_core0::main_core0(
+        config,
+        i2c_async,
         uart_rx_sbus,
-        unwrap!(channels::SBUS_CMD.publisher()),
+        driver_dshot_pio,
     ));
 
-    spawner.must_spawn(crate::task_blinker::blinker(
-        unwrap!(channels::BLINKER_MODE.subscriber()),
-        p.PIN_25.degrade(),
-    ));
+    use holsatus_flight::common::types::VehicleState;
+    holsatus_flight::messaging::VEHICLE_STATE.sender().send(VehicleState::Boot);
 
-    spawner.must_spawn(crate::task_flight_detector::flight_detector(
-        unwrap!(channels::MOTOR_STATE.subscriber()),
-        unwrap!(channels::FLIGHT_MODE.publisher()),
-    ));
+    // Initilize the core1 main task (telemetry, some estimators, lower-priority tasks, etc.)
 
-    spawner.must_spawn(crate::task_printer::printer(
-        unwrap!(channels::IMU_READING.subscriber()),
-        unwrap!(channels::MAG_READING.subscriber()),
-        unwrap!(channels::ATTITUDE_SENSE.subscriber()),
-        unwrap!(channels::ATTITUDE_ACTUATE.subscriber()),
-        unwrap!(channels::ATTITUDE_STAB_MODE.subscriber()),
-        unwrap!(channels::THRUST_ACTUATE.subscriber()),
-        unwrap!(channels::MOTOR_STATE.subscriber()),
-        unwrap!(channels::FLIGHT_MODE.subscriber()),
-    ));
+    // // Allocate room for the core1 stack and executor
+    // use embassy_rp::multicore::Stack;
+    // static CORE1_STACK: StaticCell<Stack<{ 1024 * 4 }>> = StaticCell::new();
+    // static CORE1_EXECUTOR: StaticCell<embassy_executor::Executor> = StaticCell::new();
 
-    channels::assert_all_subscribers_used()
+    // use embassy_executor::Executor;
+    // use embassy_rp::multicore::spawn_core1;
+    // let stack = CORE1_STACK.init(Stack::new());
+    // spawn_core1(p.CORE1, stack, move || {
+    //     let executor1 = CORE1_EXECUTOR.init(Executor::new());
+    //     executor1.run(|spawner| {
+    //         spawner.must_spawn(holsatus_flight::main_core1::main_core1(
+    //             spawner,
+    //             embassy_rp::gpio::Pin::degrade(p.PIN_25),
+    //             uart_mavlink,
+    //             config,
+    //         ))
+    //     });
+    // });
 }

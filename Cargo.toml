@@ -5,65 +5,64 @@ authors = ["Peter Krull"]
 version = "0.2.0"
 
 [features]
-default = ["icm20948-async","mag","dual-core"]
-icm20948-async = []
-dual-core = []
-mag = []
+default = ["overclock", "rp2040"]
+overclock = []
+rp2040 = []
 
 [dependencies]
 cortex-m = "0.7.7"
 cortex-m-rt = "0.7.3"
-embedded-hal = { version = "0.2.7", features = ["unproven"] }
+
+embedded-hal = "1.0.0"
+embedded-hal-async = "1.0.0"
 
 defmt = "0.3.4"
 defmt-rtt = "0.4.0"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 
-# RP2040-specific
+# RP2040 PIO
 pio-proc = "0.2"
 pio = "0.2"
 
 # self-developed (or forked)
-dshot-pio = { git = "https://github.com/peterkrull/dshot-pio", features = ["embassy-rp"]}
-icm20948-async = { git = "https://github.com/peterkrull/icm20948-async" }
-mag-calibrator-rs = { path = "../mag-calibrator-rs" }
-pid-controller-rs = { git = "https://github.com/peterkrull/pid-controller-rs" }
+icm20948-async = { git = "https://github.com/peterkrull/icm20948-async"}
+mag-calibrator-rs = { git = "https://github.com/peterkrull/mag-calibrator-rs" }
+dshot-encoder = { git = "https://github.com/peterkrull/dshot-encoder" }
 
 arraydeque = { version = "0.5", default-features = false }
 
 # Forked
 sbus = { git = "https://github.com/peterkrull/sbus" }
-ahrs = { git = "https://github.com/peterkrull/ahrs-rs", default-features = false}
+ahrs = { git = "https://github.com/peterkrull/ahrs-rs", default-features = false }
 
-bitflags = "2.4.0"
-
-# Linear algebra
+# Linear algebra / numbers
 nalgebra = { version = "0.32", default-features = false, features = ["libm"] }
 num-traits = { version = "0.2", default-features = false, features = ["libm"] }
-num = { version = "0.4.1", default-features = false, features = ["libm"] }
 
-# Async & Embassy related
-embassy-sync =          { git = "https://github.com/embassy-rs/embassy", features = ["defmt"]}
-embassy-time =          { git = "https://github.com/embassy-rs/embassy", features = ["defmt","defmt-timestamp-uptime"]}
-embassy-executor =      { git = "https://github.com/embassy-rs/embassy", features = ["defmt","nightly","integrated-timers","arch-cortex-m","executor-thread","executor-interrupt"]}
-embassy-rp =            { git = "https://github.com/embassy-rs/embassy", features = ["defmt","nightly","unstable-traits","unstable-pac","time-driver","critical-section-impl"]}
-embassy-futures =       { git = "https://github.com/embassy-rs/embassy" }
-embassy-embedded-hal =  { git = "https://github.com/embassy-rs/embassy" }
+# Embassy (Forked version for UartRx read_fifo_on_timeout and Watch channel)
+embassy-sync =          { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt"]}
+embassy-time =          { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt","defmt-timestamp-uptime"]}
+embassy-executor =      { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt","integrated-timers","arch-cortex-m","executor-thread","executor-interrupt","task-arena-size-32768"]}
+embassy-rp =            { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt","unstable-pac","time-driver","critical-section-impl","intrinsics","rom-v2-intrinsics"]}
+embassy-futures =       { git = "https://github.com/peterkrull/embassy", branch = "holsatus" }
+embassy-embedded-hal =  { git = "https://github.com/peterkrull/embassy", branch = "holsatus" }
 
-embedded-hal-async = "1.0.0-rc.1"
+mavlink = { git = "https://github.com/peterkrull/rust-mavlink", branch = "async-holsatus", default-features = false, features = ["common","embedded"] }
 
-mavlink = {version = "0.12", default-features = false, features = ["common","embedded"]}
+futures = { version = "0.3", default-features = false, features = ["async-await","cfg-target-has-atomic","unstable"]}
+critical-section = "1.1"
 
-futures = { version = "0.3.26", default-features = false, features = ["async-await","cfg-target-has-atomic","unstable",]}
-
-static_cell = "1.0.0"
+static_cell = "2.0.0"
+portable-atomic = { version = "1.6.0", features = ["critical-section"] }
+ublox = { version = "0.4.5", default-features = false }
+bitflags = { version = "2.4.2", default-features = false}
 
 [profile.dev]
 codegen-units = 1
 debug = 2
 debug-assertions = true
 incremental = false
-opt-level = 3
+opt-level = 0
 overflow-checks = true
 
 # cargo build/run --release
