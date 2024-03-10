@@ -1,29 +1,19 @@
 use embassy_time::{with_timeout, Duration, Ticker};
 use nalgebra::{SMatrix, Vector3};
 
-use crate::{config::{Calibration, Configuration}, messaging as msg, sensors::imu::types::ImuData6Dof};
+use crate::{config::Calibration, messaging as msg, sensors::imu::types::ImuData6Dof};
 
 /// Routine to calibrate gyroscopes, by calculating their bias.
 #[embassy_executor::task]
-pub async fn gyr_calibration(
-    config: &'static Configuration
-) -> ! {
+pub async fn gyr_calibration() -> ! {
 
     // Input channels
     let mut rcv_imu_sensor_array: [_; crate::N_IMU] = core::array::from_fn(|i| msg::IMU_SENSOR[i].receiver().unwrap());
-    let mut rcv_start_gyr_calib = msg::RC_START_GYR_CALIB.receiver().unwrap();
+    let mut rcv_start_gyr_calib = msg::CMD_START_GYR_CALIB.receiver().unwrap();
 
     // Output channels
-    let snd_gyr_calib = msg::GYR_CALIBRATIONS.sender();
+    let snd_imu_config = msg::CFG_IMU_CONFIG.sender();
     let snd_gyr_calibrating = msg::GYR_CALIBRATING.sender();
-
-    // Publish existing calibration data
-    snd_gyr_calib.send(core::array::from_fn(|i|{
-        match config.imu_cfg[i].as_ref() {
-            Some(cfg) => cfg.gyr_cal,
-            None => None,
-        }
-    }));
     
     'infinite: loop {
         
@@ -34,12 +24,12 @@ pub async fn gyr_calibration(
         defmt::info!("[GYR CALIB]: Starting bias calibration on {} gyroscopes", crate::N_IMU);
 
         // Array of calibrator instances
-        let mut sensor_calibrator = [GyrCalibrator::<400>::new(); crate::N_IMU];
+        let mut sensor_calibrator = [GyrCalibrator::<200>::new(); crate::N_IMU];
         
         let mut timeout_count = 0;
         let mut done_count = 0;
 
-        let mut ticker = Ticker::every(Duration::from_hz(200));
+        let mut ticker = Ticker::every(Duration::from_hz(50));
         
         // Calibration loop
         'calibration: loop {
@@ -88,31 +78,36 @@ pub async fn gyr_calibration(
         }
 
         // Get existing calibration data or create new
-        let mut calibrations = snd_gyr_calib.try_get().unwrap_or([None; crate::N_IMU]);
+        let mut calibrations = snd_imu_config.try_get().unwrap_or([None; crate::N_IMU]);
 
         // Publish result of each sensor if calibration was successful
-        for (id, (prev_cal, cal)) in calibrations.iter_mut().zip(sensor_calibrator.iter()).enumerate() {
-            match cal.acc_variance() {
-                Some(var) if var < 0.002 =>  {
-                    defmt::info!("[GYR CALIB]: Sensor {} calibration is valid: Var({})", id, var);
+        for (id, (opt_config, calibrator)) in calibrations.iter_mut().zip(sensor_calibrator.iter()).enumerate() {
+            
+            match (calibrator.acc_variance(), opt_config) {
 
+                // If calibration was successful, update the calibration data
+                (Some(var), Some(config)) if var < 0.002 => {
+                    defmt::info!("[GYR CALIB]: Sensor {} calibration is valid: Var({})", id, var);
+        
                     // Set calibration offset/bias for sensor
-                    if let Some(inner) = prev_cal.as_mut() {
-                        inner.offset = cal.get_bias();
+                    if let Some(gyr_cal) = config.gyr_cal.as_mut() {
+                        gyr_cal.offset = calibrator.get_bias();
                     } else {
-                        *prev_cal = Some(Calibration{
+                        config.gyr_cal = Some(Calibration{
                             scale: Vector3::new(1.0, 1.0, 1.0),
-                            offset: cal.get_bias(),
+                            offset: calibrator.get_bias(),
                         });
                     }
                 },
-                Some(var) => defmt::error!("[GYR CALIB]: Sensor {} had too high variance: Var({:?})", id, var),
-                None if cal.has_timeout() => defmt::error!("[GYR CALIB]: Sensor {} timed out.", id),
+
+                // If calibration was not successful, log the reason
+                (Some(var), Some(_)) => defmt::error!("[GYR CALIB]: Sensor {} had too high variance: Var({:?})", id, var),
+                (_, Some(_)) if calibrator.has_timeout() => defmt::error!("[GYR CALIB]: Sensor {} timed out.", id),
                 _ => defmt::error!("[GYR CALIB]: Sensor {} could not be calibrated.", id),
             }
         }
 
-        snd_gyr_calib.send(calibrations);
+        snd_imu_config.send(calibrations);
 
         // Ensure any recent request to calibrate is marked as seen
         let _ = rcv_start_gyr_calib.try_get();

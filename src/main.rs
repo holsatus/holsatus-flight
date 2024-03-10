@@ -76,14 +76,14 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     // Load the configuration from flash and initialize the static reference
     spawner.must_spawn(holsatus_flight::t_config_master::config_master(flash));
-    let config = holsatus_flight::messaging::STATIC_CONFIG_REF.spin_get().await;
 
     // Create quad-motor PIO runner
     let driver_dshot_pio = {
         use holsatus_flight::drivers::rp2040::dshot_pio::DshotPio;
         use embassy_rp::{bind_interrupts, peripherals::PIO0, pio::*};
         bind_interrupts!(struct Pio0Irqs {PIO0_IRQ_0 => InterruptHandler<PIO0>;});
-        DshotPio::<4, _>::new(p.PIO0, Pio0Irqs, p.PIN_10, p.PIN_11, p.PIN_12, p.PIN_13, config.dshot_speed.clk_div(),
+        let speed = holsatus_flight::messaging::CFG_DSHOT_SPEED.spin_get().await;
+        DshotPio::<4, _>::new(p.PIO0, Pio0Irqs, p.PIN_10, p.PIN_11, p.PIN_12, p.PIN_13, speed.clk_div(),
         )
     };
 
@@ -133,7 +133,6 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     // Initilize the core0 main task (sensors, control loop, remote control, etc.)
     spawner.must_spawn(holsatus_flight::main_core0::main_core0(
-        config,
         i2c_async,
         uart_rx_sbus,
         driver_dshot_pio,

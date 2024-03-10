@@ -15,11 +15,8 @@ pub async fn attitude_estimator() -> ! {
     let snd_attitude_quat = msg::ATTITUDE_QUAT.sender();
     let snd_attitude_euler = msg::ATTITUDE_EULER.sender();
 
-    // Gat static reference to config
-    let config = msg::STATIC_CONFIG_REF.receiver().unwrap().changed().await;
-
     // Period between IMU samples as seconds
-    let imu_period = 1.0 / config.imu_freq as f32;
+    let imu_period = 1.0 / msg::CFG_LOOP_FREQUENCY.spin_get().await as f32;
 
     // Setup AHRS filter for attitude estimation
     let mut ahrs = Madgwick::new(imu_period, 0.01);

@@ -8,26 +8,26 @@ use crate::messaging as msg;
 pub async fn attitude_controller() -> ! {
     // Input messages
     let mut rcv_imu_data = msg::IMU_DATA.receiver().unwrap();
-    let mut rcv_attitude_setpoint = msg::ATTITUDE_SETPOINT.receiver().unwrap();
+    let mut rcv_attitude_setpoint = msg::CMD_ATTITUDE_SETPOINT.receiver().unwrap();
     let mut rcv_attitude_euler = msg::ATTITUDE_EULER.receiver().unwrap();
-    let mut rcv_en_integral = msg::EN_INTEGRAL.receiver().unwrap();
+    let mut rcv_en_integral = msg::CMD_EN_INTEGRAL.receiver().unwrap();
 
     // Output messages
     let snd_controller_output = msg::CONTROLLER_OUTPUT.sender();
 
     // Get static reference to config
-    let config = msg::STATIC_CONFIG_REF.spin_get().await;
+    let pids = msg::CFG_ATTITUDE_PIDS.spin_get().await;
 
     // Period between IMU samples as seconds
-    let imu_period = 1.0 / config.imu_freq as f32;
+    let imu_period = 1.0 / msg::CFG_LOOP_FREQUENCY.spin_get().await as f32;
 
     // Setup PID controllers for attitude (rate and angle) control
-    let mut pid_roll_outer: _ = Pid::with_config(config.pids.roll_outer, imu_period);
-    let mut pid_roll_inner: _ = Pid::with_config(config.pids.roll_inner, imu_period);
-    let mut pid_pitch_outer: _ = Pid::with_config(config.pids.pitch_outer, imu_period);
-    let mut pid_pitch_inner: _ = Pid::with_config(config.pids.pitch_inner, imu_period);
-    let mut pid_yaw_outer: _ = Pid::with_config(config.pids.yaw_outer, imu_period);
-    let mut pid_yaw_inner: _ = Pid::with_config(config.pids.yaw_inner, imu_period);
+    let mut pid_roll_outer: _ = Pid::with_config(pids.roll_outer, imu_period);
+    let mut pid_roll_inner: _ = Pid::with_config(pids.roll_inner, imu_period);
+    let mut pid_pitch_outer: _ = Pid::with_config(pids.pitch_outer, imu_period);
+    let mut pid_pitch_inner: _ = Pid::with_config(pids.pitch_inner, imu_period);
+    let mut pid_yaw_outer: _ = Pid::with_config(pids.yaw_outer, imu_period);
+    let mut pid_yaw_inner: _ = Pid::with_config(pids.yaw_inner, imu_period);
 
     // Start with integral controllers disabled
     pid_roll_outer.enable_integral(false);

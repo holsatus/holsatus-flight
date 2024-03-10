@@ -33,15 +33,15 @@ pub const RP2040_DEV_CONFIG: Configuration = Configuration {
     header: CFG_HEADER,
     imu_cfg: [Some(ImuConfig {
             acc_cal: Some(Calibration {
-                scale: Vector3::new(0.99470156, 0.99557877, 0.987214),
-                offset: Vector3::new(0.09380102, -0.24849701, -0.250834)
+                scale: Vector3::new(0.9941048, 0.9951916, 0.987686),
+                offset: Vector3::new(-0.08339453, -0.21677876, 0.27320194)
             }),
         gyr_cal: Some(Calibration {
             scale: Vector3::new(1.0, 1.0, 1.0),
-            offset: Vector3::new(0.013425202, 0.02018836, -0.0020406505)
+            offset: Vector3::new(-0.01429255, 0.020241564, 0.0021124864)
         }),
         imu_ext: Some(Extrinsics {
-            rotation: rotation_matrices::Rotation::RotY180,
+            rotation: rotation_matrices::Rotation::RotX180,
             translation: VEC_ZEROS,
         }),
         imu_type: Some(ImuTypeConf::Icm20948(icm20948_async::Icm20948Config {
@@ -135,8 +135,8 @@ pub const RP2040_DEV_CONFIG: Configuration = Configuration {
     },
     mixing_matrix: MotorMixing::QuadX,
     radio_timeout: Duration::from_millis(200),
-    motor_gov_timeout: Duration::from_millis(100),
-    tx_map: crate::transmitter::tx_12_profiles::TX12_DEFAULT_MAP,
+    dshot_timeout: Duration::from_millis(100),
+    tx_map: crate::transmitter::tx_12_profiles::TX12_8CH_DEFAULT_MAP,
     footer: CFG_FOOTER,
 };
 
@@ -145,7 +145,7 @@ pub const FLASH_AMT: usize = 2 * 1024 * 1024;
 pub const CFG_ADDR_OFFSET: u32 = 0x100000;
 
 // Headers are used to check that loaded configuration is not just garbage data
-pub const CFG_HEADER: u64 = 252622182913624215;
+pub const CFG_HEADER: u64 = 252622182913621215;
 pub const CFG_FOOTER: u64 = 145389224228254269;
 
 #[derive(Debug, Clone, Copy)]
@@ -161,7 +161,7 @@ pub struct Configuration {
     pub mav_freq: MavStreamableFrequencies,
     pub mixing_matrix: MotorMixing,
     pub radio_timeout: Duration,
-    pub motor_gov_timeout: Duration,
+    pub dshot_timeout: Duration,
     pub tx_map: TransmitterMap,
     pub footer: u64,
 }

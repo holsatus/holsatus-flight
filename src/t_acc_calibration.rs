@@ -1,36 +1,27 @@
 use embassy_time::{with_timeout, Duration, Ticker};
 use nalgebra::{ComplexField, SMatrix, Vector3};
 
-use crate::{config::{Calibration, Configuration}, constants::G_GRAVITY, messaging as msg, sensors::imu::types::ImuData6Dof};
+use crate::{config::Calibration, constants::G_GRAVITY, messaging as msg, sensors::imu::types::ImuData6Dof};
 
 /// Routine to calibrate gyroscopes, by calculating their bias.
 #[embassy_executor::task]
-pub async fn acc_calibration(
-    config: &'static Configuration
-) -> ! {
+pub async fn acc_calibration() -> ! {
 
     // Input channels
     let mut rcv_imu_sensor_array: [_; crate::N_IMU] = core::array::from_fn(|i| msg::IMU_SENSOR[i].receiver().unwrap());
-    let mut rcv_start_acc_calib = msg::RC_START_ACC_CALIB.receiver().unwrap();
+    let mut rcv_start_acc_calib = msg::CMD_START_ACC_CALIB.receiver().unwrap();
 
     // Output channels
-    let snd_acc_calib = msg::ACC_CALIBRATIONS.sender();
-    let snd_acc_calibrating = msg::ACC_CALIBRATING.sender();
-
-    // Publish existing calibration data
-    snd_acc_calib.send(core::array::from_fn(|i|{
-        match config.imu_cfg[i].as_ref() {
-            Some(cfg) => cfg.acc_cal,
-            None => None,
-        }
-    }));
+    let snd_acc_calibing = msg::ACC_CALIBRATING.sender();
+    let snd_imu_config = msg::CFG_IMU_CONFIG.sender();
     
     'infinite: loop {
         
         // Wait for the start signal
-        snd_acc_calibrating.send(false);
+        snd_acc_calibing.send(false);
         if !rcv_start_acc_calib.changed().await { continue 'infinite };
-        snd_acc_calibrating.send(true);
+        snd_acc_calibing.send(true);
+
         defmt::info!("[ACC CALIB]: Starting calibration on {} accelerometers", crate::N_IMU);
 
         // Array of calibrator instances
@@ -89,20 +80,22 @@ pub async fn acc_calibration(
         }
 
         // Get existing calibration data or create new
-        let mut calibrations = snd_acc_calib.try_get().unwrap_or([None; crate::N_IMU]);
+        let mut imu_config = msg::CFG_IMU_CONFIG.spin_get().await;
 
         // Publish result of each sensor if calibration was successful
-        for (id, (prev_cal, cal)) in calibrations.iter_mut().zip(sensor_calibrator.iter()).enumerate() {
-            match cal.calib {
-                Some(calib) => {
+        for (id, (opt_config, calibrator)) in imu_config.iter_mut().zip(sensor_calibrator.iter()).enumerate() {
+            match (calibrator.calib, opt_config) {
+                (Some(calib), Some(config)) => {
                     defmt::info!("[ACC CALIB]: Sensor {} calibration is valid.", id);
-                    *prev_cal = Some(calib);
+                    config.acc_cal = Some(calib);
                 },
-                None => defmt::warn!("[ACC CALIB]: Sensor {} calibration is invalid", id),
+                (None, Some(_)) => defmt::warn!("[ACC CALIB]: Sensor {} calibration is invalid", id),
+                (Some(_), None) => defmt::warn!("[ACC CALIB]: Sensor {} calibration is valid, but no configuration for the sensor exists", id),
+                (None, None) => {/* This is expected for non-existant sensors */},
             }
         }
 
-        snd_acc_calib.send(calibrations);
+        snd_imu_config.send(imu_config);
 
         // Ensure any recent request to calibrate is marked as seen
         let _ = rcv_start_acc_calib.try_get();

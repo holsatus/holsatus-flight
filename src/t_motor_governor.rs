@@ -2,7 +2,7 @@ use crate::common::types::{ArmedState, DisarmReason, MotorState};
 use crate::drivers::rp2040::dshot_pio::{DshotPio, DshotPioTrait};
 use embassy_futures::select::{select, Either};
 use embassy_rp::peripherals::PIO0;
-use embassy_time::{with_timeout, Duration, Timer};
+use embassy_time::{with_timeout, Timer};
 
 pub const TASK_ID: &str = "[MOTOR GOVERNOR]";
 
@@ -63,8 +63,6 @@ use crate::messaging as msg;
 #[embassy_executor::task]
 pub async fn motor_governor(
     mut out_dshot_pio: DshotPio<'static, 4, PIO0>,
-    reverse_motor: [bool; 4],
-    timeout: Duration,
 ) -> ! {
 
     // Input messages
@@ -96,7 +94,7 @@ pub async fn motor_governor(
         // Set motor directions for the four motors
         defmt::info!("{} : Setting motor directions", TASK_ID);
         for _i in 0..10 {
-            out_dshot_pio.reverse(reverse_motor);
+            out_dshot_pio.reverse(msg::CFG_REVERSE_MOTOR.spin_get().await);
             Timer::after_millis(50).await;
         }
 
@@ -107,11 +105,13 @@ pub async fn motor_governor(
             continue 'infinite;
         }
 
-        defmt::info!("{} : Motors armed and active", TASK_ID);
+        let dshot_timeout = msg::CFG_DSHOT_TIMEOUT.spin_get().await;
+
+        defmt::info!("{} : Motors are armed and active", TASK_ID);
         'armed: loop {
             
             match with_timeout(
-                timeout,
+                dshot_timeout,
                 select(
                     rcv_motor_speed.changed(),
                     rcv_arming_prevention.changed(),

@@ -9,8 +9,7 @@ use crate::{messaging as msg, sensors::{SensorCondition, SensorRedundancy}};
 pub async fn imu_governor() -> ! {
     // Input messages
     let mut rcv_imu_sensor_array: [_; crate::N_IMU] = core::array::from_fn(|i| msg::IMU_SENSOR[i].receiver().unwrap());
-    let mut rcv_gyr_calib = msg::GYR_CALIBRATIONS.receiver().unwrap();
-    let mut rcv_acc_calib = msg::ACC_CALIBRATIONS.receiver().unwrap();
+    let mut rcv_imu_config = msg::CFG_IMU_CONFIG.receiver().unwrap();
 
     // Output messages
     let snd_imu_data = msg::IMU_DATA.sender();
@@ -23,20 +22,13 @@ pub async fn imu_governor() -> ! {
 
     snd_imu_active_id.send(imu_redundancy.active_id());
 
-    // Receive initial calibration data
-    let mut gyr_calib = rcv_gyr_calib.changed().await;
-    let mut acc_calib = [None; crate::N_IMU]; // rcv_acc_calib.changed().await;
+    let mut imu_config = rcv_imu_config.changed().await;
 
     'infinite: loop {
 
         // Check if there is new gyroscope calibration data
-        if let Some(new_gyr_calib) = rcv_gyr_calib.try_get() {
-            gyr_calib = new_gyr_calib
-        }
-
-        // Check if there is new accelerometer calibration data
-        if let Some(new_acc_calib) = rcv_acc_calib.try_get() {
-            acc_calib = new_acc_calib
+        if let Some(new_imu_config) = rcv_imu_config.try_get() {
+            imu_config = new_imu_config
         }
 
         // Wait for data from any IMU sensor by polling each sensor channel
@@ -68,32 +60,44 @@ pub async fn imu_governor() -> ! {
 
         // Check if sensor is degraded and lower state if it is active
         if imu_redundancy.is_degraded(id) {
-            warn!("[IMU REDUNDANCY]: IMU sensor {} is degraded", id);
             if imu_redundancy.is_active(id) {
-                imu_redundancy.lower_state()
+                warn!("[IMU REDUNDANCY]: IMU sensor {} is degraded, attempting fallback.", id);
+                imu_redundancy.lower_state();
             }
             continue 'infinite;
         }
 
         // TODO : Add more checks for other sensor failures
 
-        // Transmit state of gyroscope calibration
-        match gyr_calib.get(id as usize) {
-            Some(Some(_)) if imu_redundancy.is_active(id) => snd_gyr_calibrated.send(true),
-            _ => snd_gyr_calibrated.send(false),
-        }
+        // If sensor is active, apply calibrations, extrinsics and transmit
+        if imu_redundancy.is_active(id) {
 
-        // Transmit state of accelerometer calibration
-        match acc_calib.get(id as usize) {
-            Some(Some(_)) if imu_redundancy.is_active(id) => snd_acc_calibrated.send(true),
-            _ => snd_acc_calibrated.send(false),
-        }
+            if let Some(Some(config)) = imu_config.get(id as usize)  {
+                
+                // Apply calibration to gyroscope data
+                if let Some(gyr_cal) = config.gyr_cal {
+                    gyr_cal.apply(&mut data.gyr);
+                }
 
-        // Send data of active sensor
-        if let Some(Some(gyr_cal)) = gyr_calib.get(id as usize) && let Some(Some(acc_cal)) = acc_calib.get(id as usize) && imu_redundancy.is_active(id) {
-            gyr_cal.apply(&mut data.gyr);
-            acc_cal.apply(&mut data.acc);
-            snd_imu_data.send(data)
+                // Apply calibration to accelerometer data
+                if let Some(acc_cal) = config.acc_cal {
+                    acc_cal.apply(&mut data.acc);
+                }
+                
+                // Apply extrinsics to IMU data
+                if let Some(imu_ext) = config.imu_ext {
+                    imu_ext.apply(&mut data.gyr);
+                    imu_ext.apply(&mut data.acc);
+                }
+
+                snd_imu_data.send(data)
+            }
+
+            // Transmit state of calibrations for current sensor
+            if let Some(Some(config)) = imu_config.get(id as usize) {
+                snd_gyr_calibrated.send(config.gyr_cal.is_some());
+                snd_acc_calibrated.send(config.acc_cal.is_some());
+            }
         }
 
         // If active sensor changed, send new active sensor id

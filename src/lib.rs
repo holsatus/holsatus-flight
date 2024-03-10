@@ -25,6 +25,7 @@ pub mod t_led_blinker;
 
 pub mod t_commander;
 pub mod t_arm_checker;
+pub mod t_vehicle_state;
 pub mod t_attitude_estimator;
 pub mod t_attitude_controller;
 pub mod t_motor_mixing;

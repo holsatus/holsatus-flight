@@ -10,7 +10,6 @@ use embassy_rp::{
     uart::{self, UartRx},
 };
 
-use crate::config::Configuration;
 use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
     mutex::Mutex,
@@ -23,7 +22,6 @@ pub type I2cAsyncType = I2cDevice<'static, ThreadModeRawMutex, I2cInnerAsyncType
 
 #[embassy_executor::task]
 pub async fn main_core0(
-    config: &'static Configuration,
     i2c_async: I2c<'static, I2C0, i2c::Async>,
     uart_rx_sbus: UartRx<'static, UART1, uart::Async>,
     driver_dshot_pio: DshotPio<'static, 4, PIO0>,
@@ -37,7 +35,6 @@ pub async fn main_core0(
     // Start SBUS reader task
     spawner.must_spawn(crate::t_sbus_reader::sbus_reader(
         uart_rx_sbus,
-        config.radio_timeout,
     ));
 
     // Setup IMU governor task, responsible for selecting the active IMU
@@ -51,7 +48,6 @@ pub async fn main_core0(
         I2cDevice::new(i2c_async_mutex),
         0,
         0,
-        config
     ));
 
     // Start the estimator, control loop and motor mixing
@@ -64,8 +60,6 @@ pub async fn main_core0(
     // Start the motor governor task
     spawner.must_spawn(crate::t_motor_governor::motor_governor(
         driver_dshot_pio,
-        config.motor_dir,
-        config.motor_gov_timeout,
     ));
 
     // Start the task which manages the arming blocker flag
@@ -75,8 +69,8 @@ pub async fn main_core0(
     spawner.must_spawn(crate::t_status_printer::status_printer());
 
     // Star calibration routine tasks
-    spawner.must_spawn(crate::t_gyr_calibration::gyr_calibration(config));
-    spawner.must_spawn(crate::t_acc_calibration::acc_calibration(config));
+    spawner.must_spawn(crate::t_gyr_calibration::gyr_calibration());
+    spawner.must_spawn(crate::t_acc_calibration::acc_calibration());
 
 
     // Start the transmitter governor task

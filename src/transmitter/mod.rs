@@ -1,5 +1,7 @@
 use core::ops::{Deref, DerefMut};
 
+use num_traits::Float;
+
 pub mod tx_12_profiles;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -24,6 +26,22 @@ impl Deref for TransmitterMap {
 impl DerefMut for TransmitterMap {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+impl TransmitterMap {
+    pub fn sanity_check(&self) -> Result<(), (usize, RatesError)> {
+        for (ch, channel) in self.iter().enumerate() {
+            match channel {
+                ChannelType::Analog((_, cfg)) =>  {
+                    if let Err(e) = cfg.sanity_check_rates() {
+                        return Err((ch, e));
+                    }
+                }
+                _ => {}, // Currently no other checks for other channel types
+            }
+        }
+        Ok(())
     }
 }
 
@@ -92,7 +110,6 @@ pub enum ChannelType {
     Discrete([(u16, EventRequest); 3]),
 }
 
-// TODO Support expo curves and other non-linear mappings
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnalogConfig {
     in_min: u16,
@@ -100,50 +117,131 @@ pub struct AnalogConfig {
     deadband: u16,
     fullrange: bool,
     reverse: bool,
+    rates: Rates,
 }
 
-/// Maps the raw input value from RC according to the provided configuration.
-pub fn analog_map(data: u16, cfg: &AnalogConfig) -> f32 {
-    
-    // Select range mapping function
-    let value = if cfg.fullrange {
-        analog_map_full(data, cfg)
-    } else {
-        analog_map_half(data, cfg)
-    };
+impl AnalogConfig {
+    pub fn apply(&self, data: u16) -> f32 {
+        // Select range mapping function
+        let mut value = if self.fullrange {
+            self.analog_map_full(data)
+        } else {
+            self.analog_map_half(data)
+        };
 
-    // Reverse the value if needed
-    if cfg.reverse {
-        -value
-    } else {
-        value
+        // Reverse the value if needed
+        if self.reverse {
+            value = -value
+        }
+
+        // Apply rates and return
+        self.rates.apply(value)
+    }
+
+    /// Full-range, maps the input range to the output range (-1, 1).
+    /// Typically used for roll, pitch and yaw commands.
+    fn analog_map_full(&self, data: u16) -> f32 {
+        
+        // Center the value around 0
+        let mut value = data.saturating_sub(self.in_min) as i32 - (self.in_max - self.in_min) as i32/2;
+
+        // Apply deadband on small values
+        if value.abs() < self.deadband as i32 { value = 0 }
+
+        // Normalize and clamp the value to the range (-1, 1)
+        ((2*value) as f32 / (self.in_max - self.in_min) as f32).clamp(-1., 1.)
+    }
+
+    /// Half-range, maps the input range to the output range (0, 1).
+    /// Typically used for thrust commands.
+    pub fn analog_map_half(&self, data: u16) -> f32 {
+        
+        // Shift the value down to 0
+        let mut value = data.saturating_sub(self.in_min);
+
+        // Apply deadband on small values
+        if value < self.deadband { value = 0 }
+
+        // Normalize and clamp the value to the range (0, 1)
+        (value as f32 / (self.in_max - self.in_min) as f32).clamp(0., 1.)
+    }
+
+    pub fn sanity_check_rates(&self) -> Result<(), RatesError> {
+        self.rates.sanity_check()
     }
 }
 
-/// Full-range, maps the input range to the output range [-1, 1].
-/// Typically used for roll, pitch and yaw commands.
-fn analog_map_full(data: u16, cfg: &AnalogConfig) -> f32 {
-    
-    // Center the value around 0
-    let mut value = data.saturating_sub(cfg.in_min) as i32 - (cfg.in_max - cfg.in_min) as i32/2;
-
-    // Apply deadband on small values
-    if value.abs() < cfg.deadband as i32 { value = 0 }
-
-    // Normalize and clamp the value to the range [-1, 1]
-    ((2*value) as f32 / (cfg.in_max - cfg.in_min) as f32).clamp(-1., 1.)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Rates {
+    None,
+    Standard(StandardRates),
+    // More to come?
 }
 
-/// Half-range, maps the input range to the output range [0, 1].
-/// Typically used for thrust commands.
-pub fn analog_map_half(data: u16, cfg: &AnalogConfig) -> f32 {
-    
-    // Shift the value down to 0
-    let mut value = data.saturating_sub(cfg.in_min);
+impl Rates {
 
-    // Apply deadband on small values
-    if value < cfg.deadband { value = 0 }
+    pub const fn new_standard(rate: f32, expo: f32, slow: f32) -> Self {
+        Self::Standard(StandardRates::new(rate, expo, slow))
+    }
 
-    // Normalize and clamp the value to the range [0, 1]
-    (value as f32 / (cfg.in_max - cfg.in_min) as f32).clamp(0., 1.)
+    pub fn apply(&self, input: f32) -> f32 {
+        match self {
+            Self::None => input,
+            Self::Standard(rates) => rates.apply(input),
+        }
+    }
+
+    pub fn sanity_check(&self) -> Result<(), RatesError> {
+        match self {
+            Self::None => {Ok(())},
+            Self::Standard(rates) => rates.sanity_check(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StandardRates {
+    rate: f32,
+    expo: f32,
+    slow: f32,
+}
+
+impl StandardRates {
+
+    /// Create a new set of rates. This function will panic if the rates are not within reasonable limits.
+    pub const fn new(rate: f32, expo: f32, slow: f32) -> Self {
+        Self {
+            rate,
+            expo,
+            slow,
+        }
+    }
+
+    /// Do an assertion on the rates constants to make sure they are within reasonable limits.
+    pub fn sanity_check(&self) -> Result<(), RatesError>{
+
+        if self.rate < 0.0 {
+            return Err(RatesError::NegativeGain);
+        } else if self.expo < 0.0 {
+            return Err(RatesError::NegativeGain);
+        } else if self.slow < 0.0 {
+            return Err(RatesError::NegativeGain);
+        } else if self.apply(1.0) > 10.0 {
+            return Err(RatesError::ExtremeOutput);
+        }
+
+        Ok(())
+    }
+
+    /// Apply the rates to the input command
+    pub fn apply(&self, input: f32) -> f32 {
+        ((1. + 0.01 * self.expo * (input * input - 1.0)) * input)
+        * (self.rate + (input.abs() * self.rate * self.slow * 0.01))
+    }
+}
+
+#[derive(Clone, Copy, Debug, defmt::Format, PartialEq)]
+pub enum RatesError {
+    NegativeGain,
+    ExtremeOutput,
 }

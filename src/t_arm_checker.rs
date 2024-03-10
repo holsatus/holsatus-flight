@@ -1,5 +1,6 @@
 use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Instant, Ticker};
+use nalgebra::Vector3;
 
 use crate::{messaging as msg, t_motor_governor::ArmBlocker};
 
@@ -9,16 +10,16 @@ const INV_SQRT_2: f32 = 0.7071067811865475;
 pub async fn arm_checker() -> ! {
     // Input channels
     let mut rcv_attitude_euler = msg::ATTITUDE_EULER.receiver().unwrap();
-    let mut rcv_attitude_setpoint = msg::ATTITUDE_SETPOINT.receiver().unwrap();
-    let mut rcv_throttle_setpoint = msg::THROTTLE_SETPOINT.receiver().unwrap();
+    let mut rcv_throttle_setpoint = msg::CMD_THROTTLE_SETPOINT.receiver().unwrap();
     let mut rcv_sbus_data = msg::SBUS_DATA.receiver().unwrap();
-    let mut rcv_arming_cmd = msg::RC_ARMING_CMD.receiver().unwrap();
+    let mut rcv_arming_cmd = msg::CMD_ARM_VEHICLE.receiver().unwrap();
     let mut rcv_loop_health = msg::LOOP_HEALTH.receiver().unwrap();
     let mut rcv_imu_active_id = msg::IMU_ACTIVE_ID.receiver().unwrap();
     let mut rcv_gyr_calibrating = msg::GYR_CALIBRATING.receiver().unwrap();
     let mut rcv_gyr_calibrated = msg::GYR_CALIBRATED.receiver().unwrap();
     let mut rcv_acc_calibrating = msg::ACC_CALIBRATING.receiver().unwrap();
     let mut rcv_acc_calibrated = msg::ACC_CALIBRATED.receiver().unwrap();
+    let mut rcv_request_controls = msg::REQUEST_CONTROLS.receiver().unwrap();
 
     // Output channels
     let snd_arm_blocker = msg::ARM_BLOCKER.sender();
@@ -47,7 +48,7 @@ pub async fn arm_checker() -> ! {
 
         // Check if the drone is in a high attitude ~ atan(sqrt(tan(pitch)^2 + tan(roll)^2))
         if let Some(attitude) = rcv_attitude_euler.try_changed() {
-            let high_attitude = nalgebra::Vector2::new(attitude.x, attitude.y).norm() > INV_SQRT_2;
+            let high_attitude = attitude.xy().norm() > INV_SQRT_2;
             local_arm_blocker_flag.set(ArmBlocker::HIGH_ATTITUDE, high_attitude);
         }
 
@@ -57,10 +58,9 @@ pub async fn arm_checker() -> ! {
         }
 
         // Check if the attitude commands are too high
-        use crate::common::types::AttitudeReference::{Angle, Rate};
-        if let Some(Angle(setpoint) | Rate(setpoint)) = rcv_attitude_setpoint.try_changed() {
-            let high_setpoint = setpoint.norm() > 0.1;
-            local_arm_blocker_flag.set(ArmBlocker::HIGH_ATTITUDE_CMD, high_setpoint);
+        if let Some(controls) = rcv_request_controls.try_changed() {
+            let controls_vec = Vector3::new(controls.roll, controls.pitch, controls.yaw);
+            local_arm_blocker_flag.set(ArmBlocker::HIGH_ATTITUDE_CMD, controls_vec.norm() > 0.1);
         }
 
         // Check that transmitter is not in failsafe
