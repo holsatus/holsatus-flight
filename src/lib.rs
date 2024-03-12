@@ -1,6 +1,7 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 #![feature(let_chains)]
+#![feature(async_closure)]
 #![no_std]
 
 pub mod common;
@@ -8,13 +9,18 @@ pub mod config;
 pub mod functions;
 pub mod geo;
 pub mod health;
-pub mod mavlink;
 pub mod messaging;
 pub mod sensors;
 pub mod transmitter;
 pub mod drivers;
 pub mod filters;
 pub mod airframe;
+
+#[cfg(feature = "mavlink")]
+pub mod mavlink;
+
+#[cfg(feature = "shell")]
+pub mod shell;
 
 pub mod constants;
 
@@ -41,9 +47,8 @@ pub mod t_config_master;
 pub mod t_rc_mapper;
 pub mod t_flight_detector;
 
-
-pub mod main_core0;
-pub mod main_core1;
+pub mod main_high_prio;
+pub mod main_low_prio;
 
 pub use ahrs;
 pub use embassy_embedded_hal;

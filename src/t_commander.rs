@@ -153,13 +153,10 @@ pub async fn commander() {
 
                 // Enable or disable attitude control integral term if not airborne
                 if let Some(landed_state) = rcv_landed_state.try_changed() {
-                    use crate::t_flight_detector::LandedState;
+                    use crate::t_flight_detector::LandedState as L;
                     match landed_state {
-                        LandedState::Undefined => snd_en_integral.send_if_different(false),
-                        LandedState::OnGround => snd_en_integral.send_if_different(false),
-                        LandedState::InAir => snd_en_integral.send_if_different(true),
-                        LandedState::Landing => snd_en_integral.send_if_different(true),
-                        LandedState::Takeoff => snd_en_integral.send_if_different(true),
+                        L::Undefined | L::OnGround => snd_en_integral.send_if_different(false),
+                        L::InAir | L::Landing | L::Takeoff => snd_en_integral.send_if_different(true),
                     }
                 }
             }

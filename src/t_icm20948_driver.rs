@@ -9,7 +9,7 @@ use crate::messaging as msg;
 #[allow(unused)]
 #[embassy_executor::task]
 pub async fn icm_20948_driver(
-    i2c: crate::main_core0::I2cAsyncType,
+    i2c: crate::main_high_prio::I2cAsyncType,
     imu_id: u8,
     mag_id: u8,
 ) -> ! {

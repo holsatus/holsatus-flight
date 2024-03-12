@@ -59,7 +59,7 @@ impl<const N: usize> Default for SensorRedundancy<N> {
         SensorRedundancy {
             active_id: Some(0),
             sensors: [SensorState::default(); N],
-            stall_timeout: Duration::from_millis(50),
+            stall_timeout: Duration::from_millis(100),
         }
     }
 }

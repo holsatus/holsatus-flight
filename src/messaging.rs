@@ -4,7 +4,7 @@ use nalgebra::{Quaternion, Unit, Vector3, Vector4};
 use sbus::SBusPacket;
 
 use crate::{
-    airframe::MotorMixing, common::types::{AttitudeReference, MotorState, VehicleState}, config::{AttitudePids, DshotSpeed, ImuConfig, MagConfig}, sensors::imu::types::ImuData6Dof, t_flight_detector::LandedState, t_motor_governor::ArmBlocker, t_sbus_reader::RxError, transmitter::{ControlRequest, EventRequest, TransmitterMap}
+    airframe::MotorMixing, common::types::{AttitudeReference, MavStreamableFrequencies, MotorState, VehicleState}, config::{AttitudePids, DshotSpeed, ImuConfig, MagConfig}, sensors::imu::types::ImuData6Dof, t_flight_detector::LandedState, t_motor_governor::ArmBlocker, t_sbus_reader::RxError, transmitter::{ControlRequest, EventRequest, TransmitterMap}
 };
 
 macro_rules! watch {
@@ -28,7 +28,7 @@ type SWatch<T, const N: usize> = embassy_sync::watch::Watch<ThreadModeRawMutex, 
 
 
 // Best effort IMU and MAG data, selected by the respective governors
-watch!(IMU_DATA, ImuData6Dof, 3, "Best effort IMU data, selected by the IMU governor task.");
+watch!(IMU_DATA, ImuData6Dof, 4, "Best effort IMU data, selected by the IMU governor task.");
 watch!(MAG_DATA, Vector3<f32>, 3, "Best effort MAG data, selected by the MAG governor task.");
 
 /// Array of watch channels for the `N_IMU` individual IMU sensors. These should generally not be used, as the
@@ -71,11 +71,11 @@ watch!(CMD_THROTTLE_SETPOINT, f32, 2, "The target throttle for the motor mixing"
 watch!(SBUS_DATA, Result<SBusPacket, RxError>, 3, "Data from the SBUS receiver task");
 watch!(REQUEST_CONTROLS, ControlRequest, 2, "The target attitude (angle or rate) for the attitude controller");
 /// Queue of discrete system requests, such as sensor calibration, configuration changes, etc.
-pub static REQUEST_QUEUE: Channel<ThreadModeRawMutex, EventRequest, 20> = Channel::new();
+pub static REQUEST_QUEUE: Channel<ThreadModeRawMutex, EventRequest, 10> = Channel::new();
 
 // Channel for various vehicle states
 watch!(VEHICLE_STATE, VehicleState, 3, "Channel containing the vehicle state, selected by the vehicle state governor task.");
-watch!(ARM_BLOCKER, ArmBlocker, 2, "Arming blocker flag, set by the arming checker task, describes whether it is safe to arm the vehicle");
+watch!(ARM_BLOCKER, ArmBlocker, 3, "Arming blocker flag, set by the arming checker task, describes whether it is safe to arm the vehicle");
 watch!(LANDED_STATE, LandedState, 2, "Landed state, set by the flight detector, describes whether the vehicle is landed, airborne or in transition");
 
 watch!(ATTITUDE_QUAT, Unit<Quaternion<f32>>, 2, "The current vehicle attitude represented as a quaternion");
@@ -85,6 +85,8 @@ watch!(MOTORS_MIXED, Vector4<u16>, 2, "The mixed controller output and thrust ta
 watch!(LOOP_HEALTH, f32, 2, "Loop health transmitted by the attitude controller, is 1.0 when the loop is healthy");
 watch!(MOTOR_SPEEDS, [u16; 4], 2, "Motor speeds, as decided by the attitude controller, transmitted to the motor governor");
 watch!(MOTOR_STATE, MotorState, 2, "Motor state, set by the motor governor, describes the arming state and current speed of the motors");
+
+watch!(USB_CONNECTED, bool, 2, "The flight controller is currently connected to a USB host");
 
 // Signals which represent configurations within the system. These are initialized by the configuration governor task,
 // but are subsequently supposed to only by other tasks, such as calibration tasks.
@@ -99,3 +101,4 @@ watch!(CFG_DSHOT_SPEED, DshotSpeed, 2, "Speed setting for the DSHOT protocol");
 watch!(CFG_DSHOT_TIMEOUT, Duration, 2, "Sets the timeout of the motor governor");
 watch!(CFG_RADIO_TIMEOUT, Duration, 2, "Sets the timeout of the RC radio receiver");
 watch!(CFG_TRANSMITTER_MAP, TransmitterMap, 2, "The transmitter map, containing the mapping of the transmitter channels to vehicle commands");
+watch!(CFG_MAV_STREAM_FREQ, MavStreamableFrequencies, 2, "The transmitter map, containing the mapping of the transmitter channels to vehicle commands");

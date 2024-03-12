@@ -1,5 +1,7 @@
 use bitflags::bitflags;
 
+use self::types::MotorState;
+
 mod mav_bitflag;
 pub mod rotation_matrices;
 pub mod types;
@@ -24,4 +26,99 @@ bitflags! {
         const ESTIMATOR         = 0b_01000000000000;
         const MISSION           = 0b_10000000000000;
     }
+}
+
+
+// TODO Move to a more appropriate location
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SimpleRequest {
+
+    /// Unbound request // TODO remove?
+    Unbound,
+
+    /// Arm all motors
+    ArmMotors,
+
+    /// Disarm all motors. Acts as a kill-switch
+    DisarmMotors,
+
+    /// Change stabilization mode to angle (or horizon) mode
+    AngleMode,
+
+    /// Change stabilization mode to rate (or acro / 3D) mode
+    RateMode,
+
+    /// Start gyroscope calibration
+    StartGyrCalib,
+
+    /// Abort any currently active gyroscope calibration
+    AbortGyrCalib,
+
+    /// Start accelerometer calibration
+    StartAccCalib,
+
+    /// Abort any currently active accelerometer calibration
+    AbortAccCalib,
+
+    /// Start magnetometer calibration
+    StartMagCalib,
+
+    /// Abort any currently active magnetometer calibration
+    AbortMagCalib,
+
+    /// Save any currently modified parameters to flash
+    SaveConfig,
+
+    /// RC Failsafe
+    RcFailsafe,
+}
+
+pub enum EventRequest {
+    ArmMotors(bool),
+    SetAngleMode(bool),
+    StartGyrCalib{seconds: u8, timeout: bool, variance: f32},
+    AbortGyrCalib,
+    StartAccCalib{seconds: u8, timeout: bool, variance: f32},
+    AbortAccCalib,
+    SaveConfig,
+}
+
+pub enum EventResponse {
+    ArmMotors(Result<MotorState, ArmMotorsError>),
+    SetAngleMode(Result<(),SetAngleModeError>),
+    StartGyrCalib(Result<[Option<Result<f32, GyrCalibError>>; crate::N_IMU], StartGyrCalibError>),
+    AbortGyrCalib(Result<[Option<Result<f32, GyrCalibError>>; crate::N_IMU], StartAccCalibError>),
+    StartAccCalib(StartAccCalibError),
+    AbortAccCalib(AbortAccCalibError),
+    SaveConfig,
+}
+
+pub struct GyrCalibError {}
+pub struct AccCalibError {}
+
+pub enum ArmMotorsError {
+    Ok(MotorState),
+    NotSafeToArm,
+}
+
+pub enum SetAngleModeError {
+    NotInManualMode,
+}
+
+pub enum StartGyrCalibError {
+    NotSafeToCalibrate,
+    NotCalibrating,
+}
+
+pub enum StartAccCalibError {
+    NotSafeToCalibrate,
+    NotCalibrating,
+}
+
+pub enum AbortAccCalibError {
+    NotCalibrating,
+}
+
+pub enum SaveConfigError {
+    NotSafeToSave,
 }

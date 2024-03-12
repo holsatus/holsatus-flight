@@ -23,10 +23,10 @@ pub fn load_config(
 pub const DEFAULT_CONFIG: Configuration = RP2040_DEV_CONFIG;
 
 use icm20948_async::*;
-use crate::{airframe::MotorMixing, filters::pid_controller::PidConfig};
+use crate::{airframe::MotorMixing, common::types::MavStreamableFrequencies, filters::pid_controller::PidConfig};
 
 use crate::{
-    common::rotation_matrices, mavlink::supported_msg::MavStreamableFrequencies,
+    common::rotation_matrices,
     transmitter::TransmitterMap,
 };
 pub const RP2040_DEV_CONFIG: Configuration = Configuration {
@@ -145,8 +145,8 @@ pub const FLASH_AMT: usize = 2 * 1024 * 1024;
 pub const CFG_ADDR_OFFSET: u32 = 0x100000;
 
 // Headers are used to check that loaded configuration is not just garbage data
-pub const CFG_HEADER: u64 = 252622182913621215;
-pub const CFG_FOOTER: u64 = 145389224228254269;
+pub const CFG_HEADER: u64 = 252623182913621215;
+pub const CFG_FOOTER: u64 = 145383224228254269;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Configuration {
@@ -175,6 +175,140 @@ pub struct AttitudePids {
     pub yaw_inner: PidConfig<f32>,
     pub yaw_outer: PidConfig<f32>,
 }
+
+pub enum Type {
+    F64(f64),
+    F32(f32),
+    Isize(isize),
+    I64(i64),
+    I32(i32),
+    I16(i16),
+    I8(i8),
+    Usize(usize),
+    U64(u64),
+    U32(u32),
+    U16(u16),
+    U8(u8),
+    Bool(bool),
+    Unknown,
+    None,
+}
+
+pub trait ParamLookup {
+    /// Look up a system parameter by name, returns either a float or an integer if the parameter is found.
+    /// That is, the result will only ever be `(Some(f32), None)`, `(None, Some(i32)` or `(None, None)`.
+    fn get(&self, name: core::str::SplitInclusive<'_, char>) -> Type;
+    fn set(&self, name: core::str::SplitInclusive<'_, char>, val: Type) -> Type;
+}
+
+impl ParamLookup for Configuration {
+    fn get(&self, mut splits: core::str::SplitInclusive<'_, char>) -> Type {
+        match splits.next() {
+            Some("attpid_") => self.pids.get(splits),
+            _ => Type::Unknown,
+        }
+    }
+
+    fn set(&self, mut _splits: core::str::SplitInclusive<'_, char>, _val: Type) -> Type {
+        todo!()
+    }
+}
+
+impl ParamLookup for AttitudePids {
+
+    fn get(&self, mut splits: core::str::SplitInclusive<'_, char>) -> Type {
+
+        enum Axis {
+            Roll,
+            Pitch,
+            Yaw,
+        }
+
+        enum Layer {
+            Inner,
+            Outer,
+        }
+
+        enum Param {
+            Kp,
+            Ki,
+            Kd,
+            OutLimMax,
+            OutLimMin,
+            LpTau,
+        }
+
+        let axis = match splits.next() {
+            Some("roll_") => Axis::Roll,
+            Some("pitch_") => Axis::Pitch,
+            Some("yaw_") => Axis::Yaw,
+            _ => return Type::Unknown,
+        };
+
+        let layer = match splits.next() {
+            Some("inner_") => Layer::Inner,
+            Some("outer_") => Layer::Outer,
+            _ => return Type::Unknown,
+        };
+
+        let param = match splits.next() {
+            Some("kp") => Param::Kp,
+            Some("ki") => Param::Ki,
+            Some("kd") => Param::Kd,
+            Some("outlimmax") => Param::OutLimMax,
+            Some("outlimmin") => Param::OutLimMin,
+            Some("lptau") => Param::LpTau,
+            _ => return Type::Unknown,
+        };
+
+        match (axis, layer, param) {
+            (Axis::Roll, Layer::Inner, Param::Kp) => Type::F32(self.roll_inner.kp),
+            (Axis::Roll, Layer::Inner, Param::Ki) => Type::F32(self.roll_inner.ki),
+            (Axis::Roll, Layer::Inner, Param::Kd) => Type::F32(self.roll_inner.kd),
+            (Axis::Roll, Layer::Inner, Param::OutLimMax) => self.roll_inner.output_limit.map_or(Type::None, |lim| Type::F32(lim.max)),
+            (Axis::Roll, Layer::Inner, Param::OutLimMin) => self.roll_inner.output_limit.map_or(Type::None, |lim| Type::F32(lim.min)),
+            (Axis::Roll, Layer::Inner, Param::LpTau) => self.roll_inner.lp_filter.map_or(Type::None, |tau| Type::F32(tau)),
+            (Axis::Roll, Layer::Outer, Param::Kp) => Type::F32(self.roll_outer.kp),
+            (Axis::Roll, Layer::Outer, Param::Ki) => Type::F32(self.roll_outer.ki),
+            (Axis::Roll, Layer::Outer, Param::Kd) => Type::F32(self.roll_outer.kd),
+            (Axis::Roll, Layer::Outer, Param::OutLimMax) => self.roll_outer.output_limit.map_or(Type::None, |lim| Type::F32(lim.max)),
+            (Axis::Roll, Layer::Outer, Param::OutLimMin) => self.roll_outer.output_limit.map_or(Type::None, |lim| Type::F32(lim.min)),
+            (Axis::Roll, Layer::Outer, Param::LpTau) => self.roll_outer.lp_filter.map_or(Type::None, |tau| Type::F32(tau)),
+            (Axis::Pitch, Layer::Inner, Param::Kp) => Type::F32(self.pitch_inner.kp),
+            (Axis::Pitch, Layer::Inner, Param::Ki) => Type::F32(self.pitch_inner.ki),
+            (Axis::Pitch, Layer::Inner, Param::Kd) => Type::F32(self.pitch_inner.kd),
+            (Axis::Pitch, Layer::Inner, Param::OutLimMax) => self.pitch_inner.output_limit.map_or(Type::None, |lim| Type::F32(lim.max)),
+            (Axis::Pitch, Layer::Inner, Param::OutLimMin) => self.pitch_inner.output_limit.map_or(Type::None, |lim| Type::F32(lim.min)),
+            (Axis::Pitch, Layer::Inner, Param::LpTau) => self.pitch_inner.lp_filter.map_or(Type::None, |tau| Type::F32(tau)),
+            (Axis::Pitch, Layer::Outer, Param::Kp) => Type::F32(self.pitch_outer.kp),
+            (Axis::Pitch, Layer::Outer, Param::Ki) => Type::F32(self.pitch_outer.ki),
+            (Axis::Pitch, Layer::Outer, Param::Kd) => Type::F32(self.pitch_outer.kd),
+            (Axis::Pitch, Layer::Outer, Param::OutLimMax) => self.pitch_outer.output_limit.map_or(Type::None, |lim| Type::F32(lim.max)),
+            (Axis::Pitch, Layer::Outer, Param::OutLimMin) => self.pitch_outer.output_limit.map_or(Type::None, |lim| Type::F32(lim.min)),
+            (Axis::Pitch, Layer::Outer, Param::LpTau) => self.pitch_outer.lp_filter.map_or(Type::None, |tau| Type::F32(tau)),
+            (Axis::Yaw, Layer::Inner, Param::Kp) => Type::F32(self.yaw_inner.kp),
+            (Axis::Yaw, Layer::Inner, Param::Ki) => Type::F32(self.yaw_inner.ki),
+            (Axis::Yaw, Layer::Inner, Param::Kd) => Type::F32(self.yaw_inner.kd),
+            (Axis::Yaw, Layer::Inner, Param::OutLimMax) => self.yaw_inner.output_limit.map_or(Type::None, |lim| Type::F32(lim.max)),
+            (Axis::Yaw, Layer::Inner, Param::OutLimMin) => self.yaw_inner.output_limit.map_or(Type::None, |lim| Type::F32(lim.min)),
+            (Axis::Yaw, Layer::Inner, Param::LpTau) => self.yaw_inner.lp_filter.map_or(Type::None, |tau| Type::F32(tau)),
+            (Axis::Yaw, Layer::Outer, Param::Kp) => Type::F32(self.yaw_outer.kp),
+            (Axis::Yaw, Layer::Outer, Param::Ki) => Type::F32(self.yaw_outer.ki),
+            (Axis::Yaw, Layer::Outer, Param::Kd) => Type::F32(self.yaw_outer.kd),
+            (Axis::Yaw, Layer::Outer, Param::OutLimMax) => self.yaw_outer.output_limit.map_or(Type::None, |lim| Type::F32(lim.max)),
+            (Axis::Yaw, Layer::Outer, Param::OutLimMin) => self.yaw_outer.output_limit.map_or(Type::None, |lim| Type::F32(lim.min)),
+            (Axis::Yaw, Layer::Outer, Param::LpTau) => self.yaw_outer.lp_filter.map_or(Type::None, |tau| Type::F32(tau)),
+        }
+    }
+    
+    fn set(&self, splits: core::str::SplitInclusive<'_, char>, _val: Type) -> Type {
+        match splits {
+            _ => todo!()
+        }
+    }
+
+}
+
 
 #[derive(Debug, Clone, Copy)]
 pub struct ImuConfig {

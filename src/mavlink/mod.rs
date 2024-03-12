@@ -30,24 +30,27 @@ pub type MavlinkUart = Uart<'static, UART0, Async>;
 pub type MavlinkUartRx = UartRx<'static, UART0, Async>;
 pub type MavlinkUartTx = UartTx<'static, UART0, Async>;
 
+use crate::messaging as msg;
+
 /// This channel is used to send messages to the Mavlink transmitter task.
 /// It is a queue with backpressure, such that all messages sent to it are guaranteed to be sent to the transmitter task.
 pub static MAV_MSG_QUEUE: Channel<CriticalSectionRawMutex, MavMessage, 5> = Channel::new();
 
-pub fn mavlink_uart_companion_server(
+pub async fn mavlink_uart_companion_server(
     spawner: Spawner,
     uart_mavlink: MavlinkUart,
     led_pin: AnyPin,
-    config: &'static Configuration,
 ) -> () {
     // Split mavlink UART stream into individual components
     let (uart_tx, uart_rx) = uart_mavlink.split();
 
+    let mav_freq = msg::CFG_MAV_STREAM_FREQ.spin_get().await;
+
     // Set default streaming frequencies according to config
-    t_mav_attitude::MAV_FREQUENCY.signal(config.mav_freq.attitude);
-    t_mav_heartbeat::MAV_FREQUENCY.signal(config.mav_freq.heartbeat);
-    t_mav_scaled_imu::MAV_FREQUENCY.signal(config.mav_freq.scaled_imu);
-    t_mav_rc_channels::MAV_FREQUENCY.signal(config.mav_freq.rc_channels);
+    t_mav_attitude::MAV_FREQUENCY.signal(mav_freq.attitude);
+    t_mav_heartbeat::MAV_FREQUENCY.signal(mav_freq.heartbeat);
+    t_mav_scaled_imu::MAV_FREQUENCY.signal(mav_freq.scaled_imu);
+    t_mav_rc_channels::MAV_FREQUENCY.signal(mav_freq.rc_channels);
 
     // Spawn mavlink streaming tasks
     spawner.must_spawn(t_mav_attitude::mav_attitude());

@@ -43,7 +43,7 @@ pub async fn attitude_estimator() -> ! {
         };
 
         // Get attitude estimate in euler angles (and map from tuple to Vector3)
-        let attitude_euler = (|(x, y, z)| Vector3::new(x, y, z))(attitude_quat.euler_angles());
+        let attitude_euler = (|(x, y, z)| rot(Vector3::new(x, y, z)))(attitude_quat.euler_angles());
 
         // Send attitude estimate to other tasks
         snd_attitude_quat.send(attitude_quat);

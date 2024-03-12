@@ -53,3 +53,22 @@ pub async fn mav_heartbeat() -> ! {
         }
     }
 }
+
+
+use crate::common::types::VehicleState;
+use mavlink::common::MavState;
+impl Into<MavState> for VehicleState {
+    fn into(self) -> MavState {
+        match self {
+            VehicleState::Uninit => MavState::MAV_STATE_ACTIVE,
+            VehicleState::Boot => MavState::MAV_STATE_BOOT,
+            VehicleState::Calibrating => MavState::MAV_STATE_CALIBRATING,
+            VehicleState::Standby => MavState::MAV_STATE_STANDBY,
+            VehicleState::Active => MavState::MAV_STATE_ACTIVE,
+            VehicleState::Critical => MavState::MAV_STATE_CRITICAL,
+            VehicleState::Emergency => MavState::MAV_STATE_EMERGENCY,
+            VehicleState::Poweroff => MavState::MAV_STATE_POWEROFF,
+            VehicleState::Termination => MavState::MAV_STATE_FLIGHT_TERMINATION,
+        }
+    }
+}

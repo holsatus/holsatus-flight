@@ -75,6 +75,8 @@ async fn main(spawner: embassy_executor::Spawner) {
     };
 
     // Load the configuration from flash and initialize the static reference
+    // TODO This should run on the low priority executor, but we need to spawn it now
+    // to get some initial configs for hardware setup.
     spawner.must_spawn(holsatus_flight::t_config_master::config_master(flash));
 
     // Create quad-motor PIO runner
@@ -83,8 +85,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         use embassy_rp::{bind_interrupts, peripherals::PIO0, pio::*};
         bind_interrupts!(struct Pio0Irqs {PIO0_IRQ_0 => InterruptHandler<PIO0>;});
         let speed = holsatus_flight::messaging::CFG_DSHOT_SPEED.spin_get().await;
-        DshotPio::<4, _>::new(p.PIO0, Pio0Irqs, p.PIN_10, p.PIN_11, p.PIN_12, p.PIN_13, speed.clk_div(),
-        )
+        DshotPio::<4, _>::new(p.PIO0, Pio0Irqs, p.PIN_10, p.PIN_11, p.PIN_12, p.PIN_13, speed.clk_div())
     };
 
     // Configure and setup sbus compatible uart RX connection
@@ -102,7 +103,8 @@ async fn main(spawner: embassy_executor::Spawner) {
     };
 
     // Configure and setup Mavlink-compatible UART connection
-    let _uart_mavlink = {
+    #[cfg(feature = "mavlink")]
+    let uart_mavlink = {
         use embassy_rp::{bind_interrupts, peripherals::UART0, uart::*};
         bind_interrupts!(struct Uart0Irqs {UART0_IRQ => InterruptHandler<UART0>;});
         let mut uart_config = Config::default();
@@ -131,8 +133,19 @@ async fn main(spawner: embassy_executor::Spawner) {
         embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice::new(static_spi_bus_ref, cs_pin)
     };
 
+    let low_prio = |spawner: embassy_executor::Spawner| {
+        spawner.must_spawn(holsatus_flight::main_low_prio::main_low_prio(
+            spawner,
+            #[cfg(feature = "mavlink")]
+            embassy_rp::gpio::Pin::degrade(p.PIN_25),
+            #[cfg(feature = "mavlink")]
+            uart_mavlink,
+            p.USB,
+        ));
+    };
+
     // Initilize the core0 main task (sensors, control loop, remote control, etc.)
-    spawner.must_spawn(holsatus_flight::main_core0::main_core0(
+    spawner.must_spawn(holsatus_flight::main_high_prio::main_high_prio(
         i2c_async,
         uart_rx_sbus,
         driver_dshot_pio,
@@ -143,23 +156,19 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     // Initilize the core1 main task (telemetry, some estimators, lower-priority tasks, etc.)
 
-    // // Allocate room for the core1 stack and executor
-    // use embassy_rp::multicore::Stack;
-    // static CORE1_STACK: StaticCell<Stack<{ 1024 * 4 }>> = StaticCell::new();
-    // static CORE1_EXECUTOR: StaticCell<embassy_executor::Executor> = StaticCell::new();
+    #[cfg(feature = "dualcore")] {
+        // Allocate room for the core1 stack and executor
+        use embassy_rp::multicore::Stack;
+        static CORE1_STACK: StaticCell<Stack<{ 1024 * 4 }>> = StaticCell::new();
+        static CORE1_EXECUTOR: StaticCell<embassy_executor::Executor> = StaticCell::new();
 
-    // use embassy_executor::Executor;
-    // use embassy_rp::multicore::spawn_core1;
-    // let stack = CORE1_STACK.init(Stack::new());
-    // spawn_core1(p.CORE1, stack, move || {
-    //     let executor1 = CORE1_EXECUTOR.init(Executor::new());
-    //     executor1.run(|spawner| {
-    //         spawner.must_spawn(holsatus_flight::main_core1::main_core1(
-    //             spawner,
-    //             embassy_rp::gpio::Pin::degrade(p.PIN_25),
-    //             uart_mavlink,
-    //             config,
-    //         ))
-    //     });
-    // });
+        let stack = CORE1_STACK.init(Stack::new());
+        embassy_rp::multicore::spawn_core1(p.CORE1, stack, move || {
+            let executor1 = CORE1_EXECUTOR.init(embassy_executor::Executor::new());
+            executor1.run(|spawner| low_prio(spawner));
+        });
+    }
+
+    #[cfg(not(feature = "dualcore"))]
+    low_prio(spawner);
 }
