@@ -2,7 +2,7 @@ use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Instant, Ticker};
 use nalgebra::Vector3;
 
-use crate::{messaging as msg, t_motor_governor::ArmBlocker};
+use crate::{messaging as msg, t_flight_detector::LandedState, t_motor_governor::ArmBlocker};
 
 const INV_SQRT_2: f32 = 0.7071067811865475;
 
@@ -20,6 +20,8 @@ pub async fn arm_checker() -> ! {
     let mut rcv_acc_calibrating = msg::ACC_CALIBRATING.receiver().unwrap();
     let mut rcv_acc_calibrated = msg::ACC_CALIBRATED.receiver().unwrap();
     let mut rcv_request_controls = msg::REQUEST_CONTROLS.receiver().unwrap();
+    let mut rcv_usb_connected = msg::USB_CONNECTED.receiver().unwrap();
+    let mut rcv_landed_state = msg::LANDED_STATE.receiver().unwrap();
 
     // Output channels
     let snd_arm_blocker = msg::ARM_BLOCKER.sender();
@@ -32,18 +34,22 @@ pub async fn arm_checker() -> ! {
     // Set flag to the initial value
     snd_arm_blocker.send(local_arm_blocker_flag);
 
-    let mut ticker = Ticker::every(Duration::from_hz(10));
+    // Theoretically this task could run only whenever an armingcommand is received,
+    // but for state visibility and debugging, we run it at a low fixed frequency.
+    let mut ticker = Ticker::every(Duration::from_hz(5));
 
     '_infinite: loop {
+
+        // Wait for the vehicle to be on the ground for these checks. Saves computation
+        rcv_landed_state.get_and(|x| *x == LandedState::OnGround).await;
 
         // Await arming command (or ticker, not explicitly needed)
         let res = select(rcv_arming_cmd.changed(), ticker.next()).await;
         local_arm_blocker_flag = defmt::unwrap!(snd_arm_blocker.try_get());
-        
+
         // Handle case where arming command is received
         if let Either::First(arm) = res {
-            let should_arm = (local_arm_blocker_flag & !ArmBlocker::CMD_DISARM).is_empty() && arm;
-            local_arm_blocker_flag.set(ArmBlocker::CMD_DISARM, !should_arm);
+            local_arm_blocker_flag.set(ArmBlocker::CMD_DISARM, !arm);   
         }
 
         // Check if the drone is in a high attitude ~ atan(sqrt(tan(pitch)^2 + tan(roll)^2))
@@ -100,9 +106,25 @@ pub async fn arm_checker() -> ! {
             local_arm_blocker_flag.set(ArmBlocker::ACC_CALIBIN, acc_calibrating);
         }
 
+        // Check if the USB is connected
+        if let Some(usb_connected) = rcv_usb_connected.try_changed() {
+            local_arm_blocker_flag.set(ArmBlocker::USB_CONNECTED, usb_connected);
+        }
+
         // Check if the boot grace period has passed
         let boot_grace = Instant::MIN.elapsed() < Duration::from_secs(5);
         local_arm_blocker_flag.set(ArmBlocker::BOOT_GRACE, boot_grace);
+
+        // If arming command is active, but other flags are raised, set the must disarm flag
+        if !(local_arm_blocker_flag & !ArmBlocker::CMD_DISARM).is_empty()
+        && !local_arm_blocker_flag.contains(ArmBlocker::CMD_DISARM) {
+            local_arm_blocker_flag.set(ArmBlocker::MUST_DISARM, true);
+        }
+
+        // If the must disarm flag is active, but the disarming command is received, clear the flag
+        if local_arm_blocker_flag.contains(ArmBlocker::CMD_DISARM | ArmBlocker::MUST_DISARM) {
+            local_arm_blocker_flag.set(ArmBlocker::MUST_DISARM, false);
+        }
 
         // Transmit changes to the arm blocker flag
         snd_arm_blocker.send(local_arm_blocker_flag);

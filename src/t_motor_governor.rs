@@ -49,10 +49,16 @@ bitflags::bitflags! {
         /// **Bit 11** - The receiver is in failsafe mode.
         const RX_FAILSAFE   = 1 << 11;
 
-        /// **Bit 12** - The vehicle is commanded to be disarmed.
+        /// **Bit 12** - The flight controller has established a USB connection.
+        const USB_CONNECTED = 1 << 12;
+
+        /// **Bit 13** - The `CMD_DISARM` flag must be raised once before arming can continue.
+        const MUST_DISARM    = 1 << 13;
+
+        /// **Bit 14** - The vehicle is commanded to be disarmed.
         /// This is the only bitflag which can be directly set by,
         /// the user, and which can disarm the vehicle at any time.
-        const CMD_DISARM    = 1 << 12;
+        const CMD_DISARM    = 1 << 14;
     }
 }
 
@@ -62,7 +68,7 @@ use crate::messaging as msg;
 /// Arming takes 3.5 seconds: 3.0 s to arm, 0.5 s to set direction
 #[embassy_executor::task]
 pub async fn motor_governor(
-    mut out_dshot_pio: DshotPio<'static, 4, PIO0>,
+    mut driver_dshot: DshotPio<'static, 4, PIO0>,
 ) -> ! {
 
     // Input messages
@@ -87,14 +93,14 @@ pub async fn motor_governor(
         defmt::info!("{} : Initializing motors", TASK_ID);
         Timer::after_millis(500).await;
         for _i in 0..50 {
-            out_dshot_pio.throttle_minimum();
+            driver_dshot.throttle_minimum();
             Timer::after_millis(50).await;
         }
 
         // Set motor directions for the four motors
         defmt::info!("{} : Setting motor directions", TASK_ID);
         for _i in 0..10 {
-            out_dshot_pio.reverse(msg::CFG_REVERSE_MOTOR.spin_get().await);
+            driver_dshot.reverse(msg::CFG_REVERSE_MOTOR.spin_get().await);
             Timer::after_millis(50).await;
         }
 
@@ -120,20 +126,20 @@ pub async fn motor_governor(
 
                 // Motors are set to idle (armed, not spinning)
                 Ok(Either::First([0,0,0,0])) => {
-                    out_dshot_pio.throttle_minimum();
+                    driver_dshot.throttle_minimum();
                     snd_motor_state.send(MotorState::Armed(ArmedState::Idle));
                 },
 
                 // Motor speed message received correctly
                 Ok(Either::First(speeds)) => {
-                    out_dshot_pio.throttle_clamp(speeds);
+                    driver_dshot.throttle_clamp(speeds);
                     snd_motor_state.send(MotorState::Armed(ArmedState::Running(speeds)));
                 },
 
                 // Motors are commanded to disarm
                 Ok(Either::Second(flag)) if flag.contains(ArmBlocker::CMD_DISARM) => {
                     defmt::warn!("{} : Disarming motors -> commanded", TASK_ID);
-                    out_dshot_pio.throttle_minimum();
+                    driver_dshot.throttle_minimum();
                     snd_motor_state.send(MotorState::Disarmed(DisarmReason::Commanded));
                     break 'armed;
                 },
@@ -141,7 +147,7 @@ pub async fn motor_governor(
                 // Automatic disarm due to message timeout
                 Err(_) => {
                     defmt:: warn!("{} : Disarming motors -> timeout", TASK_ID);
-                    out_dshot_pio.throttle_minimum();
+                    driver_dshot.throttle_minimum();
                     snd_motor_state.send(MotorState::Disarmed(DisarmReason::Timeout));
                     break 'armed;
                 },
