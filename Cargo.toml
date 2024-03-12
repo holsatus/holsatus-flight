@@ -5,9 +5,12 @@ authors = ["Peter Krull"]
 version = "0.2.0"
 
 [features]
-default = ["overclock", "rp2040"]
+default = ["overclock", "rp2040", "shell"]
+mavlink = ["dep:mavlink"]
 overclock = []
+dualcore = []
 rp2040 = []
+shell = ["dep:embedded-cli", "dep:embedded-io", "dep:ufmt"]
 
 [dependencies]
 cortex-m = "0.7.7"
@@ -44,10 +47,11 @@ embassy-sync =          { git = "https://github.com/peterkrull/embassy", branch 
 embassy-time =          { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt","defmt-timestamp-uptime"]}
 embassy-executor =      { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt","integrated-timers","arch-cortex-m","executor-thread","executor-interrupt","task-arena-size-32768"]}
 embassy-rp =            { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt","unstable-pac","time-driver","critical-section-impl","intrinsics","rom-v2-intrinsics"]}
+embassy-usb =           { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt"] }
 embassy-futures =       { git = "https://github.com/peterkrull/embassy", branch = "holsatus" }
 embassy-embedded-hal =  { git = "https://github.com/peterkrull/embassy", branch = "holsatus" }
 
-mavlink = { git = "https://github.com/peterkrull/rust-mavlink", branch = "async-holsatus", default-features = false, features = ["common","embedded"] }
+mavlink = { git = "https://github.com/peterkrull/rust-mavlink", branch = "async-holsatus", default-features = false, features = ["common","embedded"], optional = true}
 
 futures = { version = "0.3", default-features = false, features = ["async-await","cfg-target-has-atomic","unstable"]}
 critical-section = "1.1"
@@ -56,6 +60,12 @@ static_cell = "2.0.0"
 portable-atomic = { version = "1.6.0", features = ["critical-section"] }
 ublox = { version = "0.4.5", default-features = false }
 bitflags = { version = "2.4.2", default-features = false}
+
+# These are used in the implementation of Holsatus Shell
+embedded-cli = { path = "../embedded-cli-rs/embedded-cli/", optional = true }
+embedded-io = { version = "0.6.1", optional = true }
+embedded-io-async = { version = "0.6.1", optional = true }
+ufmt = { version = "0.2.0", optional = true }
 
 [profile.dev]
 codegen-units = 1
