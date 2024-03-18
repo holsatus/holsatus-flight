@@ -19,7 +19,7 @@ pub async fn attitude_estimator() -> ! {
     let imu_period = 1.0 / msg::CFG_LOOP_FREQUENCY.spin_get().await as f32;
 
     // Setup AHRS filter for attitude estimation
-    let mut ahrs = Madgwick::new(imu_period, 0.01);
+    let mut ahrs = Madgwick::new(imu_period, 0.002);
 
     '_infinite: loop {
 

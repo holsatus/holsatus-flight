@@ -4,10 +4,17 @@
 #![feature(async_closure)]
 #![no_std]
 
+pub const N_IMU: usize = 2;
+pub const N_MAG: usize = 2;
+
+pub static I2C_ASYNC: StaticCell<Mutex<ThreadModeRawMutex, crate::bsp::AsyncI2cPeripheral>> = StaticCell::new();
+pub type AsyncI2cDevice = I2cDevice<'static, ThreadModeRawMutex, crate::bsp::AsyncI2cPeripheral>;
+
 pub mod common;
 pub mod config;
 pub mod functions;
 pub mod geo;
+pub mod sync;
 pub mod health;
 pub mod messaging;
 pub mod sensors;
@@ -15,17 +22,22 @@ pub mod transmitter;
 pub mod drivers;
 pub mod filters;
 pub mod airframe;
+pub mod board;
+
+pub use board::bsp;
 
 #[cfg(feature = "mavlink")]
 pub mod mavlink;
+
+#[cfg(feature = "mavlink")]
+pub const MAX_MAV_STREAMS: usize = 5;
 
 #[cfg(feature = "shell")]
 pub mod shell;
 
 pub mod constants;
 
-pub const N_IMU: usize = 2;
-pub const N_MAG: usize = 2;
+
 
 pub mod t_led_blinker;
 
@@ -43,20 +55,24 @@ pub mod t_sbus_reader;
 pub mod t_status_printer;
 pub mod t_gyr_calibration;
 pub mod t_acc_calibration;
-pub mod t_config_master;
 pub mod t_rc_mapper;
+pub mod t_blackbox_logging;
 pub mod t_flight_detector;
+pub mod t_librarian;
 
-pub mod main_high_prio;
-pub mod main_low_prio;
+// pub mod main_high_prio;
+// pub mod main_low_prio;
 
 pub use ahrs;
 pub use embassy_embedded_hal;
+use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 pub use embassy_executor;
 pub use embassy_rp;
 pub use embassy_sync;
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 pub use embassy_time;
 pub use icm20948_async;
 pub use nalgebra;
 pub use sbus;
 pub use static_cell;
+use static_cell::StaticCell;

@@ -1,7 +1,40 @@
-use embassy_time::{with_timeout, Duration, Ticker};
+use embassy_time::{with_timeout, Duration, Instant, Ticker};
 use nalgebra::{SMatrix, Vector3};
 
 use crate::{config::Calibration, messaging as msg, sensors::imu::types::ImuData6Dof};
+
+const DEFAULT_MAX_VAR: f32 = 0.002;
+const DEFAULT_DURATION: u8 = 5;
+const MAX_CALIBRATION_DURATION: u8 = 120;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GyrCalCommand {
+    Start(CalGyrConfig),
+    Stop,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CalGyrConfig {
+
+    // ID of sensor to calibrate, or `None` for all availabe sensors.
+    pub sensor: Option<u8>,
+
+    /// Duration of calibration in seconds, or `None` for default duration of 5 seconds.
+    pub duration: Option<u8>,
+
+    /// Maximum variance of the accelerometer data during calibration, or `None` for default value of 0.002.
+    pub max_var: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GyrCalStatus {
+    Idle,
+    Done([Option<f32>; crate::N_IMU]),
+    Collecting{
+        sensors: Option<u8>,
+        timeleft_ms: u32
+    },
+}
 
 /// Routine to calibrate gyroscopes, by calculating their bias.
 #[embassy_executor::task]
@@ -9,19 +42,41 @@ pub async fn gyr_calibration() -> ! {
 
     // Input channels
     let mut rcv_imu_sensor_array: [_; crate::N_IMU] = core::array::from_fn(|i| msg::IMU_SENSOR[i].receiver().unwrap());
-    let mut rcv_start_gyr_calib = msg::CMD_START_GYR_CALIB.receiver().unwrap();
+    let mut rcv_start_gyr_calib = msg::CMD_GYR_CALIB.receiver().unwrap();
 
     // Output channels
     let snd_imu_config = msg::CFG_IMU_CONFIG.sender();
     let snd_gyr_calibrating = msg::GYR_CALIBRATING.sender();
+    let snd_gyr_cal_status = msg::CMD_GYR_STATUS.sender();
+
+    snd_gyr_cal_status.send(GyrCalStatus::Idle);
     
     'infinite: loop {
         
-        // Wait for the start signal
+        // Wait for the start signal TODO migrate this signal to just be part of the GyrCalStatus
         snd_gyr_calibrating.send(false);
-        if !rcv_start_gyr_calib.changed().await { continue 'infinite };
+
+        let command = rcv_start_gyr_calib.changed().await;
+
+        let cfg = match command {
+            GyrCalCommand::Start(cfg) => cfg,
+            GyrCalCommand::Stop => {
+                defmt::info!("[GYR CALIB]: Calibration process not currently running, ignoring stop command.");
+                continue 'infinite;
+            },
+        };
         snd_gyr_calibrating.send(true);
-        defmt::info!("[GYR CALIB]: Starting bias calibration on {} gyroscopes", crate::N_IMU);
+
+        let max_var = cfg.max_var.unwrap_or(DEFAULT_MAX_VAR);
+
+        match cfg.sensor {
+            Some(sensor) if sensor >= crate::N_IMU as u8 => {
+                defmt::info!("[GYR CALIB]: Firmware does not support sensor id of {} ", sensor);
+                continue 'infinite;
+            },
+            Some(sensor) => defmt::info!("[GYR CALIB]: Starting bias calibration on sensor {}, max variance of {} ", sensor, max_var),
+            None => defmt::info!("[GYR CALIB]: Starting bias calibration on {} gyroscopes, max variance of {} ", crate::N_IMU, max_var),
+        }
 
         // Array of calibrator instances
         let mut sensor_calibrator = [GyrCalibrator::<200>::new(); crate::N_IMU];
@@ -29,10 +84,22 @@ pub async fn gyr_calibration() -> ! {
         let mut timeout_count = 0;
         let mut done_count = 0;
 
-        let mut ticker = Ticker::every(Duration::from_hz(50));
+        let duration_s = cfg.duration.unwrap_or(DEFAULT_DURATION).min(MAX_CALIBRATION_DURATION);
+        let end_time = Instant::now() + Duration::from_secs(duration_s as u64);
+        let mut ticker = Ticker::every(Duration::from_hz((200/duration_s) as u64));
         
         // Calibration loop
         'calibration: loop {
+
+            snd_gyr_cal_status.send(GyrCalStatus::Collecting{
+                sensors: cfg.sensor, 
+
+                // Calculate time left as ms
+                timeleft_ms: 
+                end_time.checked_duration_since(Instant::now())
+                .unwrap_or(Duration::from_ticks(0))
+                .as_millis() as u32
+            });
 
             ticker.next().await;
 
@@ -48,7 +115,7 @@ pub async fn gyr_calibration() -> ! {
                 match with_timeout(Duration::from_millis(50), rcv_imu.changed()).await {
 
                     // Insert IMU data into the calibrator
-                    Ok((imu_data, _time)) => {
+                    Ok(imu_data) => {
                         calibrator.collect(imu_data);
                         if calibrator.is_done() {
                             defmt::trace!("[GYR CALIB]: Gyr calibration complete for sensor {}", id);
@@ -61,11 +128,14 @@ pub async fn gyr_calibration() -> ! {
                         calibrator.set_timeout();
                         defmt::trace!("[GYR CALIB]: Gyr calibration timed out for sensor {}", id);
                         timeout_count += 1; 
+                        if cfg.sensor == Some(id as u8) {
+                            break 'calibration;
+                        }
                     },
                 }
 
                 // Check if calibration has been stopped by user
-                if rcv_start_gyr_calib.try_changed() == Some(false) {
+                if rcv_start_gyr_calib.try_changed() == Some(GyrCalCommand::Stop) {
                     defmt::info!("[GYR CALIB]: Calibration process stopped by user");
                     continue 'infinite;
                 }
@@ -79,16 +149,20 @@ pub async fn gyr_calibration() -> ! {
 
         // Get existing calibration data or create new
         let mut calibrations = snd_imu_config.try_get().unwrap_or([None; crate::N_IMU]);
+        let mut variances = [None; crate::N_IMU];
 
         // Publish result of each sensor if calibration was successful
-        for (id, (opt_config, calibrator)) in calibrations.iter_mut().zip(sensor_calibrator.iter()).enumerate() {
-            
+        'sensor_iter: for (id, (opt_config, calibrator)) in calibrations.iter_mut().zip(sensor_calibrator.iter()).enumerate() {
+            if cfg.sensor.is_some() && cfg.sensor != Some(id as u8) {
+                continue 'sensor_iter;
+            }
             match (calibrator.acc_variance(), opt_config) {
 
                 // If calibration was successful, update the calibration data
-                (Some(var), Some(config)) if var < 0.002 => {
-                    defmt::info!("[GYR CALIB]: Sensor {} calibration is valid: Var({})", id, var);
-        
+                (Some(var), Some(config)) if var < max_var => {
+
+                    variances[id] = Some(var);
+                    
                     // Set calibration offset/bias for sensor
                     if let Some(gyr_cal) = config.gyr_cal.as_mut() {
                         gyr_cal.offset = calibrator.get_bias();
@@ -98,6 +172,8 @@ pub async fn gyr_calibration() -> ! {
                             offset: calibrator.get_bias(),
                         });
                     }
+                    let bias: [f32; 3] = calibrator.get_bias().into();
+                    defmt::info!("[GYR CALIB]: Sensor {} calibration is valid: Var({}) of {:?}", id, var, bias);
                 },
 
                 // If calibration was not successful, log the reason
@@ -108,6 +184,7 @@ pub async fn gyr_calibration() -> ! {
         }
 
         snd_imu_config.send(calibrations);
+        snd_gyr_cal_status.send(GyrCalStatus::Done(variances));
 
         // Ensure any recent request to calibrate is marked as seen
         let _ = rcv_start_gyr_calib.try_get();
@@ -121,6 +198,10 @@ struct GyrCalibrator<const N: usize> {
     has_timed_out: bool,
     count: usize, 
 }
+
+// TODO, each calibrator could calculate the variance over a smaller number of sampels,
+// and average the result. This enables us to use a much smaller buffer, while still
+// getting a good estimate of the variance.
 
 impl <const N: usize> GyrCalibrator<N> {
     pub fn new() -> Self {

@@ -65,7 +65,7 @@ pub async fn rc_mapper() {
                                         continue;
                                     } 
                                     // Send command to request queue
-                                    snd_request_queue.send(event).await;
+                                    snd_request_queue.send(event.into()).await;
                                 }
                             }
                         },
@@ -88,7 +88,7 @@ pub async fn rc_mapper() {
                     E::ParseTimeout => prev_sbus_packet = None,
                     E::Failsafe => prev_sbus_packet = None,
                 };
-                snd_request_queue.send(EventRequest::RcFailsafe).await;
+                snd_request_queue.send(EventRequest::RcFailsafe.into()).await;
             }
 
             // Received new map, save it

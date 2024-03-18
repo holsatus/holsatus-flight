@@ -2,7 +2,7 @@ use embassy_time::{Duration, Ticker};
 use crate::{common::types::VehicleState, messaging as msg};
 
 #[embassy_executor::task]
-pub async fn arm_checker() -> ! {
+pub async fn vehicle_state() -> ! {
     // Input channels
     let mut rcv_gyr_calibrating = msg::GYR_CALIBRATING.receiver().unwrap();
     let mut rcv_acc_calibrating = msg::ACC_CALIBRATING.receiver().unwrap();

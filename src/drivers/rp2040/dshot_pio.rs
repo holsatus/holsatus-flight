@@ -7,19 +7,20 @@ pub trait DshotPioTrait<const N: usize> {
 }
 
 use embassy_rp::{
-    pio::{ Instance, Pio, Config, PioPin, ShiftConfig, ShiftDirection::Left, InterruptHandler},
-    Peripheral, interrupt::typelevel::Binding
+    interrupt::typelevel::Binding, pio::{ Config, Instance, InterruptHandler, Pio, PioPin, ShiftConfig, ShiftDirection::Left}, Peripheral
 };
+
 #[allow(dead_code)]
 pub struct DshotPio<'a, const N : usize, PIO : Instance> {
     pio_instance: Pio<'a,PIO>,
+    pio_config: Config<'a, PIO>
 }
 
 
 fn configure_pio_instance<'a,PIO: Instance>  (
     pio: impl Peripheral<P = PIO> + 'a,
     irq: impl Binding<PIO::Interrupt, InterruptHandler<PIO>>,
-    clk_div: (u16, u8),
+    clk_div: Option<(u16, u8)>,
 ) -> (Config<'a, PIO>, Pio<'a, PIO>) {
     
     // Define program
@@ -53,7 +54,9 @@ fn configure_pio_instance<'a,PIO: Instance>  (
     let mut cfg = Config::default();
     let mut pio = Pio::new(pio,irq);
     cfg.use_program(&pio.common.load_program(&dshot_pio_program.program), &[]);
-    cfg.clock_divider = clk_div.0.into();
+    if let Some(clocks) = clk_div {
+        cfg.clock_divider = clocks.0.into();
+    }
 
     cfg.shift_in = ShiftConfig {
         auto_fill: true,
@@ -80,7 +83,7 @@ impl <'a,PIO: Instance> DshotPio<'a,1,PIO> {
         pio: impl Peripheral<P = PIO> + 'a,
         irq: impl Binding<PIO::Interrupt, InterruptHandler<PIO>>,
         pin0: impl PioPin,
-        clk_div: (u16, u8),
+        clk_div: Option<(u16, u8)>,
     ) -> DshotPio<'a,1,PIO> {
 
         let (mut cfg, mut pio) = configure_pio_instance(pio, irq, clk_div);
@@ -92,7 +95,7 @@ impl <'a,PIO: Instance> DshotPio<'a,1,PIO> {
         pio.sm0.set_enable(true);
 
         // Return struct of 1 configured DShot state machine
-        DshotPio { pio_instance : pio }
+        DshotPio { pio_instance : pio, pio_config: cfg }
     }
 }
 
@@ -102,7 +105,7 @@ impl <'a,PIO: Instance> DshotPio<'a,2,PIO> {
         irq: impl Binding<PIO::Interrupt, InterruptHandler<PIO>>,
         pin0: impl PioPin,
         pin1: impl PioPin,
-        clk_div: (u16, u8),
+        clk_div: Option<(u16, u8)>,
     ) -> DshotPio<'a,2,PIO> {
 
         let (mut cfg, mut pio) = configure_pio_instance(pio, irq, clk_div);
@@ -119,7 +122,7 @@ impl <'a,PIO: Instance> DshotPio<'a,2,PIO> {
         pio.sm1.set_enable(true);
 
         // Return struct of 2 configured DShot state machines
-        DshotPio { pio_instance : pio }
+        DshotPio { pio_instance : pio, pio_config: cfg }
     }
 }
 
@@ -130,7 +133,7 @@ impl <'a,PIO: Instance> DshotPio<'a,3,PIO> {
         pin0: impl PioPin,
         pin1: impl PioPin,
         pin2: impl PioPin,
-        clk_div: (u16, u8),
+        clk_div: Option<(u16, u8)>,
     ) -> DshotPio<'a,3,PIO> {
 
         let (mut cfg, mut pio) = configure_pio_instance(pio, irq, clk_div);
@@ -152,7 +155,7 @@ impl <'a,PIO: Instance> DshotPio<'a,3,PIO> {
         pio.sm2.set_enable(true);
         
         // Return struct of 3 configured DShot state machines
-        DshotPio { pio_instance : pio }
+        DshotPio { pio_instance : pio, pio_config: cfg }
     }
 }
 
@@ -164,7 +167,7 @@ impl <'a,PIO: Instance> DshotPio<'a,4,PIO> {
         pin1: impl PioPin,
         pin2: impl PioPin,
         pin3: impl PioPin,
-        clk_div: (u16, u8),
+        clk_div: Option<(u16, u8)>,
     ) -> DshotPio<'a,4,PIO> {
 
         let (mut cfg, mut pio) = configure_pio_instance(pio, irq, clk_div);
@@ -191,7 +194,7 @@ impl <'a,PIO: Instance> DshotPio<'a,4,PIO> {
         pio.sm3.set_enable(true);
 
         // Return struct of 4 configured DShot state machines
-        DshotPio { pio_instance : pio }
+        DshotPio { pio_instance : pio, pio_config: cfg }
     }
 }
 
@@ -286,5 +289,15 @@ impl <'d,PIO : Instance> DshotPioTrait<4 > for DshotPio<'d,4,PIO> {
         self.pio_instance.sm1.tx().push(dshot::throttle_minimum(false) as u32);
         self.pio_instance.sm2.tx().push(dshot::throttle_minimum(false) as u32);
         self.pio_instance.sm3.tx().push(dshot::throttle_minimum(false) as u32);
+    }
+}
+
+impl <'d,PIO : Instance, const N: usize> DshotPio<'d,N,PIO> {
+    pub fn set_divider(&mut self, clk_div: (u16, u8)) {
+        self.pio_config.clock_divider = clk_div.0.into();
+        self.pio_instance.sm0.set_config(&self.pio_config);
+        self.pio_instance.sm1.set_config(&self.pio_config);
+        self.pio_instance.sm2.set_config(&self.pio_config);
+        self.pio_instance.sm3.set_config(&self.pio_config);
     }
 }

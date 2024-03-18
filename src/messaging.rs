@@ -1,18 +1,18 @@
-use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
-use embassy_time::{Duration, Instant};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
+use embassy_time::Duration;
 use nalgebra::{Quaternion, Unit, Vector3, Vector4};
 use sbus::SBusPacket;
 
 use crate::{
-    airframe::MotorMixing, common::types::{AttitudeReference, MavStreamableFrequencies, MotorState, VehicleState}, config::{AttitudePids, DshotSpeed, ImuConfig, MagConfig}, sensors::imu::types::ImuData6Dof, t_flight_detector::LandedState, t_motor_governor::ArmBlocker, t_sbus_reader::RxError, transmitter::{ControlRequest, EventRequest, TransmitterMap}
+    airframe::MotorMixing, common::types::{AttitudeReference, MavStreamableFrequencies, MotorState, VehicleState}, config::{AttitudePids, DshotSpeed, ImuConfig, MagConfig}, sensors::imu::types::ImuData6Dof, t_blackbox_logging::BlackboxCommand, t_commander::CommanderRequest, t_flight_detector::LandedState, t_gyr_calibration::{GyrCalCommand, GyrCalStatus}, t_librarian::LibrarianCommand, t_motor_governor::ArmBlocker, t_sbus_reader::RxError, transmitter::{ControlRequest, TransmitterMap}
 };
 
 macro_rules! watch {
     ($name:ident, $datatype:ty, $num:literal) => {
-        watch!($name, $datatype, $num, ThreadModeRawMutex, "Watch channel");
+        watch!($name, $datatype, $num, CriticalSectionRawMutex, "Watch channel");
     };
     ($name:ident, $datatype:ty, $num:literal, $doc:expr) => {
-        watch!($name, $datatype, $num, ThreadModeRawMutex, $doc);
+        watch!($name, $datatype, $num, CriticalSectionRawMutex, $doc);
     };
     ($name:ident, $datatype:ty, $num:literal, $mutex:ident) => {
         watch!($name, $datatype, $num, $mutex, "Watch channel");
@@ -24,22 +24,22 @@ macro_rules! watch {
 }
 
 // Shorthand for the watch and channel types
-type SWatch<T, const N: usize> = embassy_sync::watch::Watch<ThreadModeRawMutex, T, N>;
+type SWatch<T, const N: usize> = embassy_sync::watch::Watch<CriticalSectionRawMutex, T, N>;
 
 
 // Best effort IMU and MAG data, selected by the respective governors
-watch!(IMU_DATA, ImuData6Dof, 4, "Best effort IMU data, selected by the IMU governor task.");
+watch!(IMU_DATA, ImuData6Dof, 5, "Best effort IMU data, selected by the IMU governor task.");
 watch!(MAG_DATA, Vector3<f32>, 3, "Best effort MAG data, selected by the MAG governor task.");
 
 /// Array of watch channels for the `N_IMU` individual IMU sensors. These should generally not be used, as the
 /// IMU governor task is responsible for selecting the active sensor, transmitted through the `IMU_DATA` channel.
-pub static IMU_SENSOR: [SWatch<(ImuData6Dof, Instant), 3>; crate::N_IMU] = [IMU_SENSOR_REPEAT; crate::N_IMU];
-const IMU_SENSOR_REPEAT: SWatch<(ImuData6Dof, Instant), 3> = SWatch::new();
+pub static IMU_SENSOR: [SWatch<ImuData6Dof, 3>; crate::N_IMU] = [IMU_SENSOR_REPEAT; crate::N_IMU];
+const IMU_SENSOR_REPEAT: SWatch<ImuData6Dof, 3> = SWatch::new();
 
 /// Array of watch channels for the `N_MAG` individual MAG sensors. These should generally not be used, as the
 /// MAG governor task is responsible for selecting the active sensor, transmitted through the `MAG_DATA` channel.
-pub static MAG_SENSOR: [SWatch<(Vector3<f32>, Instant), 3>; crate::N_MAG] = [MAG_SENSOR_REPEAT; crate::N_MAG];
-const MAG_SENSOR_REPEAT: SWatch<(Vector3<f32>, Instant), 3> = SWatch::new();
+pub static MAG_SENSOR: [SWatch<Vector3<f32>, 3>; crate::N_MAG] = [MAG_SENSOR_REPEAT; crate::N_MAG];
+const MAG_SENSOR_REPEAT: SWatch<Vector3<f32>, 3> = SWatch::new();
 
 // Indicates the ID of the active IMU and MAG sensor
 watch!(IMU_ACTIVE_ID, Option<u8>, 2, "The ID of the active IMU sensor, selected by the IMU governor task.");
@@ -56,22 +56,30 @@ watch!(ACC_CALIBRATED, bool, 2, "Signals whether the accelerometers are calibrat
 watch!(MAG_CALIBRATED, bool, 2, "Signals whether the magnetometers are calibrated");
 
 // Command to start the calibration process for the individual sensors
-watch!(CMD_START_GYR_CALIB, bool, 2, "Command to start calibrating the gyroscopes");
+watch!(CMD_GYR_CALIB, GyrCalCommand, 2, "Command to start calibrating the gyroscopes");
 watch!(CMD_START_ACC_CALIB, bool, 2, "Command to start calibrating the accelerometers");
 watch!(CMD_START_MAG_CALIB, bool, 2, "Command to start calibrating the magnetometers");
 
+// Status of calibration routines
+watch!(CMD_GYR_STATUS, GyrCalStatus, 2, "Command to start calibrating the gyroscopes");
+
+
 // Various commands to the system, set by the commander task
+watch!(CMD_RELOAD_CONFIG, bool, 2, "Command to reload the configuration from flash");
 watch!(CMD_SAVE_CONFIG, bool, 2, "Command to commit any changes to the configuration to flash");
-watch!(CMD_ARM_VEHICLE, bool, 2, "Command to arm or disarm the vehicle, sent by rc_mapper");
+watch!(CMD_ARM_VEHICLE, bool, 3, "Command to arm or disarm the vehicle, sent by rc_mapper");
 watch!(CMD_EN_INTEGRAL, bool, 2, "Channel which can enable or disable integral terms of the attitude controller");
-watch!(CMD_ATTITUDE_SETPOINT, AttitudeReference, 2, "The target throttle for the motor mixing");
+watch!(CMD_ATTITUDE_SETPOINT, AttitudeReference, 2, "The target attitude for the attitude controllers");
 watch!(CMD_THROTTLE_SETPOINT, f32, 2, "The target throttle for the motor mixing");
 
 // Channels used for remote control
 watch!(SBUS_DATA, Result<SBusPacket, RxError>, 3, "Data from the SBUS receiver task");
 watch!(REQUEST_CONTROLS, ControlRequest, 2, "The target attitude (angle or rate) for the attitude controller");
 /// Queue of discrete system requests, such as sensor calibration, configuration changes, etc.
-pub static REQUEST_QUEUE: Channel<ThreadModeRawMutex, EventRequest, 10> = Channel::new();
+pub static REQUEST_QUEUE: Channel<CriticalSectionRawMutex, CommanderRequest, 10> = Channel::new();
+pub static LIB_COMMAND_QUEUE: Channel<CriticalSectionRawMutex, LibrarianCommand, 5> = Channel::new();
+pub static BLACKBOX_COMMAND_QUEUE: Channel<CriticalSectionRawMutex, BlackboxCommand, 1> = Channel::new();
+
 
 // Channel for various vehicle states
 watch!(VEHICLE_STATE, VehicleState, 3, "Channel containing the vehicle state, selected by the vehicle state governor task.");
@@ -79,7 +87,7 @@ watch!(ARM_BLOCKER, ArmBlocker, 3, "Arming blocker flag, set by the arming check
 watch!(LANDED_STATE, LandedState, 2, "Landed state, set by the flight detector, describes whether the vehicle is landed, airborne or in transition");
 
 watch!(ATTITUDE_QUAT, Unit<Quaternion<f32>>, 2, "The current vehicle attitude represented as a quaternion");
-watch!(ATTITUDE_EULER, Vector3<f32>, 4, "The current vehicle attitude represented as euler angles");
+watch!(ATTITUDE_EULER, Vector3<f32>, 5, "The current vehicle attitude represented as euler angles");
 watch!(CONTROLLER_OUTPUT, Vector3<f32>, 2, "The output of the attitude controllers for each axis");
 watch!(MOTORS_MIXED, Vector4<u16>, 2, "The mixed controller output and thrust target, using a mixing matrix");
 watch!(LOOP_HEALTH, f32, 2, "Loop health transmitted by the attitude controller, is 1.0 when the loop is healthy");

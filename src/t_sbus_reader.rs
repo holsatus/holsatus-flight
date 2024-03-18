@@ -1,8 +1,5 @@
 
-use embassy_rp::peripherals::UART1;
-use embassy_rp::uart::{Async, UartRx};
 use embassy_time::{with_timeout, Instant};
-use sbus::SBusPacketParser;
 
 use crate::messaging as msg;
 
@@ -30,14 +27,14 @@ pub enum RxError {
 /// Utilizes a custom interrupt-based UART driver
 /// to read entire SBUS packet in one go.
 #[embassy_executor::task]
-pub async fn sbus_reader(mut uart_rx_sbus: UartRx<'static, UART1, Async>) {
+pub async fn sbus_reader(mut uart_rx_sbus: crate::bsp::UartRxSbusPeripheral) {
     // Output messages
     let snd_sbus_data = msg::SBUS_DATA.dyn_sender();
 
     let timeout = msg::CFG_RADIO_TIMEOUT.spin_get().await;
 
     let mut read_buffer = [0u8; 25];
-    let mut parser = SBusPacketParser::new();
+    let mut parser = sbus::SBusPacketParser::new();
     let mut parse_time = Instant::now();
 
     '_infinite: loop {

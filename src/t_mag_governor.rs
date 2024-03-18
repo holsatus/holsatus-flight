@@ -21,7 +21,7 @@ pub async fn mag_governor() {
     'infinite: loop {
         
         // Wait for data from any MAG sensor
-        let ((data, _time), id) = poll_fn(|cx| {
+        let (data, id) = poll_fn(|cx| {
             for (id, mag_sensor) in rcv_mag_sensor_array.iter_mut().enumerate() {
                 if let Poll::Ready(data) = pin!(mag_sensor.changed()).poll_unpin(cx) {
                     return Poll::Ready((data, id as u8));

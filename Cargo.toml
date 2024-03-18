@@ -32,7 +32,7 @@ icm20948-async = { git = "https://github.com/peterkrull/icm20948-async"}
 mag-calibrator-rs = { git = "https://github.com/peterkrull/mag-calibrator-rs" }
 dshot-encoder = { git = "https://github.com/peterkrull/dshot-encoder" }
 
-arraydeque = { version = "0.5", default-features = false }
+heapless = "0.8.0"
 
 # Forked
 sbus = { git = "https://github.com/peterkrull/sbus" }
@@ -45,11 +45,17 @@ num-traits = { version = "0.2", default-features = false, features = ["libm"] }
 # Embassy (Forked version for UartRx read_fifo_on_timeout and Watch channel)
 embassy-sync =          { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt"]}
 embassy-time =          { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt","defmt-timestamp-uptime"]}
-embassy-executor =      { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt","integrated-timers","arch-cortex-m","executor-thread","executor-interrupt","task-arena-size-32768"]}
+embassy-executor =      { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt","integrated-timers","arch-cortex-m","executor-thread","executor-interrupt","task-arena-size-65536"]}
 embassy-rp =            { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt","unstable-pac","time-driver","critical-section-impl","intrinsics","rom-v2-intrinsics"]}
 embassy-usb =           { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt"] }
+embassy-usb-driver =    { git = "https://github.com/peterkrull/embassy", branch = "holsatus", features = ["defmt"] }
 embassy-futures =       { git = "https://github.com/peterkrull/embassy", branch = "holsatus" }
 embassy-embedded-hal =  { git = "https://github.com/peterkrull/embassy", branch = "holsatus" }
+
+postcard = "1.0.0"
+serde = { version = "1.0.*", default-features = false, features = ["derive"] }
+sequential-storage = "1.0.0"
+embedded-storage = "0.3.1"
 
 mavlink = { git = "https://github.com/peterkrull/rust-mavlink", branch = "async-holsatus", default-features = false, features = ["common","embedded"], optional = true}
 
@@ -66,6 +72,9 @@ embedded-cli = { version = "0.2.1", optional = true }
 embedded-io = { version = "0.6.1", optional = true }
 ufmt = { version = "0.2.0", optional = true }
 
+[dev-dependencies]
+chrono = "0.4.35"
+
 [profile.dev]
 codegen-units = 1
 debug = 2
@@ -81,7 +90,7 @@ debug = false
 debug-assertions = false
 incremental = false
 lto = 'fat'
-opt-level = 3
+opt-level = 'z'
 overflow-checks = false
 
 # do not optimize proc-macro crates = faster builds from scratch

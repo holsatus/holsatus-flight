@@ -2,6 +2,8 @@ use core::ops::{Deref, DerefMut};
 
 use num_traits::Float;
 
+use crate::t_commander::CommanderRequest;
+
 pub mod tx_12_profiles;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -10,6 +12,110 @@ pub struct ControlRequest {
     pub pitch: f32,
     pub yaw: f32,
     pub thrust: f32,
+}
+
+impl ufmt::uDisplay for TransmitterMap {
+    fn fmt<W>(&self, f: &mut ufmt::Formatter<'_, W>) -> Result<(), W::Error>
+    where W: ufmt::uWrite + ?Sized
+    {
+        for (i, ch) in self.0.iter().enumerate() {
+            match ch {
+                ChannelType::None => {
+                    ufmt::uwriteln!(f, "\nchannel_{}: null",i)?;
+                },
+                ChannelType::Analog(analog) => {
+                    ufmt::uwriteln!(f, "\nchannel_{}:",i)?;
+                    let (cmd, cfg) = analog;
+                    let cmd_str = match cmd {
+                        AnalogCommand::Roll => "Roll",
+                        AnalogCommand::Pitch => "Pitch",
+                        AnalogCommand::Yaw => "Yaw",
+                        AnalogCommand::Thrust => "Thrust",
+                    };
+
+                    ufmt::uwriteln!(f, "  analog:")?;
+                    ufmt::uwriteln!(f, "    signal: \"{}\"",cmd_str)?;
+                    ufmt::uwriteln!(f, "    config:")?;
+                    ufmt::uwriteln!(f, "      in_min: {}",cfg.in_min)?;
+                    ufmt::uwriteln!(f, "      in_max: {}",cfg.in_max)?;
+                    ufmt::uwriteln!(f, "      fullrange: {}",cfg.fullrange)?;
+                    ufmt::uwriteln!(f, "      reverse: {}",cfg.reverse)?;
+                    ufmt::uwriteln!(f, "      deadband: {}",cfg.deadband)?;
+                    match cfg.rates {
+                        Rates::None => {
+                            ufmt::uwriteln!(f, "      rates: null")?;
+                        },
+                        Rates::Standard(rates) => {
+                            let rate_int = (rates.rate*10000.) as i32;
+                            let expo_int = (rates.expo*10000.) as i32;
+                            let slow_int = (rates.slow*10000.) as i32;
+
+                            let rate_whole = rate_int / 10000;
+                            let rate_frac = rate_int - rate_whole * 10000;
+                            let expo_whole = expo_int / 10000;
+                            let expo_frac = expo_int - expo_whole * 10000;
+                            let slow_whole = slow_int / 10000;
+                            let slow_frac = slow_int - slow_whole * 10000;
+
+                            ufmt::uwriteln!(f, "      rates:")?;
+                            ufmt::uwriteln!(f, "        rate: {}.{}",rate_whole,rate_frac)?;
+                            ufmt::uwriteln!(f, "        expo: {}.{}",expo_whole,expo_frac)?;
+                            ufmt::uwriteln!(f, "        slow: {}.{}",slow_whole,slow_frac)?;
+                        },
+                    }
+                },
+                ChannelType::Discrete(discrete) => {
+                    ufmt::uwriteln!(f, "\nchannel_{}:",i)?;
+                    ufmt::uwriteln!(f, "  discrete:")?;
+                    for (i,(val, req)) in discrete.iter().enumerate() {
+                        ufmt::uwriteln!(f, "    binding_{}:",i)?;
+                        let req_str = match req {
+                            EventRequest::Unbound => "Unbound",
+                            EventRequest::ArmMotors => "ArmMotors",
+                            EventRequest::DisarmMotors => "DisarmMotors",
+                            EventRequest::AngleMode => "AngleMode",
+                            EventRequest::RateMode => "RateMode",
+                            EventRequest::StartGyrCalib => "StartGyrCalib",
+                            EventRequest::AbortGyrCalib => "AbortGyrCalib",
+                            EventRequest::StartAccCalib => "StartAccCalib",
+                            EventRequest::AbortAccCalib => "AbortAccCalib",
+                            EventRequest::StartMagCalib => "StartMagCalib",
+                            EventRequest::AbortMagCalib => "AbortMagCalib",
+                            EventRequest::SaveConfig => "SaveConfig",
+                            EventRequest::RcFailsafe => "RcFailsafe",
+                        };
+                        ufmt::uwriteln!(f, "      val: {}", val)?;
+                        ufmt::uwriteln!(f, "      command: \"{}\"", req_str)?;
+
+
+                        /*
+                        ufmt::uwriteln!(f, "\nchannel_{}:",i)?;
+                        ufmt::uwriteln!(f, "  discrete:")?;
+                        for (val, req) in discrete.iter() {
+                        let req_str = match req {
+                            EventRequest::Unbound => "Unbound",
+                            EventRequest::ArmMotors => "ArmMotors",
+                            EventRequest::DisarmMotors => "DisarmMotors",
+                            EventRequest::AngleMode => "AngleMode",
+                            EventRequest::RateMode => "RateMode",
+                            EventRequest::StartGyrCalib => "StartGyrCalib",
+                            EventRequest::AbortGyrCalib => "AbortGyrCalib",
+                            EventRequest::StartAccCalib => "StartAccCalib",
+                            EventRequest::AbortAccCalib => "AbortAccCalib",
+                            EventRequest::StartMagCalib => "StartMagCalib",
+                            EventRequest::AbortMagCalib => "AbortMagCalib",
+                            EventRequest::SaveConfig => "SaveConfig",
+                            EventRequest::RcFailsafe => "RcFailsafe",
+                        };
+                        ufmt::uwriteln!(f, "    - [{}, \"{}\"]",val, req_str)?;
+                        */
+                    }
+                },
+            };
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -87,6 +193,43 @@ pub enum EventRequest {
 
     /// RC Failsafe
     RcFailsafe,
+}
+
+impl From<EventRequest> for CommanderRequest {
+    fn from(value: EventRequest) -> Self {
+
+        match value {
+            EventRequest::Unbound => unreachable!("Unbound events should never reach the commander"),
+            EventRequest::ArmMotors => CommanderRequest::ArmMotors(true),
+            EventRequest::DisarmMotors => CommanderRequest::ArmMotors(false),
+            EventRequest::AngleMode => CommanderRequest::AngleMode,
+            EventRequest::RateMode => CommanderRequest::RateMode,
+            EventRequest::StartGyrCalib => CommanderRequest::CalGyrCommand(crate::t_gyr_calibration::GyrCalCommand::Start(
+                // Use all defaule values
+                crate::t_gyr_calibration::CalGyrConfig {
+                    sensor: None,
+                    duration: None,
+                    max_var: None,
+                }
+            )),
+            EventRequest::AbortGyrCalib => CommanderRequest::CalGyrCommand(crate::t_gyr_calibration::GyrCalCommand::Stop),
+            EventRequest::StartAccCalib => CommanderRequest::StartAccCalib {
+                sensor: None,
+                duration: None,
+                max_var: None,
+            },
+            EventRequest::AbortAccCalib => CommanderRequest::AbortAccCalib,
+            EventRequest::StartMagCalib => CommanderRequest::StartMagCalib {
+                sensor: None,
+                max_var: None,
+            },
+            EventRequest::AbortMagCalib => CommanderRequest::AbortMagCalib,
+            EventRequest::SaveConfig => CommanderRequest::SaveConfig {
+                config_id: None,
+            },
+            EventRequest::RcFailsafe => CommanderRequest::RcFailsafe,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

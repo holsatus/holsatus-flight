@@ -1,7 +1,6 @@
 use crate::common::types::{ArmedState, DisarmReason, MotorState};
-use crate::drivers::rp2040::dshot_pio::{DshotPio, DshotPioTrait};
+use crate::drivers::rp2040::dshot_pio::DshotPioTrait; // TODO Get rid of this trait!
 use embassy_futures::select::{select, Either};
-use embassy_rp::peripherals::PIO0;
 use embassy_time::{with_timeout, Timer};
 
 pub const TASK_ID: &str = "[MOTOR GOVERNOR]";
@@ -68,12 +67,13 @@ use crate::messaging as msg;
 /// Arming takes 3.5 seconds: 3.0 s to arm, 0.5 s to set direction
 #[embassy_executor::task]
 pub async fn motor_governor(
-    mut driver_dshot: DshotPio<'static, 4, PIO0>,
+    mut driver_dshot: crate::bsp::MotorDriverPeripheral,
 ) -> ! {
 
     // Input messages
     let mut rcv_motor_speed = msg::MOTOR_SPEEDS.receiver().unwrap();
     let mut rcv_arming_prevention = msg::ARM_BLOCKER.receiver().unwrap();
+    let mut rcv_arm_vehicle = msg::CMD_ARM_VEHICLE.receiver().unwrap();
 
     // Output messages
     let snd_motor_state = msg::MOTOR_STATE.sender();
@@ -84,13 +84,13 @@ pub async fn motor_governor(
     #[allow(unused_labels)]
     'infinite: loop {
         // Wait for arming prevention flag to be completely empty
-        rcv_arming_prevention.changed_and(|flag| flag.is_empty()).await;
+        rcv_arm_vehicle.changed_and(|arm|arm == &true).await;
 
         // Notify that motors are arming
         snd_motor_state.send(MotorState::Arming);
 
         // Send minimum throttle for a few seconds to arm the ESCs
-        defmt::info!("{} : Initializing motors", TASK_ID);
+        defmt::info!("{}: Initializing motors", TASK_ID);
         Timer::after_millis(500).await;
         for _i in 0..50 {
             driver_dshot.throttle_minimum();
@@ -98,7 +98,7 @@ pub async fn motor_governor(
         }
 
         // Set motor directions for the four motors
-        defmt::info!("{} : Setting motor directions", TASK_ID);
+        defmt::info!("{}: Setting motor directions", TASK_ID);
         for _i in 0..10 {
             driver_dshot.reverse(msg::CFG_REVERSE_MOTOR.spin_get().await);
             Timer::after_millis(50).await;
@@ -106,53 +106,50 @@ pub async fn motor_governor(
 
         // After arming, ensure (again) no arming prevention flags are set
         if !rcv_arming_prevention.get().await.is_empty() {
-            defmt::warn!("{} : Disarming motors -> arming prevention", TASK_ID);
+            defmt::warn!("{}: Disarming motors -> arming prevention", TASK_ID);
             snd_motor_state.send(MotorState::Disarmed(DisarmReason::Fault));
             continue 'infinite;
         }
 
         let dshot_timeout = msg::CFG_DSHOT_TIMEOUT.spin_get().await;
 
-        defmt::info!("{} : Motors are armed and active", TASK_ID);
+        defmt::info!("{}: Motors are armed and active", TASK_ID);
         'armed: loop {
-            
             match with_timeout(
                 dshot_timeout,
                 select(
+                    rcv_arm_vehicle.changed_and(|arm|arm == &false),
                     rcv_motor_speed.changed(),
-                    rcv_arming_prevention.changed(),
                 )
             ).await {
 
+                // Motors are commanded to disarm
+                Ok(Either::First(_)) => {
+                    driver_dshot.throttle_minimum();
+                    snd_motor_state.send(MotorState::Disarmed(DisarmReason::Commanded));
+                    defmt::warn!("{}: Disarming motors -> commanded", TASK_ID);
+                    break 'armed;
+                },
+
                 // Motors are set to idle (armed, not spinning)
-                Ok(Either::First([0,0,0,0])) => {
+                Ok(Either::Second([0,0,0,0])) => {
                     driver_dshot.throttle_minimum();
                     snd_motor_state.send(MotorState::Armed(ArmedState::Idle));
                 },
 
                 // Motor speed message received correctly
-                Ok(Either::First(speeds)) => {
+                Ok(Either::Second(speeds)) => {
                     driver_dshot.throttle_clamp(speeds);
                     snd_motor_state.send(MotorState::Armed(ArmedState::Running(speeds)));
                 },
 
-                // Motors are commanded to disarm
-                Ok(Either::Second(flag)) if flag.contains(ArmBlocker::CMD_DISARM) => {
-                    defmt::warn!("{} : Disarming motors -> commanded", TASK_ID);
-                    driver_dshot.throttle_minimum();
-                    snd_motor_state.send(MotorState::Disarmed(DisarmReason::Commanded));
-                    break 'armed;
-                },
-
                 // Automatic disarm due to message timeout
                 Err(_) => {
-                    defmt:: warn!("{} : Disarming motors -> timeout", TASK_ID);
                     driver_dshot.throttle_minimum();
                     snd_motor_state.send(MotorState::Disarmed(DisarmReason::Timeout));
+                    defmt:: warn!("{}: Disarming motors -> timeout", TASK_ID);
                     break 'armed;
                 },
-
-                _ => {}
             }
         }
     }

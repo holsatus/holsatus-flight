@@ -49,7 +49,7 @@ pub async fn acc_calibration() -> ! {
                 match with_timeout(Duration::from_millis(50), rcv_imu.changed()).await {
 
                     // Insert IMU data into the calibrator
-                    Ok((imu_data, _time)) => {
+                    Ok(imu_data) => {
                         calibrator.collect(imu_data);
                         if calibrator.is_done() {
                             defmt::warn!("[ACC CALIB]: Acc calibration complete for sensor {}", id);

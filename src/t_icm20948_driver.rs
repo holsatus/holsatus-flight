@@ -9,7 +9,7 @@ use crate::messaging as msg;
 #[allow(unused)]
 #[embassy_executor::task]
 pub async fn icm_20948_driver(
-    i2c: crate::main_high_prio::I2cAsyncType,
+    i2c: crate::AsyncI2cDevice,
     imu_id: u8,
     mag_id: u8,
 ) -> ! {
@@ -100,21 +100,21 @@ pub async fn icm_20948_driver(
             // Read and apply calibration to both IMU and MAG data
             if imu_is_active && mag_is_active && Instant::now() > mag_timer {
                 if let Ok(mut imu_data) = imu.read_9dof().await {
-                    snd_imu_sensor.send((imu_data.into(), Instant::now()));
-                    snd_mag_sensor.send((imu_data.mag, Instant::now()));
+                    snd_imu_sensor.send(imu_data.into());
+                    snd_mag_sensor.send(imu_data.mag);
                     mag_timer += mag_duration;
                 }
 
             // Read and apply calibration to IMU data only
             } else if imu_is_active {
                 if let Ok(mut imu_data) = imu.read_6dof().await {
-                    snd_imu_sensor.send((imu_data.into(), Instant::now()));
+                    snd_imu_sensor.send(imu_data.into());
                 }
 
             // Read and apply calibration to MAG data only
             } else if mag_is_active && Instant::now() > mag_timer {
                 if let Ok(mut mag_data) = imu.read_mag().await {
-                    snd_mag_sensor.send((mag_data, Instant::now()));
+                    snd_mag_sensor.send(mag_data);
                     mag_timer += mag_duration;
                 }
             }

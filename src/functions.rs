@@ -21,13 +21,3 @@ pub fn wrap<T: Float>(mut num: T, min: T, max: T) -> T {
 
     num
 }
-
-/// Get the time since boot in ms, u32 representation.
-/// This counter will overflow after ~50 days.
-pub fn time_boot_ms() -> u32 {
-    use embassy_time::Instant;
-
-    // The 0xFFFFFFFF flag will ensure the cast to u32 will not clamp values > 2^32
-    // but will instead make it behave as an overflow.
-    (Instant::now().as_millis() & 0xFFFFFFFF) as u32
-}

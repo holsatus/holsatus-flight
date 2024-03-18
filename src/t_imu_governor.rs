@@ -1,6 +1,7 @@
 use core::{future::poll_fn, pin::pin, task::Poll};
 
 use defmt::{info, warn};
+use embassy_time::Instant;
 use futures::FutureExt;
 
 use crate::{messaging as msg, sensors::{SensorCondition, SensorRedundancy}};
@@ -33,7 +34,7 @@ pub async fn imu_governor() -> ! {
 
         // Wait for data from any IMU sensor by polling each sensor channel
         // This is not beautiful, but it is a decent way to poll an array of channels
-        let ((mut data, time), id) = poll_fn(|cx| {
+        let (mut data, id) = poll_fn(|cx| {
             for (id, imu_sensor) in rcv_imu_sensor_array.iter_mut().enumerate() {
                 if let Poll::Ready(data) = pin!(imu_sensor.changed()).poll_unpin(cx) {
                     return Poll::Ready((data, id as u8));
@@ -43,7 +44,7 @@ pub async fn imu_governor() -> ! {
         }).await;
 
         // Save the timestamp of the reading
-        imu_redundancy.get_mut(id).last_reading = Some(time);
+        imu_redundancy.get_mut(id).last_reading = Some(Instant::now());
 
         // Early loop-back if sensor is already degraded
         if imu_redundancy.is_degraded(id) {

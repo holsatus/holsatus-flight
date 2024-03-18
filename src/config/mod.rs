@@ -1,4 +1,4 @@
-use core::f32::consts::PI;
+use core::{f32::consts::PI, ops::Range};
 
 use embassy_rp::{
     flash::{Async, Flash},
@@ -8,21 +8,19 @@ use embassy_time::Duration;
 use nalgebra::Vector3;
 
 pub mod storage;
+pub mod keyed_item;
 
 pub fn load_config(
     flash: &mut Flash<'static, FLASH, Async, { FLASH_AMT }>,
 ) -> Option<Configuration> {
     let config: Configuration = unsafe { storage::read(flash, CFG_ADDR_OFFSET) };
-    if config.header == DEFAULT_CONFIG.header && config.footer == DEFAULT_CONFIG.footer {
-        Some(config)
-    } else {
-        None
-    }
+    Some(config)
 }
 
 pub const DEFAULT_CONFIG: Configuration = RP2040_DEV_CONFIG;
 
 use icm20948_async::*;
+use sequential_storage::map::StorageItem;
 use crate::{airframe::MotorMixing, common::types::MavStreamableFrequencies, filters::pid_controller::PidConfig};
 
 use crate::{
@@ -30,7 +28,7 @@ use crate::{
     transmitter::TransmitterMap,
 };
 pub const RP2040_DEV_CONFIG: Configuration = Configuration {
-    header: CFG_HEADER,
+    key: CFG_KEY,
     imu_cfg: [Some(ImuConfig {
             acc_cal: Some(Calibration {
                 scale: Vector3::new(0.9941048, 0.9951916, 0.987686),
@@ -61,7 +59,7 @@ pub const RP2040_DEV_CONFIG: Configuration = Configuration {
         mag_ext: None,
     }), None],
     mag_freq: 100,
-    pids: AttitudePids {
+    attpids: AttitudePids {
         roll_inner: PidConfig {
             kp: 30.,
             ki: 1.0,
@@ -137,25 +135,107 @@ pub const RP2040_DEV_CONFIG: Configuration = Configuration {
     radio_timeout: Duration::from_millis(200),
     dshot_timeout: Duration::from_millis(100),
     tx_map: crate::transmitter::tx_12_profiles::TX12_8CH_DEFAULT_MAP,
-    footer: CFG_FOOTER,
 };
 
 
 pub const FLASH_AMT: usize = 2 * 1024 * 1024;
 pub const CFG_ADDR_OFFSET: u32 = 0x100000;
 
+
 // Headers are used to check that loaded configuration is not just garbage data
-pub const CFG_HEADER: u64 = 252623182913621215;
-pub const CFG_FOOTER: u64 = 145383224228254269;
+pub const CFG_KEY: u8 = 127;
+
+// Start and end of the configuration and queue flash ranges
+const MAP_RANGE_START: u32 = CFG_ADDR_OFFSET;
+const MAP_RANGE_END: u32 = MAP_RANGE_START + 1024 * 256;
+const QUEUE_RANGE_START: u32 = MAP_RANGE_END;
+const QUEUE_RANGE_END: u32 = QUEUE_RANGE_START + 1024 * 512;
+
+pub const CFG_MAP_RANGE: Range<u32> = MAP_RANGE_START..MAP_RANGE_END;
+pub const CFG_QUEUE_RANGE: Range<u32> = QUEUE_RANGE_START..QUEUE_RANGE_END;
+
+#[repr(C)]
+pub struct DataStore<T, K> {
+    key: K,
+    data: T
+}
+macro_rules! make_data_store {
+    ($datatype:ty, $key:ty, $make_key:expr) => {
+                
+        impl StorageItem for DataStore<$datatype,$key> {
+            type Key = $key;
+
+            type Error = ();
+
+            fn serialize_into(&self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+
+                // Ensure buffer is large enough to contain the data
+                if buffer.len() < core::mem::size_of::<Self>() {
+                    return Err(());
+                }
+
+                // Get the bytes of the data as a slice referencing the data
+                let data_bytes =
+                    unsafe { core::slice::from_raw_parts((self as *const Self) as *const u8, core::mem::size_of::<Self>()) };
+
+                // Copy the data bytes into the buffer
+                buffer[..core::mem::size_of::<Self>()].copy_from_slice(data_bytes);
+
+                // Return the size of the data
+                Ok(core::mem::size_of::<Self>())
+            }
+
+            fn deserialize_from(buffer: &[u8]) -> Result<Self, Self::Error>
+            where
+                Self: Sized,
+            {   
+                // Ensure buffer is large enough to contain the data
+                if buffer.len() < core::mem::size_of::<Self>() {
+                    return Err(());
+                }
+
+                // Relevant slice of original buffer
+                let smaller_buffer = &buffer[..core::mem::size_of::<Self>()];
+
+                // Create a new buffer to store the data
+                let mut datastore = [0u8; core::mem::size_of::<Self>()];
+
+                // Copy the data from the smaller buffer into the datastore
+                for (i, byte) in smaller_buffer.iter().enumerate() {
+                    datastore[i] = *byte;
+                }
+
+                // "Deserialize" the data via transmutation
+                let data: Self = unsafe { core::mem::transmute(datastore) };
+
+                // Return the data
+                Ok(data)
+            }
+
+            fn key(&self) -> Self::Key {
+                self.key
+            }
+
+            fn deserialize_key_only(buffer: &[u8]) -> Result<Self::Key, Self::Error>
+            where
+                Self: Sized,
+            {
+                ($make_key)(buffer)
+            }
+        }
+    };
+}
+
+make_data_store!(Configuration, u16, |buffer: &[u8]|Ok(u16::from_be_bytes([buffer[0], buffer[1]])));
 
 #[derive(Debug, Clone, Copy)]
 pub struct Configuration {
-    pub header: u64,
+    pub key: u8,
     pub imu_freq: u16,
     pub imu_cfg: [Option<ImuConfig>; crate::N_IMU],
     pub mag_freq: u16,
     pub mag_cfg: [Option<MagConfig>; crate::N_MAG],
-    pub pids: AttitudePids,
+    pub attpids: AttitudePids,
     pub dshot_speed: DshotSpeed,
     pub motor_dir: [bool; 4],
     pub mav_freq: MavStreamableFrequencies,
@@ -163,8 +243,9 @@ pub struct Configuration {
     pub radio_timeout: Duration,
     pub dshot_timeout: Duration,
     pub tx_map: TransmitterMap,
-    pub footer: u64,
 }
+
+pub type Cfg = crate::config::keyed_item::KeyedItem<Configuration, u8>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AttitudePids {
@@ -204,7 +285,7 @@ pub trait ParamLookup {
 impl ParamLookup for Configuration {
     fn get(&self, mut splits: core::str::SplitInclusive<'_, char>) -> Type {
         match splits.next() {
-            Some("attpid_") => self.pids.get(splits),
+            Some("attpid_") => self.attpids.get(splits),
             _ => Type::Unknown,
         }
     }
@@ -422,9 +503,10 @@ impl Default for DshotSpeed {
     }
 }
 
+// TODO calculate this from configured system clock
 #[cfg(feature = "overclock")]
 impl DshotSpeed {
-    pub fn clk_div(&self) -> (u16, u8) {
+    pub const fn clk_div(&self) -> (u16, u8) {
         match self {
             DshotSpeed::Dshot150 => (208, 0),
             DshotSpeed::Dshot300 => (104, 0),
@@ -434,9 +516,10 @@ impl DshotSpeed {
     }
 }
 
+// TODO calculate this from configured system clock
 #[cfg(not(feature = "overclock"))]
 impl DshotSpeed {
-    pub fn clk_div(&self) -> (u16, u8) {
+    pub const fn clk_div(&self) -> (u16, u8) {
         match self {
             DshotSpeed::Dshot150 => (104, 0),
             DshotSpeed::Dshot300 => (52, 0),
