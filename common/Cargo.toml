@@ -1,0 +1,110 @@
+[package]
+name = "common"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["arch-std", "mavlink", "sitl-std"]
+
+portable-atomic-critical-section = ["portable-atomic/critical-section"]
+portable-atomic-unsafe-assume-single-core = ["portable-atomic/unsafe-assume-single-core"]
+
+mavlink = ["dep:mavlink"]
+sitl-std = []
+sitl-mcu = []
+
+log = ["dep:log", "dep:env_logger"]
+defmt = ["dep:defmt", "embassy-usb/defmt", "embedded-io-async/defmt-03"]
+interrupt-executor = ["embassy-executor/executor-interrupt"]
+arch-cortex-m = ["embassy-executor/arch-cortex-m"]
+arch-std = [
+    "postcard/use-std",
+    "critical-section/std",
+    "embedded-io/std",
+    "embedded-io-async/std",
+    "embassy-executor/arch-std",
+    "embassy-executor/log",
+    "embassy-time/log",
+    "embassy-time/std",
+    "embassy-sync/std",
+    "dep:env_logger",
+    "dep:log",
+]
+
+[dependencies]
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", default-features = false }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy" }
+
+# Logging, embedded and std environments
+defmt = { version = "0.3.10", optional = true }
+log = { version = "0.4.22", optional = true }
+env_logger = { version = "0.11.5", optional = true }
+
+# Embedded HAL/IO traits
+embedded-hal-async = "1.0.0"
+embedded-hal = "1.0.0"
+embedded-io-async = "0.6.1"
+embedded-io = "0.6.1"
+
+static_cell = "2"
+
+num-traits = { version = "0.2.19", default-features = false, features = [
+    "libm",
+] }
+num_enum = { version = "0.7.3", default-features = false }
+
+bitflags = { version = "2.6.0", default-features = false }
+
+critical-section = { version = "1.1", default-features = false }
+
+heapless = { version = "0.8.0", features = ["serde"]}
+
+nalgebra = { version = "0.33.0", default-features = false, features = [
+    "serde-serialize-no-std",
+    "libm",
+] }
+
+# TODO Pull this from submodule
+mavlink = { git = "https://github.com/holsatus/rust-mavlink", default-features = false, features = [
+    "holsatus",
+    "embedded"
+], optional = true}
+
+
+futures = { version = "0.3.31", default-features = false, features = [
+    "async-await",
+] }
+
+# Data storage and FAT filesystem for logging.
+sequential-storage = "3.0"
+embedded-storage-async = "0.4.1"
+embedded-fatfs = { git = "https://github.com/MabezDev/embedded-fatfs", default-features = false, features = [
+    "defmt",
+] }
+block-device-adapters = { version = "0.2.0", features = ["defmt"] }
+block-device-driver = { version = "0.2.0" }
+
+# IMU/MAG drivers
+icm20948-async = { git = "https://github.com/peterkrull/icm20948-async/", branch = "holsatus-test", features = [
+    "align-mag",
+    "serde",
+] }
+
+ahrs = { git = "https://github.com/jmagnuson/ahrs-rs", default-features = false }
+kalman_filter = { git = "https://github.com/peterkrull/kalman-filter-rs" }
+
+# Efficient serialization
+postcard = { version = "1.0.10" }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+
+ublox = { version = "0.4.5", default-features = false }
+portable-atomic = "1.9"
+approx = "0.5"
+thiserror = { version = "2.0.7", default-features = false }
+
+[dev-dependencies]
+futures-executor = { version = "0.3.31", features = ["thread-pool"] }
+hex-literal = "0.4.1"

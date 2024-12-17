@@ -1,0 +1,4 @@
+[submodule "rust-mavlink"]
+	path = rust-mavlink
+	branch = master
+	url = https://github.com/holsatus/rust-mavlink.git

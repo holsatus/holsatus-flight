@@ -20,16 +20,20 @@ jobs:
     - name: Install Rust
       uses: actions-rs/toolchain@v1
       with:
-        toolchain: nightly
-        target: thumbv6m-none-eabi
+        toolchain: stable
         override: true
 
+    - name: Add thumbv6m-none-eabi target
+      run: rustup target add thumbv6m-none-eabi
+  
+    - name: Add thumbv7m-none-eabihf target
+      run: rustup target add thumbv7em-none-eabihf
+  
     - name: Install dependencies
       run: cargo install flip-link
 
-    - name: Build
-      run: cargo build --verbose
+    - name: Build Holsatus Flight "common" library
+      run: cargo build --manifest-path common/Cargo.toml --verbose
 
-    # For now, remove tests
-    # - name: Run tests
-    #   run: cargo test --verbose
+    - name: Run tests in Holsatus Flight "common" library
+      run: cargo test --manifest-path common/Cargo.toml --verbose
