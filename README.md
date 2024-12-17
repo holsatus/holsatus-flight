@@ -1,5 +1,10 @@
 # Holsatus 🦀 Flight 
 
+> [!NOTE]  
+> A refactor is currently in progress. The readme may be misleading, and stuff might be broken. Stay tuned
+
+---
+
 Holsatus Flight is a novel autopilot built in pure Rust. The firmware is designed around an the [Embassy](https://github.com/embassy-rs/embassy) framework and uses `async` functionality extensively to enable unprecedented efficiency with a high level of functionality.
 
 The current implementation is designed for quad copters, and runs on the Raspberry Pi RP2040 chip (a sub $1 chip!), but support for other configurations and hardware is intended for the future.
