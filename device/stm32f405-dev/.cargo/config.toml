@@ -1,0 +1,12 @@
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "probe-rs run --always-print-stacktrace --chip STM32F405RGTx"
+linker = "flip-link"
+
+[build]
+target = "thumbv7em-none-eabihf"
+
+[env]
+DEFMT_LOG = "debug"
+
+[unstable]
+build-std = ["compiler_builtins", "core"]
