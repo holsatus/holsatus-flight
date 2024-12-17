@@ -14,7 +14,7 @@ sitl-std = []
 sitl-mcu = []
 
 log = ["dep:log", "dep:env_logger"]
-defmt = ["dep:defmt", "embassy-usb/defmt", "embedded-io-async/defmt-03"]
+defmt = ["dep:defmt", "embassy-usb/defmt", "embedded-io-async/defmt-03", "embassy-time/defmt"]
 interrupt-executor = ["embassy-executor/executor-interrupt"]
 arch-cortex-m = ["embassy-executor/arch-cortex-m"]
 arch-std = [
@@ -67,12 +67,10 @@ nalgebra = { version = "0.33.0", default-features = false, features = [
     "libm",
 ] }
 
-# TODO Pull this from submodule
 mavlink = { git = "https://github.com/holsatus/rust-mavlink", default-features = false, features = [
     "holsatus",
     "embedded"
 ], optional = true}
-
 
 futures = { version = "0.3.31", default-features = false, features = [
     "async-await",

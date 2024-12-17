@@ -250,6 +250,7 @@ pub(crate) async fn motor_governor(mut motors: MotorDriver, dshot_cfg: &'static 
 // --------------------- UARTs setup ------------------------
 // ----------------------------------------------------------
 
+#[allow(unused)]
 pub struct UsartBuffered<'d> {
     pub rx: embassy_stm32::usart::RingBufferedUartRx<'d>,
     pub tx: embassy_stm32::usart::UartTx<'d, Async>,

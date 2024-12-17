@@ -1,12 +1,12 @@
 [package]
-name = "stm32f405-dev"
+name = "rp2040-dev"
 version = "0.1.0"
 edition = "2021"
 
 [features]
 
 [dependencies]
-cortex-m = { version = "0.7.7", features = ["critical-section-single-core"] }
+cortex-m = "0.7.7"
 cortex-m-rt = "0.7.3"
 embedded-hal = "1.0.0"
 embedded-hal-async = "1.0.0"
@@ -16,6 +16,7 @@ defmt-rtt = "0.4.0"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 
 common = { path = "../../common", default-features = false, features = [
+    "portable-atomic-critical-section",
     "interrupt-executor",
     "arch-cortex-m",
     "mavlink",
@@ -29,19 +30,20 @@ embassy-executor = { git = "https://github.com/embassy-rs/embassy", features = [
     "arch-cortex-m",
 ] }
 
-embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", features = [
-    "time-driver-tim2",
-    "stm32f405rg",
-    "memory-x",
-    "defmt",
-    "exti",
+embassy-rp = { git = "https://github.com/embassy-rs/embassy", features = [
+    "critical-section-impl",
+    "rom-v2-intrinsics",
+    "unstable-pac",
+    "time-driver",
+    "intrinsics",
+    "rp2040"
 ] }
 
-dshot-encoder = { git = "https://github.com/peterkrull/dshot-encoder" }
+dshot-pio = { git = "https://github.com/peterkrull/dshot-pio", features = ["embassy-rp"] }
 
 assign-resources = "0.4.1"
-static_cell = "2"   # Used to allocate buffers and interrupt executors
-aligned = "0.4.2"   # Used to implement BlockDevice on wrapper type
+static_cell = "2.1.0"   # Used to allocate buffers and interrupt executors
+portable-atomic = { version = "1.10.0", features = ["critical-section"] }
 
 # cargo build/run --release
 [profile.release]
@@ -67,7 +69,7 @@ overflow-checks = true
 # This is done to avoid tests etc from
 # being built for the no_std binary
 [[bin]]
-name = "stm32f405-dev"
+name = "rp2040-dev"
 path = "src/main.rs"
 test = false
 doctest = false
