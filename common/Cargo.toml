@@ -15,7 +15,6 @@ sitl-mcu = []
 
 log = ["dep:log", "dep:env_logger"]
 defmt = ["dep:defmt", "embassy-usb/defmt", "embedded-io-async/defmt-03", "embassy-time/defmt"]
-interrupt-executor = ["embassy-executor/executor-interrupt"]
 arch-cortex-m = ["embassy-executor/arch-cortex-m"]
 arch-std = [
     "postcard/use-std",
