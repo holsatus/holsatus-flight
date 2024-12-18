@@ -122,25 +122,25 @@ pub async fn main(
         },
     };
 
-    // #[cfg(feature = "mavlink-embed")] {
-    //     // Request default MAVLink streams
-    //     use crate::mavlink::{MavRequest, MavStreamCfg};
+    #[cfg(feature = "mavlink")] {
+        // Request default MAVLink streams
+        use crate::mavlink::{MavRequest, MavStreamCfg};
 
-    //     let stream_cfg = match storage.read::<MavStreamCfg>(0).await {
-    //         Some(vehicle_info) => {
-    //             info!("{}: MAVLink stream loaded from flash successfully", ID);
-    //             vehicle_info
-    //         },
-    //         None => {
-    //             warn!("{}: MAVLink stream config not found in flash, using defaults", ID);
-    //             MavStreamCfg::default()
-    //         },
-    //     };
+        let stream_cfg = match storage.read::<MavStreamCfg>(0).await {
+            Some(vehicle_info) => {
+                info!("{}: MAVLink stream loaded from flash successfully", ID);
+                vehicle_info
+            },
+            None => {
+                warn!("{}: MAVLink stream config not found in flash, using defaults", ID);
+                MavStreamCfg::default()
+            },
+        };
 
-    //     for (index, freq) in stream_cfg.streams.iter().flatten() {
-    //         s::MAV_REQUEST.send(MavRequest::Stream { id: *index, freq: *freq }).await;
-    //     }
-    // }
+        for (index, freq) in stream_cfg.streams.iter().flatten() {
+            s::MAV_REQUEST.send(MavRequest::Stream { id: *index, freq: *freq }).await;
+        }
+    }
 
     snd_cfg_motor_dirs.send([true, false, false, true]);
     snd_cfg_control_freq.send(MAIN_LOOP_FREQ as u16);

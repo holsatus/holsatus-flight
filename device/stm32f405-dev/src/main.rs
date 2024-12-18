@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use common::embassy_time::Timer;
 use defmt_rtt as _;
 use panic_probe as _;
 
@@ -42,6 +43,7 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     // Initialize the chip and split the resources
     let p = config::initialize();
     let r = split_resources!(p);
+    Timer::after_millis(10).await;
 
     defmt::info!("{}: clocks initialized, starting tasks", ID);
 
@@ -85,12 +87,6 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
         defmt::error!("{}: No USART2 config found", ID);
     }
 
-    // if let Some(uart_cfg) = &config.uart3 {
-    //     level_1_spawner.must_spawn(mavlink_serial(r.usart_3.any(), uart_cfg))
-    // } else {
-    //     defmt::error!("{}: No USART3 config found", ID);
-    // }
-
     level_1_spawner.must_spawn(common::tasks::commander::main());
     level_1_spawner.must_spawn(common::tasks::att_estimator::main());
     level_1_spawner.must_spawn(common::tasks::angle_loop::main());
@@ -101,6 +97,12 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
         level_t_spawner.must_spawn(blackbox_fat(r.sdcard, sdmmc_cfg));
     } else {
         defmt::error!("{}: No SDMMC config found", ID);
+    }
+
+    if let Some(uart_cfg) = &config.uart3 {
+        level_t_spawner.must_spawn(mavlink_serial(r.usart_3.any(), uart_cfg))
+    } else {
+        defmt::error!("{}: No USART3 config found", ID);
     }
 
     // A valid config always exists for the usb-handler otherwise
