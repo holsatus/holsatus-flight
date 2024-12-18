@@ -16,7 +16,6 @@ defmt-rtt = "0.4.0"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 
 common = { path = "../../common", default-features = false, features = [
-    "portable-atomic-unsafe-assume-single-core",
     "arch-cortex-m",
     "mavlink",
     "defmt",
