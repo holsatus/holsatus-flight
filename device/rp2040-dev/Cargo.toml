@@ -17,7 +17,6 @@ panic-probe = { version = "0.3", features = ["print-defmt"] }
 
 common = { path = "../../common", default-features = false, features = [
     "portable-atomic-critical-section",
-    "interrupt-executor",
     "arch-cortex-m",
     "mavlink",
     "defmt",
