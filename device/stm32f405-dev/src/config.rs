@@ -43,7 +43,7 @@ pub fn gen_default_cfg() -> BootConfig {
         // I2C1 is connected to the main IMU (imu0 -> ICM20948)
         i2c1: Some(I2cConfig {
             goes_to: I2cGoesTo::Accelerometer,
-            frequency: 400_000,
+            frequency: 1_000_000,
             sda_pullup: true,
             scl_pullup: true,
         }),
