@@ -109,10 +109,10 @@ impl I2c1 {
 }
 
 #[embassy_executor::task]
-pub(crate) async fn imu_reader_6dof(i2c: I2c1, pin: IntPin, i2c_cfg: &'static I2cConfig, imu_cfg: &'static ImuConfig) -> ! {
+pub(crate) async fn imu_reader_9dof(i2c: I2c1, pin: IntPin, i2c_cfg: &'static I2cConfig, imu_cfg: &'static ImuConfig) -> ! {
     let i2c = i2c.setup(i2c_cfg);
     let _pin = pin.setup();
-    common::tasks::imu_reader::main_6dof_i2c(i2c, imu_cfg, Some(0x69)).await
+    common::tasks::imu_reader::main_9dof_i2c(i2c, imu_cfg, Some(0x69)).await
 }
 
 // ----------------------------------------------------------
@@ -207,7 +207,7 @@ impl Flash {
         let flash = embassy_stm32::flash::Flash::new(self.periph, FlashIrqs);
         let range = 0x80000..0x100000;
         (flash, range)
-        
+
     }
 }
 
@@ -317,6 +317,7 @@ impl AnyUsart {
     }
 }
 
+
 // RC controls (e.g. sbus/crsf)
 #[embassy_executor::task]
 pub(crate) async fn rc_serial_read(mut usart: AnyUsart, uart_cfg: &'static UartConfig) -> ! {
@@ -363,7 +364,7 @@ impl Usb {
         let mut config = embassy_stm32::usb::Config::default();
         config.vbus_detection = false;
 
-        embassy_stm32::usb::Driver::new_fs(self.usb, UsbIrq, self.dp, self.dm, usb_buffer, config)
+        embassy_stm32::usb::Driver::new_fs(self.usb, UsbIrq, self.dp, self.dm, usb_buffer, Default::default())
     }
 }
 
