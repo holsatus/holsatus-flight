@@ -12,7 +12,6 @@ use static_cell::StaticCell;
 use ufmt::uWrite;
 
 
-mod usb_writer;
 mod commands;
 
 /// Wrapper to allow the CLI to own a synchronous writer. This is a bit of a

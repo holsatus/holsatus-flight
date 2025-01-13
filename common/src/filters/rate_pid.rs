@@ -1,12 +1,9 @@
-use core::{future::{poll_fn, Future}, task::Poll};
 
 use crate::types::status::PidTerms;
 
 use super::{Lowpass, NthOrderLowpass, SlewRate};
 
-use embassy_futures::join::join;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
-use futures::future::Fuse;
 #[allow(unused_imports)]
 use num_traits::Float;
 use serde::{Deserialize, Serialize};

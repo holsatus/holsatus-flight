@@ -1,5 +1,4 @@
 use embassy_futures::select::{select, Either};
-use embassy_sync::signal::Signal;
 
 use super::configurator::{CfgMsg, CONFIG_QUEUE};
 use crate::{
@@ -96,19 +95,6 @@ pub async fn main() -> ! {
             Calibrate::Mag((_mag_calib, None)) => {
                 error!("Simultaneous gyro calibration not yet supported")
             }
-
-            // // Calibrate magnetometer
-            // Calibrate::Mag((mag_calib, Some(idx))) => {
-            //     match calibrate_mag(mag_calib, idx, &snd_calibrator_state).await {
-            //         Ok(calibration) => {
-            //             CONFIG_QUEUE.send(CfgMsg::SetMagCalib((calibration, idx))).await;
-            //         }
-            //         Err(error) => {
-            //             register_error(error);
-            //             warn!("{}: GYR calibration failed: {:?}", ID, error);
-            //         }
-            //     }
-            // }
         }
     }
 }

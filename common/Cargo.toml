@@ -75,8 +75,6 @@ futures = { version = "0.3.31", default-features = false, features = [
     "async-await",
 ] }
 
-holsatus-derive = { path = "../../holsatus-derive"}
-
 # Data storage and FAT filesystem for logging.
 sequential-storage = "3.0"
 embedded-storage-async = "0.4.1"

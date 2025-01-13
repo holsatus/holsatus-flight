@@ -1,6 +1,4 @@
-use core::f32::consts::PI;
-
-use crate::{consts::{EARTH_RADIUS, GRAVITY}, geo::Waypoint, signals as s};
+use crate::{consts::GRAVITY, signals as s};
 use embassy_futures::yield_now;
 use kalman_filter::kalman::KalmanFilter;
 use nalgebra::{Matrix1, Matrix2, Vector2, Vector3};
@@ -108,8 +106,9 @@ pub async fn main() -> ! {
 }
 
 /// Calculates kilometers/degree of longitude for given latitude
-fn lat_factor(latitude: i32) -> f32 {
-    use num_traits::Float;
+pub fn lat_factor(latitude: i32) -> f32 {
+    #[allow(unused_imports)]
+    use num_traits::Float as _;
 	40075.0f32 * (latitude as f32/180.0).cos() / 360.0
 }
 

@@ -2,7 +2,7 @@
 #![deny(clippy::large_futures)]
 
 
-// Export the logging macros from either defmt or log
+// Export the logging macros for either defmt or log
 #[macro_use]
 #[macro_export]
 pub mod logging;

@@ -2,7 +2,7 @@ use embassy_time::{with_timeout, Duration, Timer};
 use embedded_cli::Command;
 use embedded_io::ErrorKind;
 use embedded_io_async::{Read, Write};
-use ufmt::{uDebug, uDisplay, uwrite};
+use ufmt::{uDisplay, uwrite};
 
 use crate::{calibration::{mag_routine::MagCalState, AccCalib, GyrCalib, MagCalib}, shell::UBuffer, tasks::{calibrator::Sensor, commander::CmdRequest}};
 
