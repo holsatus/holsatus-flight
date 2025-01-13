@@ -49,7 +49,7 @@ impl ImuConfig {
         }
     }
 
-    pub async fn i2c_setup_9dof<BUS: I2c<Error = embedded_hal::i2c::ErrorKind>>(
+    pub async fn i2c_setup_9dof<BUS: I2c>(
         &self,
         i2c: BUS,
         addr: Option<u8>,

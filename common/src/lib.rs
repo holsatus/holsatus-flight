@@ -23,6 +23,7 @@ pub mod tasks;
 pub mod types;
 pub mod utils;
 pub mod geo;
+pub mod shell;
 
 pub mod errors;
 

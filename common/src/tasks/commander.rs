@@ -90,8 +90,19 @@ pub async fn main() {
 
                     snd_calibrate.send(Calibrate::Gyr(cal))
                 },
-                CmdRequest::CalibrateMag(_) => 
-                    error!("{}: Magnetometer calibration is not yet supported", ID),
+                CmdRequest::CalibrateMag(cal) => {
+                    if !on_ground {
+                        warn!("{}: Mag calibration is only possible on the ground", ID);
+                        continue;
+                    }
+
+                    if !rcv_motors_state.get().await.is_disarmed() {
+                        warn!("{}: Mag calibration is only possible when disarmed", ID);
+                        continue;
+                    }
+
+                    snd_calibrate.send(Calibrate::Mag(cal))
+                }
             },
 
             // These things run periodically

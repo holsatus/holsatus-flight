@@ -40,7 +40,7 @@ embassy-executor = { git = "https://github.com/embassy-rs/embassy" }
 # Logging, embedded and std environments
 defmt = { version = "0.3.10", optional = true }
 log = { version = "0.4.22", optional = true }
-env_logger = { version = "0.11.5", optional = true }
+env_logger = { version = "0.11.6", optional = true }
 
 # Embedded HAL/IO traits
 embedded-hal-async = "1.0.0"
@@ -59,7 +59,7 @@ bitflags = { version = "2.6.0", default-features = false }
 
 critical-section = { version = "1.1", default-features = false }
 
-heapless = { version = "0.8.0", features = ["serde"]}
+heapless = { version = "0.8.0", features = ["serde", "portable-atomic"]}
 
 nalgebra = { version = "0.33.0", default-features = false, features = [
     "serde-serialize-no-std",
@@ -74,6 +74,8 @@ mavlink = { git = "https://github.com/holsatus/rust-mavlink", default-features =
 futures = { version = "0.3.31", default-features = false, features = [
     "async-await",
 ] }
+
+holsatus-derive = { path = "../../holsatus-derive"}
 
 # Data storage and FAT filesystem for logging.
 sequential-storage = "3.0"
@@ -92,6 +94,10 @@ icm20948-async = { git = "https://github.com/peterkrull/icm20948-async/", branch
 
 ahrs = { git = "https://github.com/jmagnuson/ahrs-rs", default-features = false }
 kalman_filter = { git = "https://github.com/peterkrull/kalman-filter-rs" }
+mag-calibrator-rs = { git = "https://github.com/peterkrull/mag-calibrator-rs" }
+
+embedded-cli = { git = "https://github.com/funbiscuit/embedded-cli-rs" }
+ufmt = "0.2.0"
 
 # Efficient serialization
 postcard = { version = "1.0.10" }
@@ -101,6 +107,7 @@ ublox = { version = "0.4.5", default-features = false }
 portable-atomic = "1.9"
 approx = "0.5"
 thiserror = { version = "2.0.7", default-features = false }
+maitake-sync = { version = "0.1.2", default-features = false }
 
 [dev-dependencies]
 futures-executor = { version = "0.3.31", features = ["thread-pool"] }

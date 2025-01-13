@@ -1,4 +1,7 @@
-use crate::signals as s;
+use core::f32::consts::PI;
+
+use crate::{consts::{EARTH_RADIUS, GRAVITY}, geo::Waypoint, signals as s};
+use embassy_futures::yield_now;
 use kalman_filter::kalman::KalmanFilter;
 use nalgebra::{Matrix1, Matrix2, Vector2, Vector3};
 
@@ -71,11 +74,13 @@ pub async fn main() -> ! {
         let imu_data = rcv_imu_data.get().await;
 
         let linear_acceleration =
-            attitude_q * Vector3::from(imu_data.acc) + Vector3::new(0.0, 0.0, 9.81);
+            attitude_q * Vector3::from(imu_data.acc) + Vector3::new(0.0, 0.0, GRAVITY);
 
         kalman_x.predict_with_input(Matrix1::new(linear_acceleration[0]));
         kalman_y.predict_with_input(Matrix1::new(linear_acceleration[1]));
         kalman_z.predict_with_input(Matrix1::new(linear_acceleration[2]));
+
+        yield_now().await;
 
         kalman_x.update(
             &(C.transpose()),
@@ -93,11 +98,18 @@ pub async fn main() -> ! {
             &Matrix1::new(-altitude),
         );
 
-        let state_x = kalman_x.get_state();
-        let state_y = kalman_y.get_state();
-        let state_z = kalman_z.get_state();
+        let [pos_x, vel_x] = kalman_x.get_state().into();
+        let [pos_y, vel_y] = kalman_y.get_state().into();
+        let [pos_z, vel_z] = kalman_z.get_state().into();
 
-        snd_estimated_pos.send([state_x[0], state_y[0], state_z[0]]);
-        snd_estimated_vel.send([state_x[1], state_y[1], state_z[1]]);
+        snd_estimated_pos.send([pos_x, pos_y, pos_z]);
+        snd_estimated_vel.send([vel_x, vel_y, vel_z]);
     }
 }
+
+/// Calculates kilometers/degree of longitude for given latitude
+fn lat_factor(latitude: i32) -> f32 {
+    use num_traits::Float;
+	40075.0f32 * (latitude as f32/180.0).cos() / 360.0
+}
+

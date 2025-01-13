@@ -4,7 +4,7 @@ use embassy_futures::select::{
 };
 use embassy_time::{with_timeout, Duration, Timer};
 
-use crate::{filters::{motor_lin::MotorLin, Linear}, DSHOT_MAX, DSHOT_MIN};
+use crate::{filters::{motor_lin::MotorLin, Linear}, tasks::imu_reader::TIME_SIG, DSHOT_MAX, DSHOT_MIN};
 use crate::{
     hw_abstraction::FourMotors,
     types::actuators::{DisarmReason, MotorsState},
@@ -82,6 +82,8 @@ pub async fn main(mut motors: impl FourMotors) -> ! {
         #[cfg(feature = "mavlink")]
         crate::mavlink::mav_set_safety_armed(true);
         snd_motors_state.send(MotorsState::ArmedIdle);
+        let mut total_duration = Duration::from_ticks(0);
+        let mut duration_count = 0;
 
         info!("{}: Entering main loop", ID);
         'armed: loop {
@@ -109,9 +111,23 @@ pub async fn main(mut motors: impl FourMotors) -> ! {
                     continue 'armed;
                 }
                 Second(Ok(speeds)) => {
-                    let speeds_u16 = speeds.map(dshot_map_fn);
-                    motors.set_motor_speeds(speeds_u16).await;
-                    snd_motors_state.send(MotorsState::Armed(speeds_u16));
+                    let _speeds_u16 = speeds.map(dshot_map_fn);
+
+                    if let Some(time) = TIME_SIG.try_take() {
+                        let duration = time.elapsed();
+                        total_duration += duration;
+                        duration_count += 1;
+                    }
+
+                    if !(duration_count < 1000) {
+                        let avg_duration = total_duration / 1000;
+                        info!("{}: Average loop duration: {:?}", ID, avg_duration);
+                        total_duration = Duration::from_ticks(0);
+                        duration_count = 0;
+                    }
+
+                    // motors.set_motor_speeds(speeds_u16).await;
+                    // snd_motors_state.send(MotorsState::Armed(speeds_u16));
                     continue 'armed;
                 }
             }

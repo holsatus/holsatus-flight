@@ -35,7 +35,8 @@ impl Default for GyrCalib {
 
 #[derive(Debug, Clone, Default)]
 pub struct MagCalib {
-    pub time: f32,
-    pub samples: usize,
+    pub duration_s: u8,
+    pub pre_scalar: f32,
     pub std_limit: f32,
+    pub max_dropped: usize,
 }

@@ -1,8 +1,10 @@
-pub mod msg_generator;
-pub mod command_int;
+mod msg_generator;
+mod command;
+mod mission;
 
 use core::{num::NonZeroU16, sync::atomic::Ordering};
 
+use command::AnyCommand;
 use embassy_futures::{join, select::{select, Either}};
 use embassy_sync::{blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex}, channel::Channel, mutex::{Mutex, MutexGuard}, signal::Signal};
 use embassy_time::{Duration, Ticker};
@@ -29,6 +31,8 @@ pub enum MavRequest {
     Stream { id: u32, freq: u16 },
     Single { id: u32 },
     Stop { id: u32 },
+    SetSysId { id: u8 },
+    SetCompId { id: u8 },
 }
 
 pub fn mav_set_safety_armed(armed: bool) {
@@ -89,7 +93,7 @@ impl Default for MavStreamCfg {
         array[0] = Some((HEARTBEAT_DATA::ID, 1));
         array[1] = Some((SERVO_OUTPUT_RAW_DATA::ID, 10));
         array[2] = Some((ATTITUDE_QUATERNION_DATA::ID, 10));
-        array[3] = Some((PID_INTERNALS_RATE_DATA::ID, 20));
+        array[3] = Some((MavSendable::GpsRawInt as u32, 5));
         MavStreamCfg { streams: array }
     }
 }
@@ -111,7 +115,7 @@ impl MavServer {
                 serialized: Signal::new(),
                 sequence: AtomicU8::new(0),
                 system_id: AtomicU8::new(1),
-                component_id: AtomicU8::new(0),
+                component_id: AtomicU8::new(1),
             })
         }
     }
@@ -126,6 +130,7 @@ impl MavServer {
 
     /// This function is designed to be wrapped in an embassy task!
     pub async fn main_reader(&self, mut reader: impl Read) -> ! {
+        info!("Starting MAVLink reader task");
 
         let mut debounce = Debounce::new(Duration::from_secs(1));
 
@@ -143,8 +148,10 @@ impl MavServer {
 
         // Read a raw MAVLink message from the serial port
         let raw = read_v2_raw_message_async::<MavMessage>(&mut reader).await?;
+
         // Handle the message
         match raw.message_id() {
+
             HEARTBEAT_DATA::ID => {
                 HEARTBEAT_DATA::deser(MavlinkVersion::V2, raw.payload())?;
                 debug!("Received heartbeat from system {}",  raw.system_id());
@@ -182,21 +189,48 @@ impl MavServer {
                 crate::signals::RC_CHANNELS_RAW.sender().send(Some(values));
             }
 
-            COMMAND_INT_DATA::ID => {
-                let message = COMMAND_INT_DATA::deser(MavlinkVersion::V2, raw.payload())?;
+            COMMAND_INT_DATA::ID | COMMAND_LONG_DATA::ID => {
 
-                match message.command {
+                // NOTE If any message can only be handled by one of the two
+                // command message definitions, it should be handled here with
+                // an early return. Otherwise, the message should be handled the
+                // same for both COMMAND_INT and COMMAND_LONG.
+
+                let message: AnyCommand = if raw.message_id() == COMMAND_INT_DATA::ID {
+                    COMMAND_INT_DATA::deser(MavlinkVersion::V2, raw.payload())?.into()
+                } else {
+                    COMMAND_LONG_DATA::deser(MavlinkVersion::V2, raw.payload())?.into()
+                };
+
+                // let message = COMMAND_INT_DATA::deser(MavlinkVersion::V2, raw.payload())?;
+                debug!("Received command: {:?}", message.command() as u32);
+
+                match message.command() {
                     MavCmd::MAV_CMD_SET_MESSAGE_INTERVAL =>
-                        command_int::set_message_interval(message).await?,
+                        command::set_message_interval(message).await?,
             
                     MavCmd::MAV_CMD_DO_SET_ACTUATOR => 
-                        command_int::do_set_actuator(message).await?,
+                        command::do_set_actuator(message).await?,
             
                     MavCmd::MAV_CMD_COMPONENT_ARM_DISARM => 
-                        command_int::component_arm_disarm(message).await?,
+                        command::component_arm_disarm(message).await?,
+
+                    MavCmd::MAV_CMD_REQUEST_MESSAGE =>
+                        command::request_message(message).await?,
             
                     _ => Err(MavlinkError::UnknownMavCmd)?,
                 }
+            }
+
+            TUNNEL_DATA::ID => {
+                let message = TUNNEL_DATA::deser(MavlinkVersion::V2, raw.payload())?;
+                let slice = &message.payload[..message.payload_length as usize];
+                debug!("Received tunneled data: {:?}", slice);
+            }
+
+            MISSION_ITEM_INT_DATA::ID => {
+                let message = MISSION_ITEM_INT_DATA::deser(MavlinkVersion::V2, raw.payload())?;
+                mission::handle_mission_item_int(message).await?;
             }
 
             _ => warn!("No handler for message ID {}", raw.message_id()),
@@ -207,6 +241,7 @@ impl MavServer {
 
     /// This function is designed to be wrapped in an embassy task!
     pub async fn main_writer(&self, mut writer: impl Write) -> ! {
+        info!("Starting MAVLink writer task");
 
         // Spawn all worker (streamers) tasks
         let spawner = embassy_executor::Spawner::for_current_executor().await;
@@ -270,6 +305,12 @@ impl MavServer {
                 MavRequest::Single { id } => {
                     let func = MavSendable::try_from(id)?;
                     self.write_to_buffer(func.gen_fn()).await
+                },
+                MavRequest::SetSysId { id } => {
+                    self.inner.system_id.store(id, Ordering::Relaxed);
+                },
+                MavRequest::SetCompId { id } => {
+                    self.inner.component_id.store(id, Ordering::Relaxed);
                 },
             },
             Either::Second(to_write) => {

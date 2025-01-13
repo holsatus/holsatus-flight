@@ -1,9 +1,13 @@
+use embassy_futures::select::{select, Either};
+use embassy_sync::signal::Signal;
+
 use super::configurator::{CfgMsg, CONFIG_QUEUE};
 use crate::{
     calibration::{
-        acc_routine::calibrate_acc, gyr_routine::calibrate_gyr_bias, mag_routine::calibrate_mag, Calibrate
-    },
-    signals as s,
+        acc_routine::calibrate_acc,
+        gyr_routine::calibrate_gyr_bias,
+        mag_routine::{calibrate_mag, MagCalState}, Calibrate
+    }, filters::rate_pid::Feedback, signals::{self as s, register_error}
 };
 
 #[derive(Debug, PartialEq, Clone)]
@@ -11,7 +15,7 @@ use crate::{
 pub enum Sensor {
     Acc,
     Gyr,
-    Mag,
+    Mag(MagCalState),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -39,12 +43,13 @@ pub async fn main() -> ! {
                         CONFIG_QUEUE.send(CfgMsg::SetAccCalib((calibration, idx))).await;
                     }
                     Err(error) => {
+                        register_error(error);
                         warn!("{}: ACC calibration failed: {:?}", ID, error);
                     }
                 }
             }
             Calibrate::Acc((_acc_calib, None)) => {
-                todo!("Simultaneous accelerometer calibration not yet supported")
+                error!("Simultaneous accelerometer calibration not yet supported")
             }
 
             // Calibrate gyroscope
@@ -58,29 +63,52 @@ pub async fn main() -> ! {
                         CONFIG_QUEUE.send(CfgMsg::SetGyrCalib((calibration, idx))).await;
                     }
                     Err(error) => {
+                        register_error(error);
                         warn!("{}: GYR calibration failed: {:?}", ID, error);
                     }
                 }
             }
             Calibrate::Gyr((_gyr_calib, None)) => {
-                todo!("Simultaneous gyro calibration not yet supported")
+                error!("Simultaneous gyro calibration not yet supported")
             }
 
             // Calibrate magnetometer
             Calibrate::Mag((mag_calib, Some(idx))) => {
-                snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Mag));
-                match calibrate_mag(mag_calib).await {
-                    Ok(calibration) => {
+                let feedback = Feedback::new();
+                match select(
+                    calibrate_mag(mag_calib, idx, feedback.handle()),
+                    async { while let Some(state) = feedback.receive().await {
+                        snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Mag(state)));
+                    }
+                }).await {
+                    Either::First(Ok(calibration)) => {
                         CONFIG_QUEUE.send(CfgMsg::SetMagCalib((calibration, idx))).await;
                     }
-                    Err(error) => {
+                    Either::First(Err(error)) => {
+                        register_error(error);
                         warn!("{}: GYR calibration failed: {:?}", ID, error);
+                    }
+                    Either::Second(_) => {
+                        error!("Calibration feedback signal was dropped")
                     }
                 }
             }
             Calibrate::Mag((_mag_calib, None)) => {
-                todo!("Simultaneous gyro calibration not yet supported")
+                error!("Simultaneous gyro calibration not yet supported")
             }
+
+            // // Calibrate magnetometer
+            // Calibrate::Mag((mag_calib, Some(idx))) => {
+            //     match calibrate_mag(mag_calib, idx, &snd_calibrator_state).await {
+            //         Ok(calibration) => {
+            //             CONFIG_QUEUE.send(CfgMsg::SetMagCalib((calibration, idx))).await;
+            //         }
+            //         Err(error) => {
+            //             register_error(error);
+            //             warn!("{}: GYR calibration failed: {:?}", ID, error);
+            //         }
+            //     }
+            // }
         }
     }
 }

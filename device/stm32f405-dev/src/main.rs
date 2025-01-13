@@ -58,7 +58,7 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     // ------------------ high-priority tasks -------------------
 
     if let (Some(i2c_cfg), Some(imu_cfg)) = (&config.i2c1, &config.imu0) {
-        level_0_spawner.must_spawn(imu_reader_6dof(r.i2c_1, r.int_pin, i2c_cfg, imu_cfg));
+        level_0_spawner.must_spawn(imu_reader_9dof(r.i2c_1, r.int_pin, i2c_cfg, imu_cfg));
     } else {
         defmt::error!("{}: No I2C1 and/or IMU0 config found", ID);
     }

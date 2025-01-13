@@ -5,7 +5,7 @@ use embassy_time::Timer;
 use embedded_storage_async::nor_flash::NorFlash;
 
 use crate::{
-    calibration::sens3d::Calib3DType, filters::rate_pid::RatePidCfg3D, multi_sender, rc_mapping::RcBindings, signals as s, types::config::{BootConfig, ImuIntrinsics, Keyed, MagIntrinsics, Vehicle, Wrap}, MAIN_LOOP_FREQ, NUM_IMU
+    calibration::sens3d::Calib3DType, filters::rate_pid::RatePidCfg3D, multi_sender, rc_mapping::RcBindings, signals as s, types::config::{BootConfig, ImuIntrinsics, Keyed, MagIntrinsics, Vehicle, Wrap}, MAIN_LOOP_FREQ, NUM_IMU, NUM_MAG
 };
 
 #[derive(Debug, Clone)]
@@ -29,7 +29,7 @@ pub async fn main(
     info!("{}: Task started", ID);
 
     // Input signals
-    let _rcv_config_queue = CONFIG_QUEUE.receiver();
+    let rcv_config_queue = CONFIG_QUEUE.receiver();
 
     // Output signals
     let snd_cfg_rate_loop = s::CFG_RATE_LOOP_PIDS.sender();
@@ -40,8 +40,8 @@ pub async fn main(
     let snd_cfg_acc_cal = multi_sender!(s::CFG_MULTI_ACC_CAL, NUM_IMU);
     let snd_cfg_gyr_cal = multi_sender!(s::CFG_MULTI_GYR_CAL, NUM_IMU);
     let snd_cfg_imu_rot = multi_sender!(s::CFG_MULTI_IMU_ROT, NUM_IMU);
-    let snd_cfg_mag_cal = multi_sender!(s::CFG_MULTI_MAG_CAL, NUM_IMU);
-    let snd_cfg_mag_rot = multi_sender!(s::CFG_MULTI_MAG_ROT, NUM_IMU);
+    let snd_cfg_mag_cal = multi_sender!(s::CFG_MULTI_MAG_CAL, NUM_MAG);
+    let snd_cfg_mag_rot = multi_sender!(s::CFG_MULTI_MAG_ROT, NUM_MAG);
 
     let mut storage = Storage::new(flash, flash_range);
 
@@ -76,26 +76,29 @@ pub async fn main(
     // Load Mag calibrations from flash
     match storage.read::<MagIntrinsics>(0).await {
         Some(calibs) => {
-            info!("{}: Mag calibrations loaded from flash successfully", ID);
+            info!("[{}]: Mag calibrations loaded from flash successfully", ID);
             snd_cfg_mag_rot.iter().zip(calibs.mag_rot).for_each(|(snd, val)|snd.send(val));
             snd_cfg_mag_cal.iter().zip(calibs.mag_cal).for_each(|(snd,val)|snd.send(val));
         },
         None => {
-            warn!("{}: Mag calibrations not found in flash", ID);
+            snd_cfg_mag_rot.iter().for_each(|snd|snd.send(Default::default()));
+            snd_cfg_mag_cal.iter().for_each(|snd|snd.send(Default::default()));
+            warn!("[{}]: Mag calibrations not found in flash", ID);
         },
     }
 
-    // Load RC bindings
-    match storage.read::<RcBindings>(0).await {
-        Some(rc_mapping) => {
-            info!("{}: RC bindings loaded from flash successfully", ID);
-            snd_cfg_rc_bindings.send(rc_mapping)
-        },
-        None => {
-            warn!("{}: RC bindings not found in flash, using defaults", ID);
-            snd_cfg_rc_bindings.send(RcBindings::default())
-        },
-    };
+    macro_rules! print_could_load {
+        ($result:expr) => {
+            match $result {
+                Some(_) => info!("[{}]: <{}> loaded from flash successfully", ID, stringify!($result)),
+                None => warn!("[{}]: <{}> not found in flash, using default", ID, stringify!($result)),
+            }
+        };
+    }
+
+    let rc_bindings = storage.read::<RcBindings>(0).await;
+    snd_cfg_rc_bindings.send(rc_bindings.unwrap_or_default());
+    print_could_load!(rc_bindings);
 
     // Load rate PID gains
     match storage.read::<RatePidCfg3D>(0).await {
@@ -147,7 +150,7 @@ pub async fn main(
     s::CONTROL_FREQUENCY.store(MAIN_LOOP_FREQ as u16, core::sync::atomic::Ordering::Relaxed);
 
     loop {
-        match CONFIG_QUEUE.receive().await {
+        match rcv_config_queue.receive().await {
             CfgMsg::LoadConfig { idx: _ } => todo!(),
             CfgMsg::SaveConfig { idx: _ } => todo!(),
             CfgMsg::ResetConfigToDefault => todo!(),
@@ -164,7 +167,22 @@ pub async fn main(
                     error!("{}: Unable to write GYR calib to flash", ID);
                 }
             }
-            _ => {}
+            CfgMsg::SetMagCalib((new_calib, idx)) => {
+                info!("{}: Received new MAG calib, saving to flash", ID);
+                let mut calibs = storage.read::<MagIntrinsics>(0).await.unwrap_or_default();
+
+                if idx < NUM_MAG as u8 {
+                    calibs.mag_cal[idx as usize] = new_calib;
+                    snd_cfg_mag_cal[idx as usize].send(calibs.mag_cal[idx as usize]);
+                }
+
+                if storage.write(calibs, 0).await.is_err() {
+                    error!("{}: Unable to write MAG calib to flash", ID);
+                }
+            }
+            _ => {
+                warn!("{}: Saving of this type is not yet implemented", ID);
+            }
         }
     }
 }

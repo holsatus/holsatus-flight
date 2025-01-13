@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use embassy_time::Instant;
-use mavlink::{holsatus::{HighresImuUpdatedFlags, ATTITUDE_QUATERNION_DATA, GPS_RAW_INT_DATA, HEARTBEAT_DATA, PID_INTERNALS_RATE_DATA, RC_CHANNELS_SCALED_DATA, SCALED_IMU_DATA, SERVO_OUTPUT_RAW_DATA}, MAVLinkV2MessageRaw, MessageData};
+use mavlink::{holsatus::*, MAVLinkV2MessageRaw, MessageData};
 use num_traits::FromPrimitive;
 
 use crate::errors::MavlinkError;
@@ -12,7 +12,7 @@ macro_rules! define_sendable {
         #[repr(u32)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-        pub(crate) enum $name {
+        pub enum $name {
             $($variant = $data_id::ID),*
         }
 
@@ -45,8 +45,9 @@ macro_rules! define_sendable {
 define_sendable!(
     enum MavSendable {
         Heartbeat(HEARTBEAT_DATA @ heartbeat),
-        ScaledImu(SCALED_IMU_DATA @ scaled_imu),
+        HighresImu(HIGHRES_IMU_DATA @ highres_imu),
         AttitudeQuaternion(ATTITUDE_QUATERNION_DATA @ attitude_quaternion),
+        Attitude(ATTITUDE_DATA @ attitude),
         ServoOutputRaw(SERVO_OUTPUT_RAW_DATA @ servo_output_raw),
         RcChannelsScaled(RC_CHANNELS_SCALED_DATA @ rc_channels_scaled),
         PidInternalsRate(PID_INTERNALS_RATE_DATA @ pid_internals_rate),
@@ -66,10 +67,11 @@ pub(super) fn heartbeat(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
         system_status: MavState::from_usize(MAV_STATE.load(Ordering::Relaxed) as usize).unwrap(),
         mavlink_version: 0x3,
     };
+
     server.serialize(raw, message)
 }
 
-pub(super) fn scaled_imu(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
+pub(super) fn highres_imu(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
     use mavlink::holsatus::HIGHRES_IMU_DATA;
 
     let mut message = HIGHRES_IMU_DATA::default();
@@ -113,16 +115,34 @@ pub(crate) fn attitude_quaternion(server: &MavServer, raw: &mut MAVLinkV2Message
     message.time_boot_ms = Instant::now().as_millis() as u32;
 
     if let Some(att) = crate::signals::AHRS_ATTITUDE_Q.try_get() {
-        message.q1 = att[0];
-        message.q2 = att[1];
-        message.q3 = att[2];
-        message.q4 = att[3];
+        message.q1 = att[3];
+        message.q2 = att[0];
+        message.q3 = att[1];
+        message.q4 = att[2];
     }
 
     if let Some(imu) = crate::signals::CAL_MULTI_IMU_DATA[0].try_get() {
         message.rollspeed = imu.gyr[0];
         message.pitchspeed = imu.gyr[1];
         message.yawspeed = imu.gyr[2];
+    }
+
+    server.serialize(raw, message)
+}
+
+pub(crate) fn attitude(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
+
+    use mavlink::holsatus::ATTITUDE_DATA;
+
+    let mut message = ATTITUDE_DATA::default();
+    message.time_boot_ms = Instant::now().as_millis() as u32;
+
+    if let Some(att) = crate::signals::AHRS_ATTITUDE.try_get() {
+        [message.roll, message.pitch, message.yaw] = att;
+    }
+
+    if let Some(imu) = crate::signals::CAL_MULTI_IMU_DATA[0].try_get() {
+        [message.rollspeed, message.pitchspeed, message.yawspeed] = imu.gyr;
     }
 
     server.serialize(raw, message)
@@ -211,8 +231,6 @@ pub(super) fn pid_internals_rate(server: &MavServer, raw: &mut MAVLinkV2MessageR
 
     server.serialize(raw, message)
 }
-
-
 
 pub(super) fn gps_raw_int(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
     use mavlink::holsatus::{GPS_RAW_INT_DATA, GpsFixType};

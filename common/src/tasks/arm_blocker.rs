@@ -26,9 +26,7 @@ pub async fn main() -> ! {
     let snd_arm_blocker = s::ARMING_BLOCKER.sender();
 
     // Initialize the arm blocker flag as all high
-    let mut local_arm_blocker_flag = ArmingBlocker::all() & 
-        !(ArmingBlocker::SYSTEM_LOAD | ArmingBlocker::NO_ACC_DATA | ArmingBlocker::NO_GYR_DATA | ArmingBlocker::RESERVED | ArmingBlocker::NO_ACC_CALIB | ArmingBlocker::HIGH_ATTITUDE | ArmingBlocker::USB_CONNECTED);
-
+    let mut local_arm_blocker_flag = ArmingBlocker::all();
     // Set flag to the initial value
     snd_arm_blocker.send(local_arm_blocker_flag);
 

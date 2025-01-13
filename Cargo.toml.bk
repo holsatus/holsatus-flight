@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "common",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+
+[workspace.dependencies]
+embedded-hal = "1.0"
+embedded-hal-async = "1.0"
+embedded-io = "0.6"
+embedded-io-async = "0.6"
+
+defmt = "0.3"
+defmt-rtt = "0.4"
+
+log = "0.4"
+env_logger = "0.11.6"
+
+# Efficient serialization
+postcard = { version = "1.1" }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+
+thiserror = { version = "2.0", default-features = false }
+
+[workspace.dependencies.nalgebra]
+version = "0.33.0"
+features = ["serde-serialize-no-std","libm"]
+default-features = false
+
+[workspace.dependencies.mavlink]
+git = "https://github.com/holsatus/rust-mavlink"
+features = ["holsatus","embedded"]
+default-features = false

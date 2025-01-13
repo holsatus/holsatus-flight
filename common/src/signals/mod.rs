@@ -47,8 +47,10 @@ macro_rules! multi_sender {
 
 type Watch<T, const N: usize> = SyncWatch<M, T, N>;
 
+/// Channel for all system errors to be published to.
 pub static ERR_CHANNEL: PubSubChannel<M, HolsatusError, 16, 2,0> = PubSubChannel::new();
 
+/// Immediately publish an error to the global error channel.
 pub fn register_error(error: impl Into<HolsatusError>) {
     ERR_CHANNEL.publish_immediate(error.into());
 }
@@ -106,8 +108,7 @@ pub static CONTROL_MODE: Watch<ControlMode, 2> = Watch::new();
 // Enable or disable the integrators for the attitude controllers
 pub static ATTITUDE_INT_EN: Watch<bool, 2> = Watch::new();
 
-// Arming blocker, defines whether it is safe to arm the vehicle.
-// If all bits are low (0), it is considered safe to arm.
+/// Arming blocker, defines whether it is safe to arm the vehicle.
 pub static ARMING_BLOCKER: Watch<ArmingBlocker, 2> = Watch::new();
 
 pub static MOTORS_STATE: Watch<MotorsState, 2> = Watch::new();
@@ -115,6 +116,7 @@ pub static MOTORS_STATE: Watch<MotorsState, 2> = Watch::new();
 // Motor speeds published by the rate controller
 pub static CTRL_MOTORS: Watch<[f32; 4], 2> = Watch::new();
 
+/// Whether the USB is connected or not
 pub static USB_CONNECTED: Watch<bool, 2> = Watch::new();
 
 pub static CALIBRATOR_STATE: Watch<CalibratorState, 2> = Watch::new();

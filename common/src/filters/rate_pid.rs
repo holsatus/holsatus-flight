@@ -1,7 +1,12 @@
+use core::{future::{poll_fn, Future}, task::Poll};
+
 use crate::types::status::PidTerms;
 
 use super::{Lowpass, NthOrderLowpass, SlewRate};
 
+use embassy_futures::join::join;
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
+use futures::future::Fuse;
 #[allow(unused_imports)]
 use num_traits::Float;
 use serde::{Deserialize, Serialize};
@@ -192,5 +197,39 @@ impl RatePid {
 
     pub fn get_terms(&self) -> &PidTerms {
         &self.terms
+    }
+}
+
+pub struct Feedback<T> {
+    sig: Signal<NoopRawMutex, Option<T>>,
+}
+
+pub struct FeedbackHandle<'a, T> {
+    sig: &'a Signal<NoopRawMutex, Option<T>>,
+}
+
+impl <'a, T> Drop for FeedbackHandle<'a, T> {
+    fn drop(&mut self) {
+        self.sig.signal(None);
+    }
+}
+
+impl <'a, T> FeedbackHandle<'a, T> {
+    pub fn send(&self, data: T) {
+        self.sig.signal(Some(data));
+    }
+}
+
+impl <T> Feedback<T> {
+    pub fn new() -> Self {
+        Self { sig: Signal::new() }
+    }
+
+    pub fn handle(&self) -> FeedbackHandle<T> {
+        FeedbackHandle { sig: &self.sig }
+    }
+
+    pub async fn receive(&self) -> Option<T> {
+        self.sig.wait().await
     }
 }

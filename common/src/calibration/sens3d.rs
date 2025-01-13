@@ -2,12 +2,24 @@ use nalgebra::{Matrix3, Vector3};
 use serde::{Deserialize, Serialize};
 
 /// Wrapper type for different calibration types
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Calib3DType {
     None,
     Small(SmallCalib3D),
     Full(FullCalib3D),
 }
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for Calib3DType {
+    fn format(&self, fmt: defmt::Formatter) {
+        match self {
+            Calib3DType::None => defmt::write!(fmt, "None"),
+            Calib3DType::Small(_) => defmt::write!(fmt, "Small calib, formatting not yet supported"),
+            Calib3DType::Full(_) => defmt::write!(fmt, "Full calib, formatting not yet supported"),
+        }
+    }
+}
+
 
 impl Default for Calib3DType {
     fn default() -> Self {
@@ -44,7 +56,7 @@ impl Calib3DType {
 }
 
 /// Calibration data for a "small" calibration, meaning it only has bias and scale.
-#[derive(Debug, Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SmallCalib3D {
     pub bias: Option<Vector3<f32>>,
     pub scale: Option<Vector3<f32>>,
@@ -63,7 +75,7 @@ impl SmallCalib3D {
 }
 
 /// Calibration data for a "full" calibration, meaning it has bias and warp.
-#[derive(Debug, Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct FullCalib3D {
     pub bias: Option<Vector3<f32>>,
     pub warp: Option<Matrix3<f32>>,
