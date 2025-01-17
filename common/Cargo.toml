@@ -105,7 +105,6 @@ ublox = { version = "0.4.5", default-features = false }
 portable-atomic = "1.9"
 approx = "0.5"
 thiserror = { version = "2.0.7", default-features = false }
-maitake-sync = { version = "0.1.2", default-features = false }
 
 [dev-dependencies]
 futures-executor = { version = "0.3.31", features = ["thread-pool"] }
