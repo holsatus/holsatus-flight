@@ -24,7 +24,6 @@ pub mod types;
 pub mod utils;
 pub mod geo;
 pub mod shell;
-pub mod modules;
 
 pub mod errors;
 
