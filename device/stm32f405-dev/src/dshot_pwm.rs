@@ -13,7 +13,7 @@ use embassy_stm32::{
     Peripheral,
 };
 
-use common::hw_abstraction::FourMotors;
+use common::hw_abstraction::OutputGroup;
 
 pub struct DshotPwm<'d, T, D1, D2, D3, D4>
 where
@@ -91,6 +91,7 @@ where
         let command2 = self.construct_command(commands.2);
         let command3 = self.construct_command(commands.3);
 
+        // Cannot use join(f,f,f,f) here since the pwm/timer type is borroed mutably
         self.pwm.waveform_ch1(&mut self.dma1, command0.as_slice()).await;
         self.pwm.waveform_ch2(&mut self.dma2, command1.as_slice()).await;
         self.pwm.waveform_ch3(&mut self.dma3, command2.as_slice()).await;
@@ -106,7 +107,7 @@ where
             .take(16) // Leave 1 bit low at the end
             .rev()
             .enumerate()
-            .for_each(|(i, v)| 
+            .for_each(|(i, v)|
                 match (cmd >> i) & 0x1 {
                     0 => *v = self.bit.0,
                     _ => *v = self.bit.1,
@@ -116,7 +117,7 @@ where
     }
 }
 
-impl<'d, T, D1, DA1, D2, DA2, D3, DA3, D4, DA4> FourMotors for DshotPwm<'d, T, D1, D2, D3, D4>
+impl<'d, T, D1, DA1, D2, DA2, D3, DA3, D4, DA4> OutputGroup for DshotPwm<'d, T, D1, D2, D3, D4>
 where
     T: GeneralInstance4Channel,
     D1: Peripheral<P = DA1> + 'd,
@@ -158,7 +159,5 @@ where
         .await
     }
 
-    async fn make_beep(&mut self) {
-        todo!()
-    }
+    async fn make_beep(&mut self) { }
 }

@@ -14,7 +14,7 @@ pub async fn calibrate_gyr_bias(config: GyrCalib, sensor_id: u8) -> Result<Vecto
     // Input channels
     let mut rcv_raw_imu = s::RAW_MULTI_IMU_DATA.get(sensor_id as usize)
         .ok_or(CalibrationError::GyrInvalidId)?
-        .anon_receiver();
+        .receiver();
 
     info!("{}: Starting bias calibration on sensor {}, max variance of {} ", ID, sensor_id, config.max_var);
 

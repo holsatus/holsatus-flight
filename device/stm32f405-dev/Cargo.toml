@@ -13,7 +13,7 @@ embedded-hal-async = "1.0.0"
 
 defmt = "0.3.4"
 defmt-rtt = "0.4.0"
-panic-probe = { version = "0.3", features = ["print-defmt"] }
+panic-probe = { version = "0.3", features = ["print-defmt"]}
 
 common = { path = "../../common", default-features = false, features = [
     "arch-cortex-m",
@@ -35,6 +35,8 @@ embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", features = [
     "defmt",
     "exti",
 ] }
+
+# holsatus-hal = { path = "../../../holsatus-hal", features = ["stm32f405rg", "dshot"]}
 
 dshot-encoder = { git = "https://github.com/peterkrull/dshot-encoder" }
 
@@ -60,7 +62,7 @@ debug = true
 debug-assertions = true
 incremental = false
 lto = 'fat'
-opt-level = 's'
+opt-level = 'z'
 overflow-checks = true
 
 # This is done to avoid tests etc from

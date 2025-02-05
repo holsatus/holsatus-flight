@@ -4,6 +4,7 @@ use embedded_hal_async::spi::SpiDevice;
 use portable_atomic::{AtomicUsize, Ordering};
 
 use crate::signals::register_error;
+use crate::tasks::configurator::{GetImuInt, CONFIG_RPC};
 use crate::types::measurements::Imu6DofData;
 use crate::{
     drivers::imu::ImuConfig,
@@ -20,11 +21,11 @@ pub static TIME_SIG: Signal<CriticalSectionRawMutex, Instant> = Signal::new();
 pub async fn main_6dof_i2c(
     mut i2c: impl I2c,
     config: &ImuConfig,
-    addr: Option<u8>,  
+    addr: Option<u8>,
 ) -> ! {
     const ID: &str = "imu_setup_6dof_i2c";
     info!("{}: Task started", ID);
-    
+
     let imu = loop {
         match config.i2c_setup_6dof(&mut i2c, addr).await {
             Ok(imu) => break imu,
@@ -44,7 +45,7 @@ pub async fn main_6dof_spi(
     config: &ImuConfig,
 ) -> ! {
     const ID: &str = "imu_setup_6dof_spi";
-    
+
     let imu = loop {
         match config.spi_setup_6dof(&mut i2c).await {
             Ok(imu) => break imu,
@@ -62,11 +63,11 @@ pub async fn main_6dof_spi(
 pub async fn main_9dof_i2c(
     mut i2c: impl I2c,
     config: &ImuConfig,
-    addr: Option<u8>,  
+    addr: Option<u8>,
 ) -> ! {
     const ID: &str = "imu_setup_9dof_i2c";
     info!("{}: Task started", ID);
-    
+
     let imu = loop {
         match config.i2c_setup_9dof(&mut i2c, addr).await {
             Ok(imu) => break imu,
@@ -91,18 +92,21 @@ pub async fn main_6dof(
     assert!(idx < NUM_IMU, "Invalid index for IMU reader task");
 
     // Task inputs
-    let mut rcv_cfg_acc_cal = unwrap!(s::CFG_MULTI_ACC_CAL[idx].receiver());
-    let mut rcv_cfg_gyr_cal = unwrap!(s::CFG_MULTI_GYR_CAL[idx].receiver());
-    let mut rcv_cfg_imu_rot = unwrap!(s::CFG_MULTI_IMU_ROT[idx].receiver());
+    let mut rcv_cfg_acc_cal = s::CFG_MULTI_ACC_CAL[idx].receiver();
+    let mut rcv_cfg_gyr_cal = s::CFG_MULTI_GYR_CAL[idx].receiver();
+    let mut rcv_cfg_imu_rot = s::CFG_MULTI_IMU_ROT[idx].receiver();
 
     // Task outputs
-    let snd_raw_imu_data = s::RAW_MULTI_IMU_DATA[idx].sender();
-    let snd_cal_imu_data = s::CAL_MULTI_IMU_DATA[idx].sender();
+    let mut snd_raw_imu_data = s::RAW_MULTI_IMU_DATA[idx].sender();
+    let mut snd_cal_imu_data = s::CAL_MULTI_IMU_DATA[idx].sender();
 
     // Wait for initial configuration values
-    let mut acc_cal = get_or_warn!(rcv_cfg_acc_cal).await;
-    let mut gyr_cal = get_or_warn!(rcv_cfg_gyr_cal).await;
-    let mut imu_rot = get_or_warn!(rcv_cfg_imu_rot).await;
+    let intrinsics = CONFIG_RPC.request(GetImuInt{id: 0}).await
+        .expect("The configurator must respond to early config calls");
+
+    let mut acc_cal = intrinsics.acc_cal;
+    let mut gyr_cal = intrinsics.gyr_cal;
+    let mut imu_rot = intrinsics.imu_rot;
 
     // Sampling time
     let mut ticker = Ticker::every(Duration::from_hz(get_ctrl_freq!() as u64));
@@ -166,6 +170,7 @@ pub async fn main_6dof(
 
 /// Not finished
 pub async fn main_9dof(mut marg: impl Imu9Dof) -> ! {
+
     const ID: &str = "imu_reader_9dof";
     info!("{}: Task started", ID);
 
@@ -173,17 +178,17 @@ pub async fn main_9dof(mut marg: impl Imu9Dof) -> ! {
     assert!(idx < NUM_IMU, "Invalid index for IMU reader task");
 
     // Task inputs
-    let mut rcv_cfg_acc_cal = unwrap!(s::CFG_MULTI_ACC_CAL[idx].receiver());
-    let mut rcv_cfg_gyr_cal = unwrap!(s::CFG_MULTI_GYR_CAL[idx].receiver());
-    let mut rcv_cfg_mag_cal = unwrap!(s::CFG_MULTI_MAG_CAL[idx].receiver());
-    let mut rcv_cfg_imu_rot = unwrap!(s::CFG_MULTI_IMU_ROT[idx].receiver());
-    let mut rcv_cfg_mag_rot = unwrap!(s::CFG_MULTI_MAG_ROT[idx].receiver());
+    let mut rcv_cfg_acc_cal = s::CFG_MULTI_ACC_CAL[idx].receiver();
+    let mut rcv_cfg_gyr_cal = s::CFG_MULTI_GYR_CAL[idx].receiver();
+    let mut rcv_cfg_mag_cal = s::CFG_MULTI_MAG_CAL[idx].receiver();
+    let mut rcv_cfg_imu_rot = s::CFG_MULTI_IMU_ROT[idx].receiver();
+    let mut rcv_cfg_mag_rot = s::CFG_MULTI_MAG_ROT[idx].receiver();
 
     // Task outputs
-    let snd_raw_imu_data = s::RAW_MULTI_IMU_DATA[idx].sender();
-    let snd_cal_imu_data = s::CAL_MULTI_IMU_DATA[idx].sender();
-    let snd_raw_mag_data = s::RAW_MULTI_MAG_DATA[idx].sender();
-    let snd_cal_mag_data = s::CAL_MULTI_MAG_DATA[idx].sender();
+    let mut snd_raw_imu_data = s::RAW_MULTI_IMU_DATA[idx].sender();
+    let mut snd_cal_imu_data = s::CAL_MULTI_IMU_DATA[idx].sender();
+    let mut snd_raw_mag_data = s::RAW_MULTI_MAG_DATA[idx].sender();
+    let mut snd_cal_mag_data = s::CAL_MULTI_MAG_DATA[idx].sender();
 
     // Wait for initial configuration values
     let mut acc_cal = get_or_warn!(rcv_cfg_acc_cal).await;
@@ -247,17 +252,17 @@ pub async fn main_9dof(mut marg: impl Imu9Dof) -> ! {
             // Apply rotation
             let rot_acc_data = &imu_rot * imu_6dof_data.acc.into();
             let rot_gyr_data = &imu_rot * imu_6dof_data.gyr.into();
-            
+
             // Apply offset and scale
             let cal_acc_data = acc_cal.apply(rot_acc_data);
             let cal_gyr_data = gyr_cal.apply(rot_gyr_data);
-            
+
             // Rotated RAW struct
             let rot_imu_data = Imu6DofData {
                 acc: rot_acc_data.into(),
                 gyr: rot_gyr_data.into(),
             };
-            
+
             // Calibrated struct
             let cal_imu_data = Imu6DofData {
                 acc: cal_acc_data.into(),

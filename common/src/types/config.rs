@@ -57,16 +57,16 @@ pub struct BootConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImuIntrinsics {
-    pub imu_rot: [Rotation; NUM_IMU],
-    pub acc_cal: [Calib3DType; NUM_IMU],
-    pub gyr_cal: [Calib3DType; NUM_IMU],
+    pub imu_rot: Rotation,
+    pub acc_cal: Calib3DType,
+    pub gyr_cal: Calib3DType,
 }
 
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MagIntrinsics {
-    pub mag_rot: [Rotation; NUM_MAG],
-    pub mag_cal: [Calib3DType; NUM_MAG],
+    pub mag_rot: Rotation,
+    pub mag_cal: Calib3DType,
 }
 
 

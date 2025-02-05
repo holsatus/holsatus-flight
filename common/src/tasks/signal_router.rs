@@ -8,16 +8,16 @@ pub async fn main() -> ! {
     info!("{}: Task started", ID);
 
     // Get inputs
-    let mut rcv_control_mode = unwrap!(s::CONTROL_MODE.receiver());
-    let mut rcv_rc_controls = unwrap!(s::RC_ANALOG_RATE.receiver());
-    let mut rcv_angle_to_rate_sp = unwrap!(s::ANGLE_TO_RATE_SP.receiver());
-    let mut rcv_vel_to_angle_sp = unwrap!(s::VEL_TO_ANGLE_SP.receiver());
+    let mut rcv_control_mode = s::CONTROL_MODE.receiver();
+    let mut rcv_rc_controls = s::RC_ANALOG_RATE.receiver();
+    let mut rcv_angle_to_rate_sp = s::ANGLE_TO_RATE_SP.receiver();
+    let mut rcv_vel_to_angle_sp = s::VEL_TO_ANGLE_SP.receiver();
 
     // Get outputs
-    let snd_rate_sp = s::TRUE_RATE_SP.sender();
-    let snd_angle_sp = s::TRUE_ANGLE_SP.sender();
-    let snd_throttle_sp = s::TRUE_THROTTLE_SP.sender();
-    let snd_velocity_sp = s::TRUE_VELOCITY_SP.sender();
+    let mut snd_rate_sp = s::TRUE_RATE_SP.sender();
+    let mut snd_angle_sp = s::TRUE_ANGLE_SP.sender();
+    let mut snd_throttle_sp = s::TRUE_THROTTLE_SP.sender();
+    let mut snd_velocity_sp = s::TRUE_VELOCITY_SP.sender();
 
     // Wait for the control mode to be defiend before routing starts
     let mut control_mode = get_or_warn!(rcv_control_mode).await;

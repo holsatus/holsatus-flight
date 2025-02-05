@@ -3,6 +3,7 @@ use core::sync::atomic::Ordering;
 
 use crate::filters::{Complementary, Lowpass, NthOrderLowpass, SlewRate};
 use crate::filters::rate_pid::RatePid;
+use crate::sync::watch::Watch;
 use crate::{get_or_warn, multi_receiver, signals as sig, NUM_IMU};
 use embassy_futures::select::{select3, Either3::{First, Second, Third}};
 
@@ -13,19 +14,19 @@ pub async fn main() {
 
     // Task inputs
     let mut rcv_imu_data = multi_receiver!(sig::CAL_MULTI_IMU_DATA, NUM_IMU);
-    let mut rcv_throttle_sp = sig::TRUE_THROTTLE_SP.receiver().unwrap();
-    let mut rcv_rate_sp = sig::TRUE_RATE_SP.receiver().unwrap();
-    let mut rcv_rate_int_en = sig::ATTITUDE_INT_EN.receiver().unwrap();
-    let mut rcv_cfg_rate_loop = sig::CFG_RATE_LOOP_PIDS.receiver().unwrap();
-    let mut rcv_cfg_vehicle_info = sig::CFG_VEHICLE_INFO.receiver().unwrap();
-    let mut rcv_cfg_control_freq = sig::CFG_CONTROL_FREQ.receiver().unwrap();
+    let mut rcv_throttle_sp = sig::TRUE_THROTTLE_SP.receiver();
+    let mut rcv_rate_sp = sig::TRUE_RATE_SP.receiver();
+    let mut rcv_rate_int_en = sig::ATTITUDE_INT_EN.receiver();
+    let mut rcv_cfg_rate_loop = sig::CFG_RATE_LOOP_PIDS.receiver();
+    let mut rcv_cfg_vehicle_info = sig::CFG_VEHICLE_INFO.receiver();
+    let mut rcv_cfg_control_freq = sig::CFG_CONTROL_FREQ.receiver();
 
     // Task outputs
-    let snd_ctrl_motors = sig::CTRL_MOTORS.sender();
-    let snd_rate_pid_terms = sig::RATE_PID_TERMS.sender();
-    let snd_comp_fuse_gyr = sig::COMP_FUSE_GYR.sender();
-    let snd_slew_rate_sp = sig::SLEW_RATE_SP.sender();
-    let snd_ff_pred_gyr = sig::FF_PRED_GYR.sender();
+    let mut snd_ctrl_motors = sig::CTRL_MOTORS.sender();
+    let mut snd_rate_pid_terms = sig::RATE_PID_TERMS.sender();
+    let mut snd_comp_fuse_gyr = sig::COMP_FUSE_GYR.sender();
+    let mut snd_slew_rate_sp = sig::SLEW_RATE_SP.sender();
+    let mut snd_ff_pred_gyr = sig::FF_PRED_GYR.sender();
 
     // Sampling time
     let mut ts: f32 = 1.0 / rcv_cfg_control_freq.get().await as f32;
@@ -50,7 +51,7 @@ pub async fn main() {
         SlewRate::new(300., ts),
     ];
 
-    // Slew-rate limiter for the reference signal
+    // Lowpass limiter for the slew-limited reference signal
     let mut lp_filt_sp = [
         NthOrderLowpass::<_, 2>::new(0.005, ts),
         NthOrderLowpass::<_, 2>::new(0.005, ts),

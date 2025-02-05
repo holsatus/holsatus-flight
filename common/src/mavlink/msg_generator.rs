@@ -1,19 +1,37 @@
-use core::sync::atomic::Ordering;
+use core::{f32, sync::atomic::Ordering};
 
 use embassy_time::Instant;
-use mavlink::{holsatus::*, MAVLinkV2MessageRaw, MessageData};
-use num_traits::FromPrimitive;
+use mavio::{dialects::common::{enums::{GpsFixType, HighresImuUpdatedFlags, MavModeFlag, MavState}, messages::{Attitude, AttitudeQuaternion, GpsRawInt, Heartbeat, HighresImu, RcChannelsScaled, ServoOutputRaw}}, prelude::V2, protocol::Payload, Frame, Message};
 
 use crate::errors::MavlinkError;
 use super::{MavServer, MAV_MODE, MAV_STATE};
 
+#[derive(Debug, Clone, Copy)]
+pub struct Params {
+    param1: f32,
+    param2: f32,
+    param3: f32,
+    param4: f32,
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Params {
+            param1: f32::NAN,
+            param2: f32::NAN,
+            param3: f32::NAN,
+            param4: f32::NAN,
+        }
+    }
+}
+
 macro_rules! define_sendable {
-    (enum $name:ident { $($variant:ident($data_id:ident @ $gen_fn:ident)),* $(,)?}) => {
+    (enum $name:ident { $($variant:ident @ $gen_fn:ident),* $(,)?}) => {
         #[repr(u32)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #[cfg_attr(feature = "defmt", derive(defmt::Format))]
         pub enum $name {
-            $($variant = $data_id::ID),*
+            $($variant = ::mavio::dialects::common::messages::$variant::message_id()),*
         }
 
         impl $name {
@@ -34,7 +52,7 @@ macro_rules! define_sendable {
 
             fn try_from(value: u32) -> Result<Self, Self::Error> {
                 match value {
-                    $($data_id::ID => Ok($name::$variant)),*,
+                    $(id if id == ::mavio::dialects::common::messages::$variant::message_id() => Ok($name::$variant)),*,
                     _ => Err(MavlinkError::NoMessageHandler),
                 }
             }
@@ -44,37 +62,34 @@ macro_rules! define_sendable {
 
 define_sendable!(
     enum MavSendable {
-        Heartbeat(HEARTBEAT_DATA @ heartbeat),
-        HighresImu(HIGHRES_IMU_DATA @ highres_imu),
-        AttitudeQuaternion(ATTITUDE_QUATERNION_DATA @ attitude_quaternion),
-        Attitude(ATTITUDE_DATA @ attitude),
-        ServoOutputRaw(SERVO_OUTPUT_RAW_DATA @ servo_output_raw),
-        RcChannelsScaled(RC_CHANNELS_SCALED_DATA @ rc_channels_scaled),
-        PidInternalsRate(PID_INTERNALS_RATE_DATA @ pid_internals_rate),
-        GpsRawInt(GPS_RAW_INT_DATA @ gps_raw_int),
+        Heartbeat @ heartbeat,
+        HighresImu @ highres_imu,
+        AttitudeQuaternion @ attitude_quaternion,
+        Attitude @ attitude,
+        ServoOutputRaw @ servo_output_raw,
+        RcChannelsScaled @ rc_channels_scaled,
+        AutopilotVersion @ autopilot_version,
+        // PidInternalsRate @ pid_internals_rate,
+        GpsRawInt @ gps_raw_int,
     }
 );
 
-pub(super) fn heartbeat(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
-    use mavlink::holsatus::{HEARTBEAT_DATA, MavState, MavType, MavAutopilot, MavModeFlag};
-    
-    // TODO: MavType and MavAutopilot should be configurable
-    let message = HEARTBEAT_DATA {
-        custom_mode: 0,
-        mavtype: MavType::MAV_TYPE_QUADROTOR,
-        autopilot: MavAutopilot::MAV_AUTOPILOT_GENERIC,
+pub(super) fn heartbeat(server: &MavServer, _params: &Params) -> Result<Frame<V2>, MavlinkError> {
+    let message = Heartbeat {
+        type_: mavio::dialects::minimal::enums::MavType::Quadrotor,
+        autopilot: mavio::dialects::minimal::enums::MavAutopilot::Generic,
         base_mode: MavModeFlag::from_bits_truncate(MAV_MODE.load(Ordering::Relaxed)),
-        system_status: MavState::from_usize(MAV_STATE.load(Ordering::Relaxed) as usize).unwrap(),
+        custom_mode: 0,
+        system_status: MavState::Uninit,
         mavlink_version: 0x3,
     };
 
-    server.serialize(raw, message)
+    server.build_frame(&message)
 }
 
-pub(super) fn highres_imu(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
-    use mavlink::holsatus::HIGHRES_IMU_DATA;
+pub(super) fn highres_imu(server: &MavServer, _params: &Params) -> Result<Frame<V2>, MavlinkError> {
 
-    let mut message = HIGHRES_IMU_DATA::default();
+    let mut message = HighresImu::default();
     message.time_usec = Instant::now().as_micros();
 
     // Get the IMU and magnetometer data
@@ -105,13 +120,12 @@ pub(super) fn highres_imu(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
         | HighresImuUpdatedFlags::HIGHRES_IMU_UPDATED_ZMAG;
     }
 
-    server.serialize(raw, message)
+    server.build_frame(&message)
 }
 
-pub(crate) fn attitude_quaternion(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
-    use mavlink::holsatus::ATTITUDE_QUATERNION_DATA;
+pub(crate) fn attitude_quaternion(server: &MavServer, _params: &Params) -> Result<Frame<V2>, MavlinkError> {
 
-    let mut message = ATTITUDE_QUATERNION_DATA::default();
+    let mut message = AttitudeQuaternion::default();
     message.time_boot_ms = Instant::now().as_millis() as u32;
 
     if let Some(att) = crate::signals::AHRS_ATTITUDE_Q.try_get() {
@@ -127,14 +141,12 @@ pub(crate) fn attitude_quaternion(server: &MavServer, raw: &mut MAVLinkV2Message
         message.yawspeed = imu.gyr[2];
     }
 
-    server.serialize(raw, message)
+    server.build_frame(&message)
 }
 
-pub(crate) fn attitude(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
+pub(crate) fn attitude(server: &MavServer, _params: &Params) -> Result<Frame<V2>, MavlinkError> {
 
-    use mavlink::holsatus::ATTITUDE_DATA;
-
-    let mut message = ATTITUDE_DATA::default();
+    let mut message = Attitude::default();
     message.time_boot_ms = Instant::now().as_millis() as u32;
 
     if let Some(att) = crate::signals::AHRS_ATTITUDE.try_get() {
@@ -145,13 +157,12 @@ pub(crate) fn attitude(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
         [message.rollspeed, message.pitchspeed, message.yawspeed] = imu.gyr;
     }
 
-    server.serialize(raw, message)
+    server.build_frame(&message)
 }
 
-pub(crate) fn servo_output_raw(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
-    use mavlink::holsatus::SERVO_OUTPUT_RAW_DATA;
+pub(crate) fn servo_output_raw(server: &MavServer, _params: &Params) -> Result<Frame<V2>, MavlinkError> {
 
-    let mut message = SERVO_OUTPUT_RAW_DATA::default();
+    let mut message = ServoOutputRaw::default();
     // Note, 32-bit micro-seconds does not make much sense, so we use millis instead
     message.time_usec = (0xFFFFFFFF & Instant::now().as_micros()) as u32;
 
@@ -163,13 +174,12 @@ pub(crate) fn servo_output_raw(server: &MavServer, raw: &mut MAVLinkV2MessageRaw
         message.servo4_raw = speeds[3];
     }
 
-    server.serialize(raw, message)
+    server.build_frame(&message)
 }
 
-pub(crate) fn rc_channels_scaled(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
-    use mavlink::holsatus::RC_CHANNELS_SCALED_DATA;
+pub(crate) fn rc_channels_scaled(server: &MavServer, _params: &Params) -> Result<Frame<V2>, MavlinkError> {
 
-    let mut message = RC_CHANNELS_SCALED_DATA::default();
+    let mut message = RcChannelsScaled::default();
 
     // Note, 32-bit micro-seconds does not make much sense, so we use millis instead
     message.time_boot_ms = (0xFFFFFFFF & Instant::now().as_millis()) as u32;
@@ -185,55 +195,63 @@ pub(crate) fn rc_channels_scaled(server: &MavServer, raw: &mut MAVLinkV2MessageR
         message.chan8_scaled = (channel.0[7] * 1e4).clamp(-1e4, 1e4) as i16;
     }
 
-    server.serialize(raw, message)
+    server.build_frame(&message)
 }
 
-pub(super) fn pid_internals_rate(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
-    use mavlink::holsatus::PID_INTERNALS_RATE_DATA;
-    let mut message = PID_INTERNALS_RATE_DATA::default();
+pub(crate) fn autopilot_version(server: &MavServer, _params: &Params) -> Result<Frame<V2>, MavlinkError> {
+    use mavio::dialects::common::messages::AutopilotVersion;
 
-    message.time_usec = Instant::now().as_micros();
+    // TODO fill this in correctly
+    let message = AutopilotVersion::default();
 
-    if let Some([x,y,z]) = crate::signals::RATE_PID_TERMS.try_get() {
-        message.x_pid_p = x.p_out;
-        message.x_pid_i = x.i_out;
-        message.x_pid_dr = x.dr_out;
-        message.x_pid_dm = x.dm_out;
-
-        message.y_pid_p = y.p_out;
-        message.y_pid_i = y.i_out;
-        message.y_pid_dr = y.dr_out;
-        message.y_pid_dm = y.dm_out;
-
-        message.z_pid_p = z.p_out;
-        message.z_pid_i = z.i_out;
-        message.z_pid_dr = z.dr_out;
-        message.z_pid_dm = z.dm_out;
-    }
-
-    if let Some(comp_fuse) = crate::signals::COMP_FUSE_GYR.try_get() {
-        message.x_meas = comp_fuse[0];
-        message.y_meas = comp_fuse[1];
-        message.z_meas = comp_fuse[2];
-    }
-    
-    if let Some(slew_rate) = crate::signals::SLEW_RATE_SP.try_get() {
-        message.x_ref = slew_rate[0];
-        message.y_ref = slew_rate[1];
-        message.z_ref = slew_rate[2];
-    }
-
-    if let Some(ff_pred) = crate::signals::FF_PRED_GYR.try_get() {
-        message.x_pred = ff_pred[0];
-        message.y_pred = ff_pred[1];
-        message.z_pred = ff_pred[2];
-    }
-
-    server.serialize(raw, message)
+    server.build_frame(&message)
 }
 
-pub(super) fn gps_raw_int(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
-    use mavlink::holsatus::{GPS_RAW_INT_DATA, GpsFixType};
+// pub(super) fn pid_internals_rate(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
+//     use mavlink::holsatus::PID_INTERNALS_RATE_DATA;
+//     let mut message = PID_INTERNALS_RATE_DATA::default();
+
+//     message.time_usec = Instant::now().as_micros();
+
+//     if let Some([x,y,z]) = crate::signals::RATE_PID_TERMS.try_get() {
+//         message.x_pid_p = x.p_out;
+//         message.x_pid_i = x.i_out;
+//         message.x_pid_dr = x.dr_out;
+//         message.x_pid_dm = x.dm_out;
+
+//         message.y_pid_p = y.p_out;
+//         message.y_pid_i = y.i_out;
+//         message.y_pid_dr = y.dr_out;
+//         message.y_pid_dm = y.dm_out;
+
+//         message.z_pid_p = z.p_out;
+//         message.z_pid_i = z.i_out;
+//         message.z_pid_dr = z.dr_out;
+//         message.z_pid_dm = z.dm_out;
+//     }
+
+//     if let Some(comp_fuse) = crate::signals::COMP_FUSE_GYR.try_get() {
+//         message.x_meas = comp_fuse[0];
+//         message.y_meas = comp_fuse[1];
+//         message.z_meas = comp_fuse[2];
+//     }
+
+//     if let Some(slew_rate) = crate::signals::SLEW_RATE_SP.try_get() {
+//         message.x_ref = slew_rate[0];
+//         message.y_ref = slew_rate[1];
+//         message.z_ref = slew_rate[2];
+//     }
+
+//     if let Some(ff_pred) = crate::signals::FF_PRED_GYR.try_get() {
+//         message.x_pred = ff_pred[0];
+//         message.y_pred = ff_pred[1];
+//         message.z_pred = ff_pred[2];
+//     }
+
+//     server.serialize(raw, message)
+// }
+
+pub(super) fn gps_raw_int(server: &MavServer, _params: &Params) -> Result<Frame<V2>, MavlinkError> {
     use nalgebra::Vector3;
     use crate::types::measurements::GnssFix;
     #[cfg(not(feature = "arch-std"))]
@@ -242,32 +260,33 @@ pub(super) fn gps_raw_int(server: &MavServer, raw: &mut MAVLinkV2MessageRaw) {
     let message = if let Some(gnss) = crate::signals::RAW_GNSS_DATA.try_get() {
 
         let fix_type = match gnss.fix {
-            GnssFix::NoFix => GpsFixType::GPS_FIX_TYPE_NO_FIX,
-            GnssFix::Fix2D => GpsFixType::GPS_FIX_TYPE_2D_FIX,
-            GnssFix::Fix3D => GpsFixType::GPS_FIX_TYPE_3D_FIX,
-            GnssFix::TimeOnly => GpsFixType::GPS_FIX_TYPE_STATIC,
+            GnssFix::NoFix => GpsFixType::NoFix,
+            GnssFix::Fix2D => GpsFixType::_2dFix,
+            GnssFix::Fix3D => GpsFixType::_3dFix,
+            GnssFix::TimeOnly => GpsFixType::NoFix,
         };
 
-        GPS_RAW_INT_DATA {
+        GpsRawInt {
             time_usec: Instant::now().as_micros(),
             lat: gnss.lat_raw,
             lon: gnss.lon_raw,
             alt: (gnss.altitude * 1e3) as i32,
-            eph: gnss.accuracy_east as u16,
-            epv: gnss.accuracy_north as u16,
+            eph: (gnss.horiz_accuracy * 1000.) as u16,
+            epv: (gnss.vert_accuracy * 1000.) as u16,
             vel: (Vector3::new(gnss.vel_east, gnss.vel_north, gnss.vel_down).norm() * 100.) as u16,
             cog: (gnss.vel_east.atan2(gnss.vel_north).to_degrees() * 100.) as u16,
             fix_type,
-            satellites_visible: gnss.sats,
+            satellites_visible: gnss.satellites,
+            .. Default::default()
         }
     } else {
-        GPS_RAW_INT_DATA {
+        GpsRawInt {
             time_usec: Instant::now().as_micros(),
-            fix_type: GpsFixType::GPS_FIX_TYPE_NO_GPS,
+            fix_type: GpsFixType::NoGps,
             satellites_visible: 0,
             .. Default::default()
         }
     };
 
-    server.serialize(raw, message)
+    server.build_frame(&message)
 }

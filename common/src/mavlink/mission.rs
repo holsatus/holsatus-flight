@@ -1,8 +1,8 @@
-use mavlink::holsatus::MISSION_ITEM_INT_DATA;
+use mavio::dialects::common::messages::MissionItemInt;
 
 use crate::errors::MavlinkError;
 
-pub async fn handle_mission_item_int(mission: MISSION_ITEM_INT_DATA) -> Result<(), MavlinkError> {
+pub async fn handle_mission_item_int(mission: MissionItemInt) -> Result<(), MavlinkError> {
 
     // TODO: Implement mission protocol
     match mission.command {

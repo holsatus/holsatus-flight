@@ -89,7 +89,7 @@ impl super::CommandHandler for CalibrateCommand {
 
                 // Give the calibrator some time to start
                 Timer::after_millis(10).await;
-                let mut receiver = unwrap!(crate::signals::CALIBRATOR_STATE.receiver());
+                let mut receiver = crate::signals::CALIBRATOR_STATE.receiver();
 
                 loop {
                     let Ok(calibration_status) = with_timeout(Duration::from_secs(2), receiver.changed()).await else {
@@ -132,7 +132,7 @@ impl super::CommandHandler for CalibrateCommand {
 
                 // Give the calibrator some time to start
                 Timer::after_millis(10).await;
-                let mut receiver = unwrap!(crate::signals::CALIBRATOR_STATE.receiver());
+                let mut receiver = crate::signals::CALIBRATOR_STATE.receiver();
 
                 loop {
 
@@ -178,7 +178,7 @@ impl super::CommandHandler for CalibrateCommand {
 
                 // Give the calibrator some time to start
                 Timer::after_millis(10).await;
-                let mut receiver = unwrap!(crate::signals::CALIBRATOR_STATE.receiver());
+                let mut receiver = crate::signals::CALIBRATOR_STATE.receiver();
 
                 loop {
 

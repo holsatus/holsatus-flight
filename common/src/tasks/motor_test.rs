@@ -42,7 +42,7 @@ pub async fn main() {
     info!("{}: Task started", ID);
 
     // Task outputs
-    let snd_ctrl_motors = s::CTRL_MOTORS.sender();
+    let mut snd_ctrl_motors = s::CTRL_MOTORS.sender();
     let mut ticker = Ticker::every(Duration::from_hz(1000));
 
     'infinite: loop {
@@ -56,7 +56,7 @@ pub async fn main() {
         };
         let mut state = State::Start(Instant::now());
         let mut cmd= 0.0;
-        
+
         'testing: loop {
 
             ticker.next().await;
@@ -110,7 +110,7 @@ pub async fn main() {
                     }
                 },
                 MotorTest::Step { millis_warmup, millis_step, end } => {
-                    
+
                     match &mut state {
                         State::Start(time) => {
                             if time.elapsed() < Duration::from_millis(500) {

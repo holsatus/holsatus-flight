@@ -6,26 +6,26 @@ use embassy_time::{with_timeout, Duration, Timer};
 
 use crate::{filters::{motor_lin::MotorLin, Linear}, tasks::imu_reader::TIME_SIG, DSHOT_MAX, DSHOT_MIN};
 use crate::{
-    hw_abstraction::FourMotors,
+    hw_abstraction::OutputGroup,
     types::actuators::{DisarmReason, MotorsState},
 };
 use crate::{signals as s, MOTOR_TIMEOUT_MS};
 
-pub async fn main(mut motors: impl FourMotors) -> ! {
+pub async fn main(mut motors: impl OutputGroup) -> ! {
     const ID: &str = "motor_governor";
     info!("{}: Task started", ID);
 
     // Input signals
-    let mut rcv_arm_blocker = unwrap!(s::ARMING_BLOCKER.receiver());
-    let mut rcv_arm_command = unwrap!(s::CMD_ARM_MOTORS.receiver());
-    let mut rcv_motor_speeds = unwrap!(s::CTRL_MOTORS.receiver());
-    let mut rcv_cfg_motor_dirs = unwrap!(s::CFG_MOTOR_DIRS.receiver());
+    let mut rcv_arm_blocker = s::ARMING_BLOCKER.receiver();
+    let mut rcv_arm_command = s::CMD_ARM_MOTORS.receiver();
+    let mut rcv_motor_speeds = s::CTRL_MOTORS.receiver();
+    let mut rcv_cfg_motor_dirs = s::CFG_MOTOR_DIRS.receiver();
 
     // Output signals
-    let snd_motors_state = s::MOTORS_STATE.sender();
+    let mut snd_motors_state = s::MOTORS_STATE.sender();
 
     let mut dirs = crate::get_or_warn!(rcv_cfg_motor_dirs).await;
-    
+
     let timeout_dur = Duration::from_millis(MOTOR_TIMEOUT_MS as u64);
 
     // Linearize the non-linear command->thrust curve of the motor+propeller
@@ -45,12 +45,12 @@ pub async fn main(mut motors: impl FourMotors) -> ! {
     'disarmed: loop {
 
         #[cfg(feature = "mavlink")]
-        crate::mavlink::mav_set_safety_armed(false);
+        crate::mavlink::mav_set_armed(false);
 
         // Await arming command
         let (arm, force) = rcv_arm_command.changed().await;
         if !arm { continue 'disarmed }
-        
+
         snd_motors_state.send(MotorsState::Arming);
 
         // Ensure we have latest configuration
@@ -78,9 +78,9 @@ pub async fn main(mut motors: impl FourMotors) -> ! {
             snd_motors_state.send(MotorsState::Disarmed(DisarmReason::ArmingBlocker));
             continue 'disarmed;
         }
-        
+
         #[cfg(feature = "mavlink")]
-        crate::mavlink::mav_set_safety_armed(true);
+        crate::mavlink::mav_set_armed(true);
         snd_motors_state.send(MotorsState::ArmedIdle);
         let mut total_duration = Duration::from_ticks(0);
         let mut duration_count = 0;

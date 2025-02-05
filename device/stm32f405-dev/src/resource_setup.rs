@@ -3,7 +3,7 @@ use core::ops::Range;
 use aligned::Aligned;
 use assign_resources::assign_resources;
 use common::{
-    drivers::imu::ImuConfig, embassy_usb::driver::Driver, embedded_io, hw_abstraction::FourMotors, tasks::blackbox_fat::{BlockDevice, Reset}, types::{config::{DshotConfig, I2cConfig, SdmmcConfig, UartConfig}, device::HardwareInfo}
+    drivers::imu::ImuConfig, embassy_usb::driver::Driver, embedded_io, hw_abstraction::OutputGroup, tasks::blackbox_fat::{BlockDevice, Reset}, types::{config::{DshotConfig, I2cConfig, SdmmcConfig, UartConfig}, device::HardwareInfo}
 };
 use embassy_stm32::{
     bind_interrupts, exti::ExtiInput, mode::Async, peripherals, sdmmc::{Error, Instance, Sdmmc, SdmmcDma}, time::Hertz
@@ -109,10 +109,10 @@ impl I2c1 {
 }
 
 #[embassy_executor::task]
-pub(crate) async fn imu_reader_9dof(i2c: I2c1, pin: IntPin, i2c_cfg: &'static I2cConfig, imu_cfg: &'static ImuConfig) -> ! {
+pub(crate) async fn imu_reader(i2c: I2c1, pin: IntPin, i2c_cfg: &'static I2cConfig, imu_cfg: &'static ImuConfig) -> ! {
     let i2c = i2c.setup(i2c_cfg);
     let _pin = pin.setup();
-    common::tasks::imu_reader::main_9dof_i2c(i2c, imu_cfg, Some(0x69)).await
+    common::tasks::imu_reader::main_6dof_i2c(i2c, imu_cfg, Some(0x69)).await
 }
 
 // ----------------------------------------------------------
@@ -222,7 +222,7 @@ pub(crate) async fn configurator(flash: Flash) -> ! {
 // ----------------------------------------------------------
 
 impl MotorDriver {
-    pub fn setup(&mut self, dshot: &DshotConfig) -> impl FourMotors + '_ {
+    pub fn setup(&mut self, dshot: &DshotConfig) -> impl OutputGroup + '_ {
         crate::dshot_pwm::DshotPwm::new(
             &mut self.timer,
             &mut self.pin_1,

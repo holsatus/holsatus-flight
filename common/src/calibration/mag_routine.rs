@@ -29,7 +29,7 @@ pub async fn calibrate_mag<'a>(config: MagCalib, sensor_id: u8, feedback: Feedba
     // Input channels
     let mut rcv_raw_mag = crate::signals::RAW_MULTI_MAG_DATA.get(sensor_id as usize)
         .ok_or(CalibrationError::MagInvalidId)?
-        .anon_receiver();
+        .receiver();
 
     let mut failed_calibrations = 0;
     let mut dropped = 0;
@@ -48,13 +48,13 @@ pub async fn calibrate_mag<'a>(config: MagCalib, sensor_id: u8, feedback: Feedba
                 continue 'calibration;
             }
         };
-        
+
         calibrator.evaluate_sample(data);
         feedback.send(MagCalState::Collecting(MagCalCollecting {
             sample: data,
             mean_distance: calibrator.get_mean_distance(),
         }));
-        
+
         info!("Received new sample: {:?}", data);
         info!("Mean distance: {}", calibrator.get_mean_distance());
 

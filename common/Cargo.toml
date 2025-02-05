@@ -9,7 +9,7 @@ default = ["arch-std", "mavlink", "sitl-std"]
 portable-atomic-critical-section = ["portable-atomic/critical-section"]
 portable-atomic-unsafe-assume-single-core = ["portable-atomic/unsafe-assume-single-core"]
 
-mavlink = ["dep:mavlink"]
+mavlink = []
 sitl-std = []
 sitl-mcu = []
 
@@ -49,6 +49,7 @@ embedded-io-async = "0.6.1"
 embedded-io = "0.6.1"
 
 static_cell = "2"
+static_assertions = "1.1.0"
 
 num-traits = { version = "0.2.19", default-features = false, features = [
     "libm",
@@ -58,18 +59,21 @@ num_enum = { version = "0.7.3", default-features = false }
 bitflags = { version = "2.6.0", default-features = false }
 
 critical-section = { version = "1.1", default-features = false }
+mutex = { version = "1.0", features = ["impl-critical-section"] }
 
-heapless = { version = "0.8.0", features = ["serde", "portable-atomic"]}
+heapless = { version = "0.8.0", features = ["serde", "portable-atomic", "defmt-03"]}
 
 nalgebra = { version = "0.33.0", default-features = false, features = [
     "serde-serialize-no-std",
     "libm",
 ] }
 
-mavlink = { git = "https://github.com/holsatus/rust-mavlink", default-features = false, features = [
-    "holsatus",
-    "embedded"
-], optional = true}
+eskf = { git = "https://github.com/peterkrull/eskf-rs", default-features = false, features = ["no_std"]}
+
+# mavlink = { git = "https://github.com/holsatus/rust-mavlink", default-features = false, features = [
+#     "holsatus",
+#     "embedded"
+# ], optional = true}
 
 futures = { version = "0.3.31", default-features = false, features = [
     "async-await",
@@ -88,11 +92,13 @@ block-device-driver = { version = "0.2.0" }
 icm20948-async = { git = "https://github.com/peterkrull/icm20948-async/", branch = "holsatus-test", features = [
     "align-mag",
     "serde",
-] }
+]}
 
 ahrs = { git = "https://github.com/jmagnuson/ahrs-rs", default-features = false }
 kalman_filter = { git = "https://github.com/peterkrull/kalman-filter-rs" }
 mag-calibrator-rs = { git = "https://github.com/peterkrull/mag-calibrator-rs" }
+
+maitake-sync = { git = "https://github.com/hawkw/mycelium", default-features = false, features = ["no-cache-pad", "critical-section"] }
 
 embedded-cli = { git = "https://github.com/funbiscuit/embedded-cli-rs" }
 ufmt = "0.2.0"
@@ -106,6 +112,9 @@ portable-atomic = "1.9"
 approx = "0.5"
 thiserror = { version = "2.0.7", default-features = false }
 
+mavio = { version = "0.4.2", features = ["embedded-io-async", "embedded-io", "common"]}
+
 [dev-dependencies]
 futures-executor = { version = "0.3.31", features = ["thread-pool"] }
 hex-literal = "0.4.1"
+futures-test = "0.3"

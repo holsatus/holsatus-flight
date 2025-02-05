@@ -10,7 +10,7 @@ pub mod gnss_reader;
 pub mod imu_manager;
 pub mod imu_reader;
 pub mod motor_governor;
-pub mod position_estimator;
+pub mod eskf;
 pub mod rate_loop;
 pub mod rc_reader;
 pub mod signal_logger;

@@ -1,12 +1,12 @@
 use embassy_time::{with_timeout, Duration};
 
-use crate::types::measurements::GnssData;
+use crate::types::measurements::{GnssData, GnssTime};
 
 pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
     const ID: &str = "gnss_reader";
     info!("{}: Task started", ID);
 
-    let snd_raw_gnss_data = crate::signals::RAW_GNSS_DATA.sender();
+    let mut snd_raw_gnss_data = crate::signals::RAW_GNSS_DATA.sender();
 
     let mut buffer = [0u8; 128];
     let mut parse_buffer = [0u8; 128];
@@ -39,24 +39,29 @@ pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
                 Ok(packet) => match packet {
                     ublox::PacketRef::NavPvt(pvt) => {
 
-                        let gnss_packet = GnssData {
+                        let time = GnssTime {
                             year: pvt.year(),
                             month: pvt.month(),
                             day: pvt.day(),
                             hour: pvt.hour(),
                             min: pvt.min(),
                             sec: pvt.sec(),
+                        };
+
+                        let gnss_packet = GnssData {
+                            time,
                             fix: pvt.fix_type().into(),
-                            sats: pvt.num_satellites(),
+                            satellites: pvt.num_satellites(),
                             lat_raw: pvt.lat_degrees_raw(),
                             lon_raw: pvt.lon_degrees_raw(),
                             altitude: pvt.height_meters() as f32,
+                            horiz_accuracy: pvt.horiz_accuracy() as f32 / 1e2,
+                            vert_accuracy: pvt.vert_accuracy() as f32 / 1e2,
                             vel_north: pvt.vel_north() as f32 ,
                             vel_east: pvt.vel_east() as f32,
                             vel_down: pvt.vel_down() as f32,
+                            vel_accuracy: pvt.speed_accuracy_estimate() as f32,
                             heading: pvt.heading_degrees() as f32,
-                            accuracy_north: pvt.vert_accuracy(),
-                            accuracy_east: pvt.horiz_accuracy(),
                             mag_declination: pvt.magnetic_declination_degrees() as f32,
                         };
 

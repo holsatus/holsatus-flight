@@ -7,7 +7,8 @@ use adapter::{
 };
 
 #[non_exhaustive]
-#[derive(Error, Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Error, Debug, Clone, Copy, Eq, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum HolsatusError {
     #[error("Embedded-HAL {0}")]
@@ -38,8 +39,8 @@ pub enum HolsatusError {
 #[derive(Error, Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DeviceError {
-    #[error("The device is not responding.")]
-    Timeout,
+    #[error("The device is not responding after {millis} ms.")]
+    Timeout { millis: u64 },
     #[error("The device was not identified correctly.")]
     IdentificationError,
     #[error("An external interrupt tied ot this device failed.")]
@@ -106,43 +107,82 @@ pub enum CalibrationError {
 #[derive(Error, Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum MavlinkError {
+    #[error("The IO device experienced an unexpected end of file")]
+    UnexpectedEof,
     #[error("Failed to read or write message from IO.")]
     GenericIoError,
     #[error("Failed to read or write message from IO: {0}")]
-    IoError(#[from] EmbeddedIoError),    
+    IoError(#[from] EmbeddedIoError),
     #[error("Could not start stream, all streamers are currently in use.")]
     MaxStreamers,
+    #[error("No more room for adding extra peers.")]
+    MaxPeers,
     #[error("Invalid flag value for flag type.")]
     InvalidFlag,
     #[error("Invalid enum value for enum type.")]
     InvalidEnum,
-    #[error("Unknown message ID.")]
-    UnknownMessage,
+    #[error("Message ID {0} is not part of a known dialect.")]
+    UnknownMessageID(u32),
+    #[error("Received message of an unsupported MAVLink version.")]
+    UnsupportedVersion,
+    #[error("Received message had an invalid checksum.")]
+    ChecksumFailure,
+    #[error("Received message had an invalid signature.")]
+    SignatureFailure,
+    #[error("Compatibility mismatch")]
+    Incompatible,
     #[error("Unknown MAV_CMD value.")]
     UnknownMavCmd,
     #[error("The received message was malformed.")]
     MalformedMessage,
     #[error("Message ID reception not supported by this firmware.")]
     NoMessageHandler,
+    #[error("Invalid payload length for a V1 message.")]
+    InvalidV1Payload,
+    #[error("A remote procedure failed to respond.")]
+    RpcFailure,
 }
 
-#[cfg(feature = "mavlink")]
-impl From<mavlink::error::MessageReadError> for MavlinkError {
-    fn from(value: mavlink::error::MessageReadError) -> Self {
+// #[cfg(feature = "mavio")]
+impl From<mavio::error::Error> for MavlinkError {
+    fn from(value: mavio::error::Error) -> Self {
         match value {
-            mavlink::error::MessageReadError::Io => Self::GenericIoError,
-            mavlink::error::MessageReadError::Parse(e) => e.into(),
+            mavio::error::Error::Io(io_error) => io_error.into(),
+            mavio::error::Error::Frame(frame_error) => frame_error.into(),
+            mavio::error::Error::Spec(spec_error) => spec_error.into(),
         }
     }
 }
 
-#[cfg(feature = "mavlink")]
-impl From<mavlink::error::ParserError> for MavlinkError {
-    fn from(value: mavlink::error::ParserError) -> Self {
+impl From<mavio::error::FrameError> for MavlinkError {
+    fn from(value: mavio::error::FrameError) -> Self {
         match value {
-            mavlink::error::ParserError::InvalidFlag { .. } => MavlinkError::InvalidFlag,
-            mavlink::error::ParserError::InvalidEnum { .. } => MavlinkError::InvalidEnum,
-            mavlink::error::ParserError::UnknownMessage { .. } => MavlinkError::UnknownMessage,
+            mavio::error::FrameError::Version(_) => MavlinkError::UnsupportedVersion,
+            mavio::error::FrameError::Checksum => MavlinkError::ChecksumFailure,
+            mavio::error::FrameError::Signature => MavlinkError::SignatureFailure,
+            mavio::error::FrameError::Incompatible(_) => MavlinkError::Incompatible,
+            mavio::error::FrameError::NotInDialect(id) => MavlinkError::UnknownMessageID(id),
+        }
+    }
+}
+
+impl From<mavio::error::SpecError> for MavlinkError {
+    fn from(value: mavio::error::SpecError) -> Self {
+        match value {
+            mavio::error::SpecError::UnsupportedMavLinkVersion { .. } => MavlinkError::UnsupportedVersion,
+            mavio::error::SpecError::NotInDialect(id) => MavlinkError::UnknownMessageID(id),
+            mavio::error::SpecError::InvalidEnumValue { .. } => MavlinkError::InvalidEnum,
+            mavio::error::SpecError::InvalidV1PayloadSize { .. } => MavlinkError::InvalidV1Payload,
+        }
+    }
+}
+
+impl From<mavio::error::IoError> for MavlinkError {
+    fn from(value: mavio::error::IoError) -> Self {
+        match value.kind() {
+            mavio::error::IoErrorKind::UnexpectedEof => MavlinkError::UnexpectedEof,
+            mavio::error::IoErrorKind::Embedded(kind) => MavlinkError::IoError((*kind).into()),
+            mavio::error::IoErrorKind::Generic => MavlinkError::GenericIoError,
         }
     }
 }

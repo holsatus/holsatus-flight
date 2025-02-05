@@ -1,12 +1,12 @@
 use embassy_futures::select::{select, Either};
 
-use super::configurator::{CfgMsg, CONFIG_QUEUE};
+use super::configurator::{CfgMsg, CONFIG_RPC};
 use crate::{
     calibration::{
         acc_routine::calibrate_acc,
         gyr_routine::calibrate_gyr_bias,
         mag_routine::{calibrate_mag, MagCalState}, Calibrate
-    }, filters::rate_pid::Feedback, signals::{self as s, register_error}
+    }, filters::rate_pid::Feedback, signals::{self as s, register_error}, tasks::configurator::{SetAccCal, SetGyrCal, SetMagCal}
 };
 
 #[derive(Debug, PartialEq, Clone)]
@@ -27,8 +27,8 @@ pub enum CalibratorState {
 #[embassy_executor::task]
 pub async fn main() -> ! {
     const ID: &str = "calibrator";
-    let mut rcv_calibrate = unwrap!(s::CMD_CALIBRATE.receiver());
-    let snd_calibrator_state = s::CALIBRATOR_STATE.sender();
+    let mut rcv_calibrate = s::CMD_CALIBRATE.receiver();
+    let mut snd_calibrator_state = s::CALIBRATOR_STATE.sender();
 
     loop {
         snd_calibrator_state.send(CalibratorState::Idle);
@@ -39,7 +39,7 @@ pub async fn main() -> ! {
                 snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Acc));
                 match calibrate_acc(acc_calib, idx).await {
                     Ok(calibration) => {
-                        CONFIG_QUEUE.send(CfgMsg::SetAccCalib((calibration, idx))).await;
+                        CONFIG_RPC.request(SetAccCal{id: idx, cal: calibration}).await;
                     }
                     Err(error) => {
                         register_error(error);
@@ -59,7 +59,7 @@ pub async fn main() -> ! {
                         let mut calibration = s::CFG_MULTI_GYR_CAL[idx as usize]
                             .try_get().unwrap_or_default();
                         calibration.set_bias(calibration_bias);
-                        CONFIG_QUEUE.send(CfgMsg::SetGyrCalib((calibration, idx))).await;
+                        CONFIG_RPC.request(SetGyrCal{id: idx, cal: calibration}).await;
                     }
                     Err(error) => {
                         register_error(error);
@@ -81,7 +81,7 @@ pub async fn main() -> ! {
                     }
                 }).await {
                     Either::First(Ok(calibration)) => {
-                        CONFIG_QUEUE.send(CfgMsg::SetMagCalib((calibration, idx))).await;
+                        CONFIG_RPC.request(SetMagCal{id: idx, cal: calibration}).await;
                     }
                     Either::First(Err(error)) => {
                         register_error(error);

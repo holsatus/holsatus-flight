@@ -24,6 +24,7 @@ pub mod types;
 pub mod utils;
 pub mod geo;
 pub mod shell;
+pub mod modules;
 
 pub mod errors;
 
@@ -34,6 +35,7 @@ pub mod mavlink;
 use num_traits::Float;
 
 // Re-exported for implementors
+pub use embassy_futures;
 pub use embassy_sync;
 pub use embassy_time;
 pub use embassy_usb;
@@ -62,7 +64,7 @@ macro_rules! get_or_warn {
                 use embassy_time::{Duration, with_timeout};
                 match with_timeout(Duration::from_secs(1), $rcv.get()).await {
                     Ok(value) => break value,
-                    Err(_) => warn!("{}: Awaiting value for <{}>", ID, stringify!($rcv)),
+                    Err(_) => trace!("{}: Awaiting value for <{}>", ID, stringify!($rcv)),
                 }
             }
         }

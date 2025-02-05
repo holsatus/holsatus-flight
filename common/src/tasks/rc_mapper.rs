@@ -7,12 +7,12 @@ pub async fn main() -> ! {
     info!("{}: Task started", ID);
 
     // Input signals
-    let mut rcv_rc_bindings = unwrap!(s::CFG_RC_BINDINGS.receiver());
-    let mut rcv_rc_channels = unwrap!(s::RC_CHANNELS_RAW.receiver());
+    let mut rcv_rc_bindings = s::CFG_RC_BINDINGS.receiver();
+    let mut rcv_rc_channels = s::RC_CHANNELS_RAW.receiver();
 
     // Output signals
-    let snd_rc_controls_unit = s::RC_ANALOG_UNIT.sender();
-    let snd_rc_controls_rate = s::RC_ANALOG_RATE.sender();
+    let mut snd_rc_controls_unit = s::RC_ANALOG_UNIT.sender();
+    let mut snd_rc_controls_rate = s::RC_ANALOG_RATE.sender();
 
     let mut rc_binding = get_or_warn!(rcv_rc_bindings).await;
 
@@ -21,7 +21,7 @@ pub async fn main() -> ! {
 
     let mut rc_analog_unit = RcAnalog([0.0; 8]);
     let mut rc_analog_rate = RcAnalog([0.0; 8]);
-    
+
     info!("{}: Entering main loop", ID);
     'infinite: loop {
 
@@ -41,7 +41,7 @@ pub async fn main() -> ! {
 
                 // Filter out unbound channels and non-analog bindings
                 let bound_channels = rc_channels.iter().zip(&rc_binding.0).enumerate()
-                .filter_map(|(i, (rc_value, opt_binding))| 
+                .filter_map(|(i, (rc_value, opt_binding))|
                     opt_binding.map(|binding| (i, (rc_value, binding))));
 
                 // Iterate over all bound channels
@@ -55,11 +55,11 @@ pub async fn main() -> ! {
                             } else {
                                 analog.map_half_range(*rc_value)
                             };
-                            
+
                             // Apply rate (e.g. expo, linear) mapping
                             use crate::rc_mapping::analog::RatesTrait;
                             let rate = analog.rates.apply(unit);
-        
+
                             // Update the result
                             rc_analog_unit.0[analog.axis as usize] = unit;
                             rc_analog_rate.0[analog.axis as usize] = rate;
@@ -70,13 +70,13 @@ pub async fn main() -> ! {
                             if prev_packet.is_some_and(|p: [u16; 16]| p[i] == *rc_value) {
                                 continue;
                             }
-        
+
                             // Filter out unbound and non-matching channels
                             let bound = digital
                                 .0
                                 .iter()
                                 .filter_map(|x| x.as_ref());
-        
+
                             // Apply all events (multiple can be bound to same value)
                             for (_, event) in bound.filter(|y| y.0 == *rc_value) {
                                 info!("{}: Digital event: {:?}", ID, event);

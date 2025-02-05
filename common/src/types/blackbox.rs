@@ -55,7 +55,7 @@ impl RateDivision {
     }
 
     /// Returns true if the subdivision should run for the given counter value.
-    /// 
+    ///
     /// This evenly distribute log subdivions to ensure that log data does not
     /// clog the log channel. Compared to `should_run_synced` which will try to
     /// ensure that the subdivisions grouped together in time.
@@ -65,7 +65,7 @@ impl RateDivision {
     }
 
     /// Returns true if the subdivision should run for the given counter value.
-    /// 
+    ///
     /// This will try to group subdivisions together to ensure that log data is
     /// well aligned in time. Compared to `should_run_balanced` which will try
     /// to ensure that the subdivisions are evenly distributed in time.
@@ -86,24 +86,24 @@ pub struct LogPreset {
     /// The rate preset includes raw and calibrated gyroscope and accelerometer
     /// measurements, setpoints, controller outputs and motor speeds.
     pub rate_div: RateDivision,
-    
+
     /// The angle preset includes the estimated attitude, as well as angle
     /// controller setpoints and outputs.
     pub angle_div: RateDivision,
-    
+
     /// The velocity preset includes the estimated velocity in NED world
     /// coordinates, as well as velocity controller setpoints and controller
     /// outputs.
     pub velocity_div: RateDivision,
-    
+
     /// The position preset includes the estimated position in GNSS coordinates,
     /// as well as position controller setpoints and outputs.
     pub position_div: RateDivision,
-    
+
     /// The mission preset includes current mission status and progress,
     /// estimated arrival times, path smoothing and predictions.
     pub mission_div: RateDivision,
-    
+
     /// The events preset includes various systems events, such as
     /// arming/disarming flight/landing detection, warnings, errors mode
     /// changes, etc.

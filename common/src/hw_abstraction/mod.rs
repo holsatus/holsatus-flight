@@ -15,7 +15,7 @@ pub trait Imu9Dof: Imu6Dof {
 }
 
 #[allow(async_fn_in_trait)]
-pub trait FourMotors {
+pub trait OutputGroup {
     async fn set_motor_speeds(&mut self, speeds: [u16; 4]);
     async fn set_motor_speeds_min(&mut self);
     async fn set_reverse_dir(&mut self, rev: [bool; 4]);

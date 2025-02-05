@@ -13,11 +13,11 @@ pub async fn main() -> ! {
 
     // Task inputs
     let mut rcv_multi_imu_data = multi_receiver!(s::CAL_MULTI_IMU_DATA, NUM_IMU);
-    let mut _rcv_control_frequency = unwrap!(s::CFG_CONTROL_FREQ.receiver());
+    let mut _rcv_control_frequency = s::CFG_CONTROL_FREQ.receiver();
 
     // Task outputs
-    let snd_main_imu_data = s::CAL_IMU_DATA.sender();
-    let snd_imu_modes = s::IMU_MODES.sender();
+    let mut snd_main_imu_data = s::CAL_IMU_DATA.sender();
+    let mut snd_imu_modes = s::IMU_MODES.sender();
 
     // TODO - Make cfg to select the main IMU
     let mut _main_imu_idx: usize = 0;

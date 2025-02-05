@@ -4,145 +4,161 @@ pub mod analog;
 pub mod digital;
 
 const NUM_CHANNELS: usize = 16;
-const NUM_DIGITAL_BINDS: usize = 3;
+
+// As of implementing, the analog binding takes up more memory than a single digital bind. So we miht
+// as well try to cram in more digital binds, since they must share the same amount of storage.
+const NUM_DIGITAL_BINDS: usize = size_of::<analog::AnalogBind>() / size_of::<Option<(u16, digital::RcEvent)>>();
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Binding {
-    Analog(analog::Analog),
-    Digital(digital::DigitalCfg),
+    Analog(analog::AnalogBind),
+    Digital(digital::DigitalBind),
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct RcBindings(pub [Option<Binding>; NUM_CHANNELS]);
 
-struct Digital<const N: usize> {
-    bindings: [(u16, digital::RcEvent); N],
-}
-
-impl <const N: usize> From<Digital<N>> for Binding {
-    fn from(value: Digital<N>) -> Self {
-        let mut bindings = [None; NUM_DIGITAL_BINDS];
-        for (binding, value_binding) in bindings.iter_mut().zip(value.bindings) {
-            *binding = Some(value_binding);
+impl RcBindings {
+    const fn const_new(binds: &[Binding]) -> Self {
+        if binds.len() > NUM_CHANNELS {
+            core::panic!("Cannot assign more bindings than what is allocated for");
         }
-        Binding::Digital(digital::DigitalCfg(bindings))
-    }
-}
 
-macro_rules! rc_bindings {
-    ($($binding:expr),* $(,)?) => {{
-        #[allow(unused)]
-        use analog::*;
-        use digital::*;
         let mut bindings = [None; NUM_CHANNELS];
-        let mut _i = 0;
-        $(
-            let converted: Binding = $binding.into();
-            bindings[_i] = Some(converted);
-            _i += 1;
-        )*
-        RcBindings(bindings)
-    }};
+        let mut index = 0;
+        while index < binds.len() {
+            bindings[index] = Some(binds[index]);
+            index += 1
+        }
+
+        Self(bindings)
+    }
 }
 
 impl Default for RcBindings {
     fn default() -> Self {
-        rc_bindings!(
+        RcBindings::const_default()
+    }
+}
+
+impl RcBindings {
+    fn const_default() -> Self {
+
+        const POS_1: u16 = 191;
+        const POS_2: u16 = 997;
+        const POS_3: u16 = 1792;
+
+        const A_MIN: u16 = 174;
+        const A_MAX: u16 = 1811;
+
+        RcBindings::const_new(&[
+
+            // -----------------------------------------------
+            // --- Analog bindings, primary control inputs ---
+            // -----------------------------------------------
+
             // Right stick L/R
-            Analog { 
-                axis: Axis::Roll,
-                in_min: 174,
-                in_max: 1811,
+            Binding::Analog(analog::AnalogBind {
+                axis: analog::Axis::Roll,
+                in_min: A_MIN,
+                in_max: A_MAX,
                 deadband: 2,
                 fullrange: true,
                 reverse: false,
-                rates: Actual {
+                rates: analog::Actual {
                     rate: 20.,
                     expo: 0.3,
                     cent: 15.0
-                }.into(),
-            },
+                }.into()
+            }),
 
             // Right stick U/D
-            Analog { 
-                axis: Axis::Pitch,
-                in_min: 174,
-                in_max: 1811,
+            Binding::Analog(analog::AnalogBind {
+                axis: analog::Axis::Pitch,
+                in_min: A_MIN,
+                in_max: A_MAX,
                 deadband: 2,
                 fullrange: true,
                 reverse: true,
-                rates: Actual {
+                rates: analog::Actual {
                     rate: 20.,
                     expo: 0.3,
                     cent: 15.0
                 }.into(),
-            },
+            }),
 
             // Left stick U/D
-            Analog { 
-                axis: Axis::Throttle,
-                in_min: 174,
-                in_max: 1811,
+            Binding::Analog(analog::AnalogBind {
+                axis: analog::Axis::Throt,
+                in_min: A_MIN,
+                in_max: A_MAX,
                 deadband: 2,
                 fullrange: false,
                 reverse: false,
-                rates: Linear::new(
+                rates: analog::Linear::new(
                     0., // in min
                     1., // in max
                     0.01, // out min
                     0.6, // out max
                 ).into(),
-            },
+            }),
 
             // Left stick L/R
-            Analog { 
-                axis: Axis::Yaw,
-                in_min: 174,
-                in_max: 1811,
+            Binding::Analog(analog::AnalogBind {
+                axis: analog::Axis::Yaw,
+                in_min: A_MIN,
+                in_max: A_MAX,
                 deadband: 2,
                 fullrange: true,
                 reverse: false,
-                rates: Actual {
+                rates: analog::Actual {
                     rate: 20.,
                     expo: 0.5,
                     cent: 10.0
                 }.into(),
-            },
+            }),
 
-            // Button A 
-            Digital{bindings: [
-                (1792, RcEvent::CalibrateGyr),
-            ]},
+            // ------------------------------------------------------
+            // --- Two-state buttons (POS_1 release, POS_3 press) ---
+            // ------------------------------------------------------
+
+            // Button A
+            Binding::Digital(digital::DigitalBind::new(&[
+                (POS_3, digital::RcEvent::CalibrateGyr),
+            ])),
+
+            // Button D
+            Binding::Digital(digital::DigitalBind::new(&[
+                (POS_3, digital::RcEvent::CalibrateGyr),
+            ])),
+
+            // --------------------------------------------------
+            // --- Tri-state switches (POS_1 away from pilot) ---
+            // --------------------------------------------------
 
             // Switch B
-            Digital {bindings: [
-                (191,  RcEvent::AngleMode),
-                (997,  RcEvent::RateMode),
-                (1792, RcEvent::RateMode),
-            ]},
+            Binding::Digital(digital::DigitalBind::new(&[
+                (POS_1, digital::RcEvent::SetControlModeRate),
+                (POS_2, digital::RcEvent::SetControlModeAngle),
+                (POS_3, digital::RcEvent::SetControlModeVelocity),
+            ])),
 
             // Switch C
-            Digital {bindings: [
-                (191,  RcEvent::DisarmMotors),
-                (997,  RcEvent::ArmMotors),
-                (1792, RcEvent::ArmMotors),
-            ]},
-            
-            // Button D
-            Digital{bindings: [
-                (1792, RcEvent::CalibrateGyr),
-            ]},
+            Binding::Digital(digital::DigitalBind::new(&[
+                (POS_1, digital::RcEvent::DisarmMotors),
+                (POS_2, digital::RcEvent::ArmMotors),
+                (POS_3, digital::RcEvent::ArmMotors),
+            ])),
+
+            // It is more efficient to leave any remaining unbound channels out
 
             // Switch E
-            Digital {bindings: []},
+            // Binding::Digital(digital::DigitalBind::new(&[])),
 
-            // Switch F 
-            Digital {bindings: [
-                (191,  RcEvent::StopMotorTest),
-                (1792, RcEvent::StartMotorTest),
-            ]},
-        )
+            // Switch F
+            // Binding::Digital(digital::DigitalBind::new(&[])),
+        ])
     }
 }

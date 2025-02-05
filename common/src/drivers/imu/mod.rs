@@ -1,5 +1,5 @@
 pub mod icm20948;
-use embassy_time::{with_timeout, Delay, Duration};
+use embassy_time::{Delay, Duration, WithTimeout};
 use embedded_hal_async::{i2c::I2c, spi::SpiDevice};
 pub use icm20948_async;
 use icm20948_async::{Icm20948, Icm20948Config};
@@ -23,11 +23,11 @@ impl ImuConfig {
                     .set_address(addr.unwrap_or(0x69));
 
                 // Try to run setup, but with a timeout to detect hanging devices
-                with_timeout(Duration::from_secs(2), icm.initialize_6dof())
-                    .await
-                    .map_err(|_| DeviceError::Timeout)?
+                let timeout = Duration::from_secs(2);
+                icm.initialize_6dof().with_timeout(timeout).await
+                    .map_err(|_| DeviceError::Timeout {millis: timeout.as_millis()})?
                     .map_err(icm20948::from_i2c_err)
-                    
+
             }
         }
     }
@@ -39,11 +39,11 @@ impl ImuConfig {
         match self {
             ImuConfig::Icm20948(config) => {
                 let icm = Icm20948::new_spi_from_cfg(spi, *config, Delay);
-                
+
                 // Try to run setup, but with a timeout to detect hanging devices
-                with_timeout(Duration::from_secs(2), icm.initialize_6dof())
-                    .await
-                    .map_err(|_| DeviceError::Timeout)?
+                let timeout = Duration::from_secs(2);
+                icm.initialize_6dof().with_timeout(timeout).await
+                    .map_err(|_| DeviceError::Timeout {millis: timeout.as_millis()})?
                     .map_err(icm20948::from_spi_err)
             }
         }
@@ -58,11 +58,11 @@ impl ImuConfig {
             ImuConfig::Icm20948(config) => {
                 let icm = Icm20948::new_i2c_from_cfg(i2c, *config, Delay)
                     .set_address(addr.unwrap_or(0x69));
-                
+
                 // Try to run setup, but with a timeout to detect hanging devices
-                with_timeout(Duration::from_secs(2), icm.initialize_9dof())
-                    .await
-                    .map_err(|_| DeviceError::Timeout)?
+                let timeout = Duration::from_secs(2);
+                icm.initialize_9dof().with_timeout(timeout).await
+                    .map_err(|_| DeviceError::Timeout {millis: timeout.as_millis()})?
                     .map_err(icm20948::from_i2c_err)
             }
         }
@@ -75,11 +75,11 @@ impl ImuConfig {
         match self {
             ImuConfig::Icm20948(config) => {
                 let icm = Icm20948::new_spi_from_cfg(spi, *config, Delay);
-                
+
                 // Try to run setup, but with a timeout to detect hanging devices
-                with_timeout(Duration::from_secs(2), icm.initialize_9dof())
-                    .await
-                    .map_err(|_| DeviceError::Timeout)?
+                let timeout = Duration::from_secs(2);
+                icm.initialize_9dof().with_timeout(timeout).await
+                    .map_err(|_| DeviceError::Timeout {millis: timeout.as_millis()})?
                     .map_err(icm20948::from_spi_err)
             }
         }

@@ -9,19 +9,37 @@ use super::Binding;
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Axis {
+
+    // Primary control axes
     Roll,
     Pitch,
     Yaw,
-    Throttle,
+    Throt,
+
+    // Aux channels can be used for whatever
     Aux1,
     Aux2,
     Aux3,
     Aux4,
+    Aux5,
+    Aux6,
+    Aux7,
+    Aux8,
+    Aux9,
+
+    // Maybe excessive, but might as well
+    Aux10,
+    Aux11,
+    Aux12,
+    Aux13,
+    Aux14,
+    Aux15,
+    Aux16,
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct Analog {
+pub struct AnalogBind {
     pub axis: Axis,
     pub in_min: u16,
     pub in_max: u16,
@@ -31,13 +49,13 @@ pub struct Analog {
     pub rates: Rates,
 }
 
-impl From<Analog> for Binding {
-    fn from(cfg: Analog) -> Self {
+impl From<AnalogBind> for Binding {
+    fn from(cfg: AnalogBind) -> Self {
         Binding::Analog(cfg)
     }
 }
 
-impl Analog {
+impl AnalogBind {
     /// Full-range, maps the input range to the output range (-1, 1). Typically
     /// used for roll, pitch and yaw commands.
     pub fn map_full_range(&self, data: u16) -> f32 {
@@ -85,7 +103,7 @@ impl Analog {
     }
 }
 
-impl Configuration for Analog {
+impl Configuration for AnalogBind {
     fn sanity_check(&self) -> Result<(), ConfigurationError> {
         if self.in_min >= self.in_max {
             return Err(ConfigurationError::InvalidRange);

@@ -14,11 +14,12 @@ pub enum ControlMode {
     /// some pitch/roll angle.
     Angle,
     /// Velocity mode is most common for cinematography, and will
-    /// make the drone hold its position is no stick deflection.
+    /// make the drone hold its position if no stick deflection.
     /// Some deflection will correspond to some velocity.
     ///
     /// **NOTE**: This is only available with a working GPS module.
     Velocity,
+
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]

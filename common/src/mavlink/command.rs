@@ -1,23 +1,22 @@
-use approx::abs_diff_eq;
-use mavlink::holsatus::{MavCmd, COMMAND_INT_DATA, COMMAND_LONG_DATA};
+use mavio::dialects::common::{enums::MavResult, messages::{CommandInt, CommandLong}};
 
-use crate::{errors::MavlinkError, signals::COMMANDER_REQUEST, tasks::commander::CmdRequest};
+use crate::errors::MavlinkError;
 
 use super::MavRequest;
 
 pub(super) enum AnyCommand {
-    Int(COMMAND_INT_DATA),
-    Long(COMMAND_LONG_DATA),
+    Int(CommandInt),
+    Long(CommandLong),
 }
 
-impl From<COMMAND_INT_DATA> for AnyCommand {
-    fn from(cmd: COMMAND_INT_DATA) -> Self {
+impl From<CommandInt> for AnyCommand {
+    fn from(cmd: CommandInt) -> Self {
         AnyCommand::Int(cmd)
     }
 }
 
-impl From<COMMAND_LONG_DATA> for AnyCommand {
-    fn from(cmd: COMMAND_LONG_DATA) -> Self {
+impl From<CommandLong> for AnyCommand {
+    fn from(cmd: CommandLong) -> Self {
         AnyCommand::Long(cmd)
     }
 }
@@ -38,37 +37,49 @@ macro_rules! impl_any_command {
 }
 
 impl_any_command!(
-    command => MavCmd
+    command => mavio::dialects::common::enums::MavCmd
     param1 => f32
     param2 => f32
     param3 => f32
     param4 => f32
 );
 
+fn to_mav_result(res: Option<bool>) -> MavResult {
+    match res {
+        Some(true) => MavResult::Accepted,
+        Some(false) => MavResult::Denied,
+        None => MavResult::Failed,
+    }
+}
+
 pub(super) async fn set_message_interval(
     cmd: AnyCommand,
-) -> Result<(), MavlinkError> {
+) -> MavResult {
 
-    let index = cmd.param1() as u32;
-    let freq_param = cmd.param2();
+    let index: u32 = cmd.param1() as u32;
+    let period_us = cmd.param2() as u32;
 
-    let message = if freq_param > 1. {
-        MavRequest::Stream { id: index, freq: (1e6/freq_param) as u16 }
-    } else if freq_param > -0.5 {
-        MavRequest::Stop { id: index }
-    } else {
-        // TODO: This (-1.) should be "default rate" for the message
-        MavRequest::Stop { id: index }
-    };
-    
+    if super::msg_generator::MavSendable::try_from(index).is_err() {
+        return MavResult::Failed;
+    }
+
+    // Reject too fast intervals (1000 Hz is the fastest)
+    // Though 0 is also a valid value, it means "stop sending"
+    if period_us < 1000 || period_us != 0 {
+        return MavResult::Failed;
+    }
+
+    let message = MavRequest::Stream { id: index, period_us };
+
     super::MAV_REQUEST.send(message).await;
 
-    Ok(())
+    MavResult::Accepted
 }
 
 pub(super) async fn do_set_actuator(
     cmd: AnyCommand,
-) -> Result<(), MavlinkError> {
+) -> MavResult {
+    use crate::tasks::commander::{COMMANDER_PROC, SetActuators};
 
     let speeds = [
         cmd.param1(),
@@ -76,41 +87,46 @@ pub(super) async fn do_set_actuator(
         cmd.param3(),
         cmd.param4(),
     ];
-    
-    COMMANDER_REQUEST.send(CmdRequest::SetMotorSpeeds(speeds)).await;
 
-    Ok(())
+    let req = SetActuators { speeds };
+    to_mav_result(COMMANDER_PROC.request(req).await.ok())
 }
 
 pub(super) async fn component_arm_disarm(
     cmd: AnyCommand,
-) -> Result<(), MavlinkError> {
+) -> MavResult {
+    use crate::tasks::commander::{COMMANDER_PROC, ArmMotors};
 
-    const ARM_ON: f32 = 1.0;
-    const ARM_OFF: f32 = 0.0;
-    const FORCE_ARM: f32 = 21196.0;
-
-    let arm = abs_diff_eq!(cmd.param1(), ARM_ON, epsilon = 1e-6);
-    let disarm = abs_diff_eq!(cmd.param1(), ARM_OFF, epsilon = 1e-6);
-    let force = abs_diff_eq!(cmd.param2(), FORCE_ARM, epsilon = 1e-1);
+    // Very strange to use floats at bools here, but hey
+    let arm = cmd.param1() as u8 == 1;
+    let disarm = cmd.param1() as u8 == 0;
+    let force = cmd.param2() as u16 == 21196;
 
     if !arm && !disarm {
-        return Err(MavlinkError::MalformedMessage);
+        return MavResult::Failed;
     }
 
-    COMMANDER_REQUEST.send(CmdRequest::ArmMotors { arm, force }).await;
-
-    Ok(())
+    let req = ArmMotors { arm, force };
+    to_mav_result(COMMANDER_PROC.request(req).await.ok())
 }
 
 pub(super) async fn request_message(
     cmd: AnyCommand,
-) -> Result<(), MavlinkError> {
-    
+) -> MavResult {
+
     debug!("Received request for message: {:?}", cmd.param1());
     // TODO - Not done yet. In addition to the requested message, the
     // AUTOPILOT_VERSION should also be sent for some reason, see:
     // https://mavlink.io/en/messages/common.html#AUTOPILOT_VERSION
-    
-    Ok(())
+
+    use super::msg_generator::MavSendable;
+
+    match MavSendable::try_from(cmd.param1() as u32) {
+        Ok(sendable) => {
+            super::MAV_REQUEST.send(MavRequest::Single { id: sendable as u32 }).await;
+            super::MAV_REQUEST.send(MavRequest::Single { id: MavSendable::AutopilotVersion as u32 }).await;
+            MavResult::Accepted
+        },
+        Err(_) => MavResult::Failed,
+    }
 }

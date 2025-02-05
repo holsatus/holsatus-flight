@@ -69,11 +69,11 @@ pub async fn shell_future<D: Driver<'static>>(
 
     const TASK_ID: &str = "usb_manager/echo";
 
-    let mut rcv_usb_connected = unwrap!(s::USB_CONNECTED.receiver());
+    let mut rcv_usb_connected = s::USB_CONNECTED.receiver();
 
     loop {
         // Wait for USB to be connected
-        rcv_usb_connected.get_and(|usb| *usb).await;
+        rcv_usb_connected.get_and(|connected| *connected).await;
         serial.wait_connection().await;
 
         if let Err(e) = crate::shell::run_cli(UsbEio{ usb: &mut serial} ).await {
@@ -86,7 +86,7 @@ pub async fn shell_future<D: Driver<'static>>(
 
 pub(super) async fn run_future<D: Driver<'static>>(mut usb: UsbDevice<'static, D>) -> ! {
     const TASK_ID: &str = "usb_manager/run";
-    let snd_usb_connected = s::USB_CONNECTED.sender();
+    let mut snd_usb_connected = s::USB_CONNECTED.sender();
 
     info!("{}: Task started", TASK_ID);
     loop {
@@ -105,6 +105,7 @@ pub(super) async fn run_future<D: Driver<'static>>(mut usb: UsbDevice<'static, D
     }
 }
 
+// Implement the embedded-io-async trait on a wrapped embassy-usb device.
 
 struct UsbEio<'a, D: Driver<'static>> {
     usb: &'a mut CdcAcmClass<'static, D>,

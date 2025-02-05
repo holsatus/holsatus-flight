@@ -27,24 +27,36 @@ impl<T: Num> From<Imu9DofData<T>> for Imu6DofData<T> {
 
 #[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct GnssData {
+pub struct GnssTime {
     pub year: u16,
     pub month: u8,
     pub day: u8,
     pub hour: u8,
     pub min: u8,
     pub sec: u8,
+}
+
+#[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct GnssData {
+    pub time: GnssTime,
     pub fix: GnssFix,
-    pub sats: u8,
+    pub satellites: u8,
+
     pub lat_raw: i32,
     pub lon_raw: i32,
     pub altitude: f32,
+
+    pub horiz_accuracy: f32,
+    pub vert_accuracy: f32,
+
     pub vel_north: f32,
     pub vel_east: f32,
     pub vel_down: f32,
+
+    pub vel_accuracy: f32,
+
     pub heading: f32,
-    pub accuracy_north: u32,
-    pub accuracy_east: u32,
     pub mag_declination: f32,
 }
 

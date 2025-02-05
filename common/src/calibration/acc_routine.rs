@@ -16,20 +16,20 @@ pub async fn calibrate_acc(config: AccCalib, sensor_id: u8) -> Result<Calib3DTyp
     // Input channels
     let mut rcv_raw_imu = s::RAW_MULTI_IMU_DATA.get(sensor_id as usize)
         .ok_or(CalibrationError::AccInvalidId)?
-        .anon_receiver();
-    
+        .receiver();
+
     info!("{}: Starting accelerometer calibration on sensor {}, max std deviation of {} ", ID, sensor_id, config.max_var);
 
     // Array of calibrator instances
     let mut calibrator = AccCalibrator::<ACC_BUFFER_SIZE>::new(config.max_var);
-    
+
     let mut num_dropped = 0;
 
     let mut ticker = Ticker::every(Duration::from_hz(25));
-    
+
     // Mark any stale data as seen
     _ = rcv_raw_imu.try_get();
-    
+
     // Calibration loop
     let calib = 'calibration: loop {
 
@@ -86,7 +86,7 @@ struct AccCalibrator<const N: usize> {
     directions_measured: Direction,
     acc_buffer: SMatrix<f32, 3, N>,
     max_variance: f32,
-    count: usize, 
+    count: usize,
 }
 
 impl <const N: usize> AccCalibrator<N> {
@@ -184,13 +184,13 @@ impl <const N: usize> AccCalibrator<N> {
             (calib.y_plus + calib.y_minus) / 2.0,
             (calib.z_plus + calib.z_minus) / 2.0,
         );
-    
+
         let scale = Vector3::new(
             GRAVITY / (calib.x_plus - calib.x_minus) * 2.0,
             GRAVITY / (calib.y_plus - calib.y_minus) * 2.0,
             GRAVITY / (calib.z_plus - calib.z_minus) * 2.0,
         );
-        
+
         Some(Calib3DType::Small(SmallCalib3D {bias: Some(offset), scale: Some(scale)}))
     }
 
@@ -214,4 +214,3 @@ impl <const N: usize> AccCalibrator<N> {
         self.directions_measured.contains(Direction::ALL)
     }
 }
-

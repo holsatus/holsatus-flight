@@ -11,15 +11,15 @@ pub async fn main() {
 
     // Task inputs
     // TODO - Use estimated attitude, not just IMU data
-    let mut rcv_imu_data = s::CAL_MULTI_IMU_DATA[0].receiver().unwrap();
-    let mut rcv_mag_data = s::CAL_MULTI_MAG_DATA[0].receiver().unwrap();
-    let mut rcv_motors_state = s::MOTORS_STATE.receiver().unwrap();
+    let mut rcv_imu_data = s::CAL_MULTI_IMU_DATA[0].receiver();
+    let mut rcv_mag_data = s::CAL_MULTI_MAG_DATA[0].receiver();
+    let mut rcv_motors_state = s::MOTORS_STATE.receiver();
 
     // Task outputs
-    let snd_ahrs_attitude_q = s::AHRS_ATTITUDE_Q.sender();
-    let snd_ahrs_attitude = s::AHRS_ATTITUDE.sender();
+    let mut snd_ahrs_attitude_q = s::AHRS_ATTITUDE_Q.sender();
+    let mut snd_ahrs_attitude = s::AHRS_ATTITUDE.sender();
 
-    let ts = crate::ANGLE_LOOP_DIV as f32 / crate::MAIN_LOOP_FREQ as f32;
+    let ts = 1.0 / crate::MAIN_LOOP_FREQ as f32;
 
     let mut ahrs = ahrs::Madgwick::new(ts, 0.01);
 

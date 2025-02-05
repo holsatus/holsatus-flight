@@ -15,8 +15,8 @@ pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
     info!("{}: Task started", ID);
 
     // Output signals
-    let snd_rc_channels = s::RC_CHANNELS_RAW.sender();
-    let snd_rc_status = s::RC_STATUS.sender();
+    let mut snd_rc_channels = s::RC_CHANNELS_RAW.sender();
+    let mut snd_rc_status = s::RC_STATUS.sender();
 
     let mut parser = Parser::Crsf(CrsfParser::new());
     let mut buffer = [0u8; 64];

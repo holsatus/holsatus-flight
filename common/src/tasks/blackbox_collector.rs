@@ -13,10 +13,10 @@ pub async fn main() -> ! {
 
     info!("{}: Task started, entering main loop", ID);
 
-    let mut rcv_log_preset = unwrap!(s::CFG_LOG_PRESET.receiver());
+    let mut rcv_log_preset = s::CFG_LOG_PRESET.receiver();
 
     let mut preset = get_or_warn!(rcv_log_preset).await;
-        
+
     let mut ticker = Ticker::every(Duration::from_hz(preset.base_log_rate as u64));
     let mut counter = 0u8;
     loop {
