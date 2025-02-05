@@ -10,16 +10,17 @@ use super::channel::MpscChannel;
 ///
 /// # Usage
 /// ```rust
+/// use common::{rpc_message, sync::rpc::Procedure};
 /// rpc_message!{
 ///     // Define the procedure
-///     Msg: Request => Response,
+///     Msg: Request -> Response,
 /// //  ^    ^          ^
 /// //  |    |          | This is the 'generic' request type
 /// //  |    | The request type is what is received, and holds the responder handle
 /// //  | This type marks the protocol, by relating the request and response types
 ///
 ///     // Define individual messages
-///     async GetTime {}            -> Instant,
+///     async GetTime {}            -> u64,
 ///     async SetTarget { t: f32 }  -> bool,
 ///     async GetTarget {}          -> f32,
 /// }
