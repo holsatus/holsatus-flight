@@ -10,45 +10,45 @@ use embassy_stm32::{
         Ch1Dma, Ch2Dma, Ch3Dma, Ch4Dma, Channel1Pin, Channel2Pin, Channel3Pin, Channel4Pin,
         GeneralInstance4Channel,
     },
-    Peripheral,
+    Peri,
 };
 
 use common::hw_abstraction::OutputGroup;
 
-pub struct DshotPwm<'d, T, D1, D2, D3, D4>
+pub struct DshotPwm<'d, T, DMA1, DMA2, DMA3, DMA4>
 where
     T: GeneralInstance4Channel,
+    DMA1: Ch1Dma<T>,
+    DMA2: Ch2Dma<T>,
+    DMA3: Ch3Dma<T>,
+    DMA4: Ch4Dma<T>,
 {
     pwm: SimplePwm<'d, T>,
-    dma1: D1,
-    dma2: D2,
-    dma3: D3,
-    dma4: D4,
+    dma1: Peri<'d, DMA1>,
+    dma2: Peri<'d, DMA2>,
+    dma3: Peri<'d, DMA3>,
+    dma4: Peri<'d, DMA4>,
     bit: (u16, u16),
 }
 
-impl<'d, T, D1, DA1, D2, DA2, D3, DA3, D4, DA4> DshotPwm<'d, T, D1, D2, D3, D4>
+impl<'d, T, DMA1, DMA2, DMA3, DMA4> DshotPwm<'d, T, DMA1, DMA2, DMA3, DMA4>
 where
     T: GeneralInstance4Channel,
-    D1: Peripheral<P = DA1> + 'd,
-    DA1: Ch1Dma<T>,
-    D2: Peripheral<P = DA2> + 'd,
-    DA2: Ch2Dma<T>,
-    D3: Peripheral<P = DA3> + 'd,
-    DA3: Ch3Dma<T>,
-    D4: Peripheral<P = DA4> + 'd,
-    DA4: Ch4Dma<T>,
+    DMA1: Ch1Dma<T>,
+    DMA2: Ch2Dma<T>,
+    DMA3: Ch3Dma<T>,
+    DMA4: Ch4Dma<T>,
 {
     pub fn new(
-        timer: impl Peripheral<P = T> + 'd,
-        pin1: &'d mut impl Channel1Pin<T>,
-        pin2: &'d mut impl Channel2Pin<T>,
-        pin3: &'d mut impl Channel3Pin<T>,
-        pin4: &'d mut impl Channel4Pin<T>,
-        dma1: D1,
-        dma2: D2,
-        dma3: D3,
-        dma4: D4,
+        timer: Peri<'d, T>,
+        pin1: Peri<'d, impl Channel1Pin<T>>,
+        pin2: Peri<'d, impl Channel2Pin<T>>,
+        pin3: Peri<'d, impl Channel3Pin<T>>,
+        pin4: Peri<'d, impl Channel4Pin<T>>,
+        dma1: Peri<'d, DMA1>,
+        dma2: Peri<'d, DMA2>,
+        dma3: Peri<'d, DMA3>,
+        dma4: Peri<'d, DMA4>,
         khz: u32,
     ) -> Self {
         let mut pwm = SimplePwm::new(
@@ -91,11 +91,11 @@ where
         let command2 = self.construct_command(commands.2);
         let command3 = self.construct_command(commands.3);
 
-        // Cannot use join(f,f,f,f) here since the pwm/timer type is borroed mutably
-        self.pwm.waveform_ch1(&mut self.dma1, command0.as_slice()).await;
-        self.pwm.waveform_ch2(&mut self.dma2, command1.as_slice()).await;
-        self.pwm.waveform_ch3(&mut self.dma3, command2.as_slice()).await;
-        self.pwm.waveform_ch4(&mut self.dma4, command3.as_slice()).await;
+        // Cannot use join(f,f,f,f) here since the pwm/timer type is borrowed mutably
+        self.pwm.waveform_ch1(self.dma1.reborrow(), command0.as_slice()).await;
+        self.pwm.waveform_ch2(self.dma2.reborrow(), command1.as_slice()).await;
+        self.pwm.waveform_ch3(self.dma3.reborrow(), command2.as_slice()).await;
+        self.pwm.waveform_ch4(self.dma4.reborrow(), command3.as_slice()).await;
     }
 
     fn construct_command(&self, cmd: u16) -> [u16; 17] {
@@ -117,17 +117,13 @@ where
     }
 }
 
-impl<'d, T, D1, DA1, D2, DA2, D3, DA3, D4, DA4> OutputGroup for DshotPwm<'d, T, D1, D2, D3, D4>
+impl<'d, T, DMA1, DMA2, DMA3, DMA4> OutputGroup for DshotPwm<'d, T, DMA1, DMA2, DMA3, DMA4>
 where
     T: GeneralInstance4Channel,
-    D1: Peripheral<P = DA1> + 'd,
-    DA1: Ch1Dma<T>,
-    D2: Peripheral<P = DA2> + 'd,
-    DA2: Ch2Dma<T>,
-    D3: Peripheral<P = DA3> + 'd,
-    DA3: Ch3Dma<T>,
-    D4: Peripheral<P = DA4> + 'd,
-    DA4: Ch4Dma<T>,
+    DMA1: Ch1Dma<T>,
+    DMA2: Ch2Dma<T>,
+    DMA3: Ch3Dma<T>,
+    DMA4: Ch4Dma<T>,
 {
     async fn set_motor_speeds(&mut self, speed: [u16; 4]) {
         self.transmit((

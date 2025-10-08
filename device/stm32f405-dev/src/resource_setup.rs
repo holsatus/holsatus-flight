@@ -6,7 +6,7 @@ use common::{
     drivers::imu::ImuConfig, embassy_usb::driver::Driver, embedded_io, hw_abstraction::OutputGroup, tasks::blackbox_fat::{BlockDevice, Reset}, types::{config::{DshotConfig, I2cConfig, SdmmcConfig, UartConfig}, device::HardwareInfo}
 };
 use embassy_stm32::{
-    bind_interrupts, exti::ExtiInput, mode::Async, peripherals, sdmmc::{Error, Instance, Sdmmc, SdmmcDma}, time::Hertz
+    bind_interrupts, exti::ExtiInput, mode::Async, {peripherals, Peri}, sdmmc::{Error, Instance, Sdmmc}, time::Hertz
 };
 
 use crate::config::{gen_default_cfg, BLACKBOX_BUF};
@@ -95,6 +95,7 @@ impl I2c1 {
         let mut config = embassy_stm32::i2c::Config::default();
         config.sda_pullup = cfg.sda_pullup;
         config.scl_pullup = cfg.scl_pullup;
+        config.frequency = Hertz::hz(cfg.frequency);
         embassy_stm32::i2c::I2c::new(
             self.periph,
             self.scl,
@@ -102,7 +103,6 @@ impl I2c1 {
             I2c1Irq,
             self.tx_dma,
             self.rx_dma,
-            Hertz::hz(cfg.frequency),
             config,
         )
     }
@@ -121,22 +121,22 @@ pub(crate) async fn imu_reader(i2c: I2c1, pin: IntPin, i2c_cfg: &'static I2cConf
 
 /// Thin wrapper around the Sdmmc peripheral so that we can store the frequency
 /// alongside it, which is required when resetting the device.
-pub struct SdmmcDevice<'d, T: Instance, D: SdmmcDma<T>> {
-    sdmmc: Sdmmc<'d, T, D>,
+pub struct SdmmcDevice<'d, T: Instance> {
+    sdmmc: Sdmmc<'d, T>,
     frequency: Hertz,
 }
 
-impl<'d, T: Instance, D: SdmmcDma<T>> embedded_io::ErrorType for SdmmcDevice<'d, T, D> {
+impl<'d, T: Instance> embedded_io::ErrorType for SdmmcDevice<'d, T> {
     type Error = embedded_io::ErrorKind;
 }
 
-impl<'d, T: Instance, D: SdmmcDma<T>> Reset for SdmmcDevice<'d, T, D> {
+impl<'d, T: Instance> Reset for SdmmcDevice<'d, T> {
     async fn reset(&mut self) -> bool {
-        self.sdmmc.init_card(self.frequency).await.is_ok()
+        self.sdmmc.init_sd_card(self.frequency).await.is_ok()
     }
 }
 
-impl<'d, T: Instance, D: SdmmcDma<T>> BlockDevice<512> for SdmmcDevice<'d, T, D> {
+impl<'d, T: Instance> BlockDevice<512> for SdmmcDevice<'d, T> {
     type Error = Error;
 
     type Align = aligned::A4;
@@ -214,7 +214,7 @@ impl Flash {
 #[embassy_executor::task]
 pub(crate) async fn configurator(flash: Flash) -> ! {
     let (flash, range) = flash.setup();
-    common::tasks::configurator::main(flash, range, gen_default_cfg).await
+    common::tasks::configurator2::configurator_entry(flash, range).await
 }
 
 // ----------------------------------------------------------
@@ -224,15 +224,15 @@ pub(crate) async fn configurator(flash: Flash) -> ! {
 impl MotorDriver {
     pub fn setup(&mut self, dshot: &DshotConfig) -> impl OutputGroup + '_ {
         crate::dshot_pwm::DshotPwm::new(
-            &mut self.timer,
-            &mut self.pin_1,
-            &mut self.pin_2,
-            &mut self.pin_3,
-            &mut self.pin_4,
-            &mut self.dma_1,
-            &mut self.dma_2,
-            &mut self.dma_3,
-            &mut self.dma_4,
+            self.timer.reborrow(),
+            self.pin_1.reborrow(),
+            self.pin_2.reborrow(),
+            self.pin_3.reborrow(),
+            self.pin_4.reborrow(),
+            self.dma_1.reborrow(),
+            self.dma_2.reborrow(),
+            self.dma_3.reborrow(),
+            self.dma_4.reborrow(),
             *dshot as u32,
         )
     }
@@ -269,12 +269,12 @@ macro_rules! impl_ring_buffered_usart_setup {
                 config.baudrate = uart_cfg.baud;
 
                 let usart = embassy_stm32::usart::Uart::new(
-                    &mut self.periph,
-                    &mut self.rx_pin,
-                    &mut self.tx_pin,
+                    self.periph.reborrow(),
+                    self.rx_pin.reborrow(),
+                    self.tx_pin.reborrow(),
                     UsartIrq,
-                    &mut self.tx_dma,
-                    &mut self.rx_dma,
+                    self.tx_dma.reborrow(),
+                    self.rx_dma.reborrow(),
                     config,
                 );
 

@@ -2,7 +2,7 @@ use core::str::FromStr;
 
 use common::{
     drivers::imu::{
-        icm20948_async::{AccDlp, AccRange, AccUnit, GyrDlp, GyrRange, GyrUnit, Icm20948Config},
+        icm20948_async::{AccDlp, AccRange, AccUnit, GyrDlp, GyrRange, GyrUnit, Config},
         ImuConfig,
     },
     heapless::String,
@@ -49,7 +49,7 @@ pub fn gen_default_cfg() -> BootConfig {
         }),
         i2c2: None,
         // Configuration for the ICM20948 IMU
-        imu0: Some(ImuConfig::Icm20948(Icm20948Config {
+        imu0: Some(ImuConfig::Icm20948(Config {
             acc_range: AccRange::Gs8,
             gyr_range: GyrRange::Dps2000,
             acc_unit: AccUnit::Mpss,
@@ -58,7 +58,6 @@ pub fn gen_default_cfg() -> BootConfig {
             gyr_dlp: GyrDlp::Hz361,
             acc_odr: 0,
             gyr_odr: 0,
-            int: None,
         })),
         sdmmc: Some(SdmmcConfig {
             frequency: 25_000_000,

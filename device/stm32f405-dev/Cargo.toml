@@ -22,7 +22,6 @@ common = { path = "../../common", default-features = false, features = [
 ] }
 
 embassy-executor = { git = "https://github.com/embassy-rs/embassy", features = [
-    "task-arena-size-65536",
     "executor-interrupt",
     "executor-thread",
     "arch-cortex-m",
@@ -40,7 +39,7 @@ embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", features = [
 
 dshot-encoder = { git = "https://github.com/peterkrull/dshot-encoder" }
 
-assign-resources = "0.4.1"
+assign-resources = "0.5.0"
 static_cell = "2"   # Used to allocate buffers and interrupt executors
 aligned = "0.4.2"   # Used to implement BlockDevice on wrapper type
 
