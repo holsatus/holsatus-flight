@@ -5,20 +5,29 @@ use embassy_time::{Duration, Timer, WithTimeout};
 use embedded_storage_async::nor_flash::NorFlash;
 
 use crate::{
-    calibration::sens3d::Calib3DType, filters::rate_pid::RatePidCfg3D, mavlink::MavStreamCfg, multi_sender, rc_mapping::RcBindings, signals as s, sync::rpc::Procedure, types::config::{BootConfig, ImuIntrinsics, Keyed, MagIntrinsics, Vehicle, Wrap}, utils::rot_matrix::Rotation, MAIN_LOOP_FREQ, NUM_IMU, NUM_MAG
+    calibration::sens3d::Calib3DType,
+    filters::rate_pid::RatePidCfg3D,
+    mavlink::StreamCfgBundle,
+    multi_sender,
+    rc_mapping::RcBindings,
+    signals as s,
+    sync::rpc::Procedure,
+    types::config::{BootConfig, ImuIntrinsics, Keyed, MagIntrinsics, Vehicle, Wrap},
+    utils::rot_matrix::Rotation,
+    MAIN_LOOP_FREQ, NUM_IMU, NUM_MAG,
 };
 
 #[derive(Debug, Clone)]
 pub enum CfgMsg {
-    LoadConfig{ idx: u8 },
-    SaveConfig{ idx: u8 },
+    LoadConfig { idx: u8 },
+    SaveConfig { idx: u8 },
     ResetConfigToDefault,
     SetAccCalib((Calib3DType, u8)),
     SetGyrCalib((Calib3DType, u8)),
     SetMagCalib((Calib3DType, u8)),
 }
 
-crate::rpc_message!{
+crate::rpc_message! {
     ConfiguratorRpc: Request -> Response
 
     /// Load the intrinsics for some IMU
@@ -46,8 +55,8 @@ crate::rpc_message!{
 
     async GetRcBinds {} -> RcBindings,
     async SetRcBinds { binds: RcBindings } -> Res,
-    async GetMavStreams {} -> MavStreamCfg,
-    async SetMavStreams {streams: MavStreamCfg} -> Res,
+    async GetMavStreams {} -> StreamCfgBundle,
+    async SetMavStreams {streams: StreamCfgBundle} -> Res,
     async GetRatePid {} -> RatePidCfg3D,
     async SetRatePid { cfg: RatePidCfg3D } -> Res,
     async GetAttiPid {} -> RatePidCfg3D,
@@ -95,10 +104,14 @@ pub async fn main(
             s::BOOT_CONFIG.init(config)
         }
         None => {
-            warn!("{}: Boot config not found in flash, using platform default", ID);
+            warn!(
+                "{}: Boot config not found in flash, using platform default",
+                ID
+            );
             s::BOOT_CONFIG.init(gen_config())
         }
-    }.expect("Boot config must be set by configurator task");
+    }
+    .expect("Boot config must be set by configurator task");
 
     // Allow other tasks to start based on the boot config
     Timer::after_millis(10).await;
@@ -133,8 +146,16 @@ pub async fn main(
     macro_rules! print_could_load {
         ($result:expr) => {
             match $result {
-                Some(_) => info!("[{}]: <{}> loaded from flash successfully", ID, stringify!($result)),
-                None => warn!("[{}]: <{}> not found in flash, using default", ID, stringify!($result)),
+                Some(_) => info!(
+                    "[{}]: <{}> loaded from flash successfully",
+                    ID,
+                    stringify!($result)
+                ),
+                None => warn!(
+                    "[{}]: <{}> not found in flash, using default",
+                    ID,
+                    stringify!($result)
+                ),
             }
         };
     }
@@ -148,11 +169,11 @@ pub async fn main(
         Some(rate_pid_cfg) => {
             info!("{}: Rate PID gains loaded from flash successfully", ID);
             snd_cfg_rate_loop.send(rate_pid_cfg)
-        },
+        }
         None => {
             warn!("{}: Rate PID gains not found in flash, using defaults", ID);
             snd_cfg_rate_loop.send(RatePidCfg3D::default());
-        },
+        }
     };
 
     snd_cfg_vehicle_info.send(storage.read::<Vehicle>(0).await.unwrap_or_default());
@@ -161,33 +182,47 @@ pub async fn main(
         Some(vehicle_info) => {
             info!("{}: Vehicle information loaded from flash successfully", ID);
             snd_cfg_vehicle_info.send(vehicle_info)
-        },
+        }
         None => {
-            warn!("{}: Vehicle information not found in flash, using defaults", ID);
+            warn!(
+                "{}: Vehicle information not found in flash, using defaults",
+                ID
+            );
             snd_cfg_vehicle_info.send(Vehicle::default());
-        },
+        }
     };
 
-    #[cfg(feature = "mavlink")] {
+    #[cfg(feature = "mavlink")]
+    {
         // Request default MAVLink streams
-        use crate::mavlink::{MavRequest, MavStreamCfg};
+        use crate::mavlink::{Request, StreamCfgBundle};
 
-        let stream_cfg = match storage.read::<MavStreamCfg>(0).await {
+        let stream_cfg: StreamCfgBundle = match storage.read::<StreamCfgBundle>(0).await {
             Some(vehicle_info) => {
                 info!("{}: MAVLink stream loaded from flash successfully", ID);
                 vehicle_info
-            },
+            }
             None => {
-                warn!("{}: MAVLink stream config not found in flash, using defaults", ID);
-                MavStreamCfg::default()
-            },
+                warn!(
+                    "{}: MAVLink stream config not found in flash, using defaults",
+                    ID
+                );
+                StreamCfgBundle::default()
+            }
         };
 
-        for (index, freq) in stream_cfg.streams.iter().flatten() {
-            if s::MAV_REQUEST.send(MavRequest::Stream { id: *index, period_us: *freq as u32 })
-                .with_timeout(Duration::from_millis(100)).await.is_err() {
-                    error!("{} MAVLink server did not receive messages", ID);
-                };
+        for stream_cfg in stream_cfg.streams.iter().flatten() {
+            if s::MAV_REQUEST
+                .send(Request::StartStream {
+                    period_ms: stream_cfg.period_ms,
+                    generator: stream_cfg.generator,
+                })
+                .with_timeout(Duration::from_millis(100))
+                .await
+                .is_err()
+            {
+                error!("{} MAVLink server did not receive messages", ID);
+            };
         }
     }
 
@@ -196,23 +231,22 @@ pub async fn main(
     s::CONTROL_FREQUENCY.store(MAIN_LOOP_FREQ as u16, core::sync::atomic::Ordering::Relaxed);
 
     loop {
-
         match CONFIG_RPC.get_request().await {
             Request::GetImuInt(handle, get_imu_int) => {
                 match storage.read::<ImuIntrinsics>(get_imu_int.id).await {
                     Some(mut calibs) => {
                         calibs.imu_rot = Rotation::RotX180;
                         handle.respond(calibs)
-                    },
+                    }
                     None => handle.close(),
                 }
-            },
+            }
             Request::GetMagInt(handle, get_mag_int) => {
                 match storage.read::<MagIntrinsics>(get_mag_int.id).await {
                     Some(calibs) => handle.respond(calibs),
                     None => handle.close(),
                 }
-            },
+            }
             Request::SetAccCal(handle, set_acc_cal) => {
                 let Some(mut int) = storage.read::<ImuIntrinsics>(0).await else {
                     error!("{}: Unable to read ACC calib from flash", ID);
@@ -226,7 +260,7 @@ pub async fn main(
                 if storage.write(int, set_acc_cal.id).await.is_err() {
                     error!("{}: Unable to write ACC calib to flash", ID);
                 }
-            },
+            }
             Request::SetGyrCal(handle, set_gyr_cal) => {
                 let Some(mut int) = storage.read::<ImuIntrinsics>(0).await else {
                     error!("{}: Unable to read ACC calib from flash", ID);
@@ -240,11 +274,11 @@ pub async fn main(
                 if storage.write(int, set_gyr_cal.id).await.is_err() {
                     error!("{}: Unable to write GYR calib to flash", ID);
                     handle.respond(Res::Rejected);
-                    continue
+                    continue;
                 }
 
                 handle.respond(Res::Success);
-            },
+            }
             Request::SetMagCal(handle, set_mag_cal) => todo!(),
 
             Request::GetRcBinds(handle, get_rc_binds) => todo!(),
@@ -256,8 +290,6 @@ pub async fn main(
             Request::GetAttiPid(handle, get_atti_pid) => todo!(),
             Request::SetAttiPid(handle, set_atti_pid) => todo!(),
         }
-
-
 
         // match rcv_config_queue.receive().await {
         //     CfgMsg::LoadConfig { idx: _ } => todo!(),
@@ -302,7 +334,7 @@ enum Error {
     KeyedItemNotFound,
     FlashNotAligned,
     FlashOutOfbounds,
-    FlashOther
+    FlashOther,
 }
 
 impl<NF: NorFlash> Storage<NF> {
@@ -328,13 +360,21 @@ impl<NF: NorFlash> Storage<NF> {
         match result {
             Ok(Some(item)) => Some(item.0),
             _ => {
-                warn!("Did not find data with key {} and index {} in flash storage", I::KEY, idx);
+                warn!(
+                    "Did not find data with key {} and index {} in flash storage",
+                    I::KEY,
+                    idx
+                );
                 None
             }
         }
     }
 
-    pub async fn write<'a, I: Keyed<'a>>(&'a mut self, data: I, idx: u8) -> Result<(), sequential_storage::Error<NF::Error>> {
+    pub async fn write<'a, I: Keyed<'a>>(
+        &'a mut self,
+        data: I,
+        idx: u8,
+    ) -> Result<(), sequential_storage::Error<NF::Error>> {
         let search_key = (I::KEY as u16) << 8 | idx as u16;
         sequential_storage::map::store_item::<u16, Wrap<I>, _>(
             &mut self.flash,
@@ -342,7 +382,7 @@ impl<NF: NorFlash> Storage<NF> {
             &mut sequential_storage::cache::NoCache::new(),
             &mut self.buffer,
             &search_key,
-            &Wrap(data)
+            &Wrap(data),
         )
         .await
     }

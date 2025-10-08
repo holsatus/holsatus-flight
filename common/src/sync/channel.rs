@@ -1,44 +1,68 @@
-use core::cell::RefCell;
-
-use critical_section::Mutex;
 use heapless::Deque;
 use maitake_sync::WaitQueue;
-use mutex::raw_impls::cs::CriticalSectionRawMutex;
+use mutex::{BlockingMutex, ConstInit, ScopedRawMutex};
 
-pub struct MpscChannel<T, const N: usize> {
-    state: Mutex<RefCell<Deque<T, N>>>,
-    receive_queue: WaitQueue,
-    send_queue: WaitQueue<CriticalSectionRawMutex>,
+pub struct Channel<T, M: ScopedRawMutex, const N: usize> {
+    state: BlockingMutex<M, Deque<T, N>>,
+    recv_queue: WaitQueue<M>,
+    send_queue: WaitQueue<M>,
 }
 
-impl <T, const N: usize> MpscChannel<T, N> {
+impl<T, M: ScopedRawMutex + ConstInit, const N: usize> Default for Channel<T, M, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    pub const fn new() -> Self {
+impl<T, M: ScopedRawMutex, const N: usize> Channel<T, M, N> {
+    pub const fn new() -> Self
+    where
+        M: ConstInit,
+    {
         Self {
-            state: Mutex::new(RefCell::new(Deque::new())),
-            receive_queue: WaitQueue::new(),
-            send_queue: WaitQueue::new_with_raw_mutex(CriticalSectionRawMutex::new()),
+            state: BlockingMutex::new(Deque::new()),
+            recv_queue: WaitQueue::new_with_raw_mutex(M::INIT),
+            send_queue: WaitQueue::new_with_raw_mutex(M::INIT),
         }
     }
 
-    pub async fn send_lazy(&self, mut func: impl FnOnce() -> T) {
-        loop {
-            let wait = self.send_queue.wait();
-            match self.try_send_lazy(func) {
-                Ok(()) => break,
-                Err(retry) => {
-                    let res = wait.await;
-                    debug_assert!(res.is_ok());
-                    func = retry;
-                },
+    pub const fn receiver(&self) -> Receiver<'_, T, M, N> {
+        Receiver { inner: self }
+    }
+
+    pub const fn sender(&self) -> Sender<'_, T, M, N> {
+        Sender { inner: self }
+    }
+
+    pub fn try_send(&self, value: T) -> Result<(), T> {
+        self.try_send_lazy(|| value).map_err(|f| f())
+    }
+
+    pub fn try_send_lazy<F: FnOnce() -> T>(&self, value: F) -> Result<(), F> {
+        let res = self.state.with_lock(|deque| {
+            if deque.is_full() {
+                Err(value)
+            } else {
+                unsafe { deque.push_back_unchecked(value()) }
+                Ok(())
             }
+        });
+
+        if res.is_ok() {
+            self.recv_queue.wake();
         }
+
+        res
     }
 
-    pub async fn send(&self, mut value: T) {
+    pub async fn send(&self, value: T) {
+        self.send_lazy(|| value).await
+    }
+
+    pub async fn send_lazy<F: FnOnce() -> T>(&self, mut value: F) {
         loop {
             let wait = self.send_queue.wait();
-            match self.try_send(value) {
+            match self.try_send_lazy(value) {
                 Ok(()) => break,
                 Err(retry) => {
                     let res = wait.await;
@@ -49,35 +73,11 @@ impl <T, const N: usize> MpscChannel<T, N> {
         }
     }
 
-    pub fn try_send_lazy<F: FnOnce() -> T>(&self, value: F) -> Result<(), F> {
-        let res = critical_section::with(|cs|{
-            let mut deque = self.state.borrow_ref_mut(cs);
-            if deque.is_full() {
-                Err(value)
-            } else {
-                // SAFETY: We just checked that the deque is NOT full,
-                // and we are inside a critical section, so this operation
-                // is atomic. Also, pretty much identical to deque.push_back()
-                unsafe { deque.push_back_unchecked(value()) }
-                Ok(())
-            }
-        });
+    pub fn try_receive(&self) -> Option<T> {
+        let res = self.state.with_lock(|deque| deque.pop_front());
 
-        if res.is_ok() {
-            self.receive_queue.wake();
-        }
-
-        res
-    }
-
-    pub fn try_send(&self, value: T) -> Result<(), T> {
-        let res = critical_section::with(|cs|{
-            let mut deque = self.state.borrow_ref_mut(cs);
-            deque.push_back(value)
-        });
-
-        if res.is_ok() {
-            self.receive_queue.wake();
+        if res.is_some() {
+            self.send_queue.wake()
         }
 
         res
@@ -85,26 +85,42 @@ impl <T, const N: usize> MpscChannel<T, N> {
 
     pub async fn receive(&self) -> T {
         loop {
-            let wake = self.receive_queue.wait();
+            let wake = self.recv_queue.wait();
             match self.try_receive() {
                 Some(value) => break value,
                 None => {
                     let res = wake.await;
                     debug_assert!(res.is_ok())
-                },
+                }
             }
         }
     }
+}
+
+pub struct Sender<'a, T, M: ScopedRawMutex, const N: usize> {
+    inner: &'a Channel<T, M, N>,
+}
+
+impl<T, M: ScopedRawMutex, const N: usize> Sender<'_, T, M, N> {
+    pub async fn send(&self, value: T) {
+        self.inner.send(value).await
+    }
+
+    pub fn try_send(&self, value: T) -> Result<(), T> {
+        self.inner.try_send(value)
+    }
+}
+
+pub struct Receiver<'a, T, M: ScopedRawMutex, const N: usize> {
+    inner: &'a Channel<T, M, N>,
+}
+
+impl<T, M: ScopedRawMutex, const N: usize> Receiver<'_, T, M, N> {
+    pub async fn receive(&self) -> T {
+        self.inner.receive().await
+    }
 
     pub fn try_receive(&self) -> Option<T> {
-        let res = critical_section::with(|cs|{
-            self.state.borrow_ref_mut(cs).pop_front()
-        });
-
-        if res.is_some() {
-            self.send_queue.wake()
-        }
-
-        res
+        self.inner.try_receive()
     }
 }

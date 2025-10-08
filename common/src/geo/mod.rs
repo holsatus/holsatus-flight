@@ -1,7 +1,6 @@
 // Derived from PX4 geo.cpp
 // https://github.com/PX4/PX4-Autopilot/blob/main/src/lib/geo/geo.cpp
 
-
 /// A waypoint describes a
 #[derive(Clone, Copy)]
 pub struct Waypoint {
@@ -102,11 +101,11 @@ impl Waypoint {
         let x = (self_lat_rad.cos() * wayp_lat_rad.sin()
             - self_lat_rad.sin() * cos_wayp_lat * delta_lon.cos()) as f32;
 
-        (x,y)
+        (x, y)
     }
 
     pub fn bearing_and_distance_to_waypoint(&self, wayp: impl Into<Waypoint>) -> (f32, f32) {
-        let (x,y) = self.change_x_y_to_waypoint(wayp);
+        let (x, y) = self.change_x_y_to_waypoint(wayp);
         (wrap(y.atan2(x), -PI, PI), (x * x + y * y).sqrt())
     }
 }

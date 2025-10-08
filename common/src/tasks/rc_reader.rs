@@ -2,7 +2,9 @@ use embassy_time::{Duration, Instant};
 use embedded_io::Error;
 
 use crate::{
-    parsers::{crsf::CrsfParser, sbus::SbusParser}, signals as s, types::status::RcStatus
+    parsers::{crsf::CrsfParser, sbus::SbusParser},
+    signals as s,
+    types::status::RcStatus,
 };
 
 pub enum Parser {
@@ -35,7 +37,6 @@ pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
 
     info!("{}: Entering main loop", ID);
     'reading: loop {
-
         let fail = last_parse_time.elapsed() > Duration::from_millis(250);
         if rc_status.failsafe != fail {
             rc_status.failsafe = fail;
@@ -44,14 +45,14 @@ pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
 
         // Read serial data, but with a timeout
         let bytes = match uart_rx.read(&mut buffer).await {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    if err_debounce.elapsed() > Duration::from_millis(50) {
-                        err_debounce = Instant::now();
-                        error!("{}: Failed to read serial data: {:?}", ID, err.kind());
-                    }
-                    continue 'reading;
-            },
+            Ok(bytes) => bytes,
+            Err(err) => {
+                if err_debounce.elapsed() > Duration::from_millis(50) {
+                    err_debounce = Instant::now();
+                    error!("{}: Failed to read serial data: {:?}", ID, err.kind());
+                }
+                continue 'reading;
+            }
         };
 
         // Exhaustively parse bytes. This might immediately overwrite
@@ -82,7 +83,6 @@ pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
                     let result;
                     (result, sub_buffer) = crsf.push_bytes(sub_buffer);
 
-
                     match result {
                         Some(Ok(raw_packet)) => {
                             rc_status.failsafe = false;
@@ -98,13 +98,15 @@ pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
                                 }
                                 _ => error!("{}: crsf packet not supported by Holsatus", ID),
                             }
-                        },
-                        None | Some(Err(crate::parsers::crsf::Error::NoSyncByte)) => continue 'reading, // The buffer is empty
+                        }
+                        None | Some(Err(crate::parsers::crsf::Error::NoSyncByte)) => {
+                            continue 'reading
+                        } // The buffer is empty
                         Some(Err(err)) => {
                             crsf.reset();
                             error!("{}: Error parsing: {:?}", ID, err);
                             continue 'reading;
-                        },
+                        }
                     }
                 }
             }

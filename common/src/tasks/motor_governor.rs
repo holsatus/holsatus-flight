@@ -4,7 +4,10 @@ use embassy_futures::select::{
 };
 use embassy_time::{with_timeout, Duration, Timer};
 
-use crate::{filters::{motor_lin::MotorLin, Linear}, tasks::imu_reader::TIME_SIG, DSHOT_MAX, DSHOT_MIN};
+use crate::{
+    filters::{motor_lin::MotorLin, Linear},
+    DSHOT_MAX, DSHOT_MIN,
+};
 use crate::{
     hw_abstraction::OutputGroup,
     types::actuators::{DisarmReason, MotorsState},
@@ -43,13 +46,14 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
     // Set initial state
     snd_motors_state.send(MotorsState::Disarmed(DisarmReason::Uninitialized));
     'disarmed: loop {
-
         #[cfg(feature = "mavlink")]
         crate::mavlink::mav_set_armed(false);
 
         // Await arming command
         let (arm, force) = rcv_arm_command.changed().await;
-        if !arm { continue 'disarmed }
+        if !arm {
+            continue 'disarmed;
+        }
 
         snd_motors_state.send(MotorsState::Arming);
 
@@ -82,13 +86,11 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
         #[cfg(feature = "mavlink")]
         crate::mavlink::mav_set_armed(true);
         snd_motors_state.send(MotorsState::ArmedIdle);
-        let mut total_duration = Duration::from_ticks(0);
-        let mut duration_count = 0;
 
         info!("{}: Entering main loop", ID);
         'armed: loop {
             match select(
-                rcv_arm_command.changed_and(|&(x, _)|x == false),
+                rcv_arm_command.changed_and(|&(x, _)| x == false),
                 with_timeout(timeout_dur, rcv_motor_speeds.changed()),
             )
             .await
@@ -112,20 +114,6 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
                 }
                 Second(Ok(speeds)) => {
                     let _speeds_u16 = speeds.map(dshot_map_fn);
-
-                    if let Some(time) = TIME_SIG.try_take() {
-                        let duration = time.elapsed();
-                        total_duration += duration;
-                        duration_count += 1;
-                    }
-
-                    if !(duration_count < 1000) {
-                        let avg_duration = total_duration / 1000;
-                        info!("{}: Average loop duration: {:?}", ID, avg_duration);
-                        total_duration = Duration::from_ticks(0);
-                        duration_count = 0;
-                    }
-
                     // motors.set_motor_speeds(speeds_u16).await;
                     // snd_motors_state.send(MotorsState::Armed(speeds_u16));
                     continue 'armed;

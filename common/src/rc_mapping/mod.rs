@@ -1,13 +1,51 @@
 use serde::{Deserialize, Serialize};
 
+use crate::rc_mapping::analog::AnalogFlags;
+
 pub mod analog;
 pub mod digital;
 
 const NUM_CHANNELS: usize = 16;
 
-// As of implementing, the analog binding takes up more memory than a single digital bind. So we miht
+#[derive(mav_param::Tree)]
+struct ChannelParams {
+    ty: u8,
+    val: [u16; 4]
+}
+
+#[derive(mav_param::Tree)]
+struct Channels {
+    g1: [ChannelParams; 8],
+    g2: [ChannelParams; 8],
+}
+
+impl TryFrom<ChannelParams> for Binding {
+    type Error = ();
+
+    fn try_from(value: ChannelParams) -> Result<Self, Self::Error> {
+        let binding = match value.ty {
+            0b01 => Binding::Analog(analog::AnalogBind {
+                axis: analog::Axis::try_from(value.val[0].to_le_bytes()[0]).map_err(|_|())?,
+                in_min: value.val[1],
+                in_max: value.val[1],
+                deadband: value.val[1].to_le_bytes()[0],
+                flags: analog::AnalogFlags::from_bits_truncate(value.val[1].to_le_bytes()[1]),
+                rates: analog::Rates::None,
+            }),
+            0b10 => Binding::Digital(digital::DigitalBind(
+                [None; NUM_DIGITAL_BINDS]
+            )),
+            _ => return Err(())
+        };
+
+        Ok(binding)
+    }
+}
+
+// As of implementing, the analog binding takes up more memory than a single digital bind. So we might
 // as well try to cram in more digital binds, since they must share the same amount of storage.
-const NUM_DIGITAL_BINDS: usize = size_of::<analog::AnalogBind>() / size_of::<Option<(u16, digital::RcEvent)>>();
+const NUM_DIGITAL_BINDS: usize =
+    size_of::<analog::AnalogBind>() / size_of::<Option<(u16, digital::RcEvent)>>();
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -45,7 +83,6 @@ impl Default for RcBindings {
 
 impl RcBindings {
     fn const_default() -> Self {
-
         const POS_1: u16 = 191;
         const POS_2: u16 = 997;
         const POS_3: u16 = 1792;
@@ -54,7 +91,6 @@ impl RcBindings {
         const A_MAX: u16 = 1811;
 
         RcBindings::const_new(&[
-
             // -----------------------------------------------
             // --- Analog bindings, primary control inputs ---
             // -----------------------------------------------
@@ -65,75 +101,71 @@ impl RcBindings {
                 in_min: A_MIN,
                 in_max: A_MAX,
                 deadband: 2,
-                fullrange: true,
-                reverse: false,
+                flags: AnalogFlags::FULLRANGE,
                 rates: analog::Actual {
                     rate: 20.,
                     expo: 0.3,
-                    cent: 15.0
-                }.into()
+                    cent: 15.0,
+                }
+                .into(),
             }),
-
             // Right stick U/D
             Binding::Analog(analog::AnalogBind {
                 axis: analog::Axis::Pitch,
                 in_min: A_MIN,
                 in_max: A_MAX,
                 deadband: 2,
-                fullrange: true,
-                reverse: true,
+                flags: AnalogFlags::FULLRANGE | AnalogFlags::REVERSE,
                 rates: analog::Actual {
                     rate: 20.,
                     expo: 0.3,
-                    cent: 15.0
-                }.into(),
+                    cent: 15.0,
+                }
+                .into(),
             }),
-
             // Left stick U/D
             Binding::Analog(analog::AnalogBind {
                 axis: analog::Axis::Throt,
                 in_min: A_MIN,
                 in_max: A_MAX,
                 deadband: 2,
-                fullrange: false,
-                reverse: false,
+                flags: AnalogFlags::empty(),
                 rates: analog::Linear::new(
-                    0., // in min
-                    1., // in max
+                    0.,   // in min
+                    1.,   // in max
                     0.01, // out min
-                    0.6, // out max
-                ).into(),
+                    0.6,  // out max
+                )
+                .into(),
             }),
-
             // Left stick L/R
             Binding::Analog(analog::AnalogBind {
                 axis: analog::Axis::Yaw,
                 in_min: A_MIN,
                 in_max: A_MAX,
                 deadband: 2,
-                fullrange: true,
-                reverse: false,
+                flags: AnalogFlags::FULLRANGE,
                 rates: analog::Actual {
                     rate: 20.,
                     expo: 0.5,
-                    cent: 10.0
-                }.into(),
+                    cent: 10.0,
+                }
+                .into(),
             }),
-
             // ------------------------------------------------------
             // --- Two-state buttons (POS_1 release, POS_3 press) ---
             // ------------------------------------------------------
 
             // Button A
-            Binding::Digital(digital::DigitalBind::new(&[
-                (POS_3, digital::RcEvent::CalibrateGyr),
-            ])),
-
+            Binding::Digital(digital::DigitalBind::new(&[(
+                POS_3,
+                digital::RcEvent::CalibrateGyr,
+            )])),
             // Button D
-            Binding::Digital(digital::DigitalBind::new(&[
-                (POS_3, digital::RcEvent::CalibrateGyr),
-            ])),
-
+            Binding::Digital(digital::DigitalBind::new(&[(
+                POS_3,
+                digital::RcEvent::CalibrateGyr,
+            )])),
             // --------------------------------------------------
             // --- Tri-state switches (POS_1 away from pilot) ---
             // --------------------------------------------------
@@ -144,14 +176,12 @@ impl RcBindings {
                 (POS_2, digital::RcEvent::SetControlModeAngle),
                 (POS_3, digital::RcEvent::SetControlModeVelocity),
             ])),
-
             // Switch C
             Binding::Digital(digital::DigitalBind::new(&[
                 (POS_1, digital::RcEvent::DisarmMotors),
                 (POS_2, digital::RcEvent::ArmMotors),
                 (POS_3, digital::RcEvent::ArmMotors),
             ])),
-
             // It is more efficient to leave any remaining unbound channels out
 
             // Switch E

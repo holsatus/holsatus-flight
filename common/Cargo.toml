@@ -7,14 +7,23 @@ edition = "2021"
 default = ["arch-std", "mavlink", "sitl-std"]
 
 portable-atomic-critical-section = ["portable-atomic/critical-section"]
-portable-atomic-unsafe-assume-single-core = ["portable-atomic/unsafe-assume-single-core"]
+portable-atomic-unsafe-assume-single-core = [
+    "portable-atomic/unsafe-assume-single-core",
+]
 
 mavlink = []
+mavlink-osd = ["mavlink"]
+
 sitl-std = []
 sitl-mcu = []
 
 log = ["dep:log", "dep:env_logger"]
-defmt = ["dep:defmt", "embassy-usb/defmt", "embedded-io-async/defmt-03", "embassy-time/defmt"]
+defmt = [
+    "dep:defmt",
+    "embassy-usb/defmt",
+    "embedded-io-async/defmt-03",
+    "embassy-time/defmt",
+]
 arch-cortex-m = ["embassy-executor/arch-cortex-m"]
 arch-std = [
     "postcard/use-std",
@@ -61,14 +70,20 @@ bitflags = { version = "2.6.0", default-features = false }
 critical-section = { version = "1.1", default-features = false }
 mutex = { version = "1.0", features = ["impl-critical-section"] }
 
-heapless = { version = "0.8.0", features = ["serde", "portable-atomic", "defmt-03"]}
+heapless = { version = "0.8.0", features = [
+    "serde",
+    "portable-atomic",
+    "defmt-03",
+] }
 
-nalgebra = { version = "0.33.0", default-features = false, features = [
+nalgebra = { version = "0.34.0", default-features = false, features = [
     "serde-serialize-no-std",
     "libm",
 ] }
 
-eskf = { git = "https://github.com/peterkrull/eskf-rs", default-features = false, features = ["no_std"]}
+eskf = { git = "https://github.com/peterkrull/eskf-rs", default-features = false, features = [
+    "no_std",
+] }
 
 # mavlink = { git = "https://github.com/holsatus/rust-mavlink", default-features = false, features = [
 #     "holsatus",
@@ -89,16 +104,22 @@ block-device-adapters = { version = "0.2.0", features = ["defmt"] }
 block-device-driver = { version = "0.2.0" }
 
 # IMU/MAG drivers
-icm20948-async = { git = "https://github.com/peterkrull/icm20948-async/", branch = "holsatus-test", features = [
+icm20948-async = { git = "https://github.com/peterkrull/icm20948-async/", features = [
     "align-mag",
     "serde",
-]}
+] }
 
 ahrs = { git = "https://github.com/jmagnuson/ahrs-rs", default-features = false }
 kalman_filter = { git = "https://github.com/peterkrull/kalman-filter-rs" }
 mag-calibrator-rs = { git = "https://github.com/peterkrull/mag-calibrator-rs" }
 
-maitake-sync = { git = "https://github.com/hawkw/mycelium", default-features = false, features = ["no-cache-pad", "critical-section"] }
+maitake-sync = { git = "https://github.com/hawkw/mycelium", default-features = false, features = [
+    "no-cache-pad",
+    "critical-section",
+] }
+cordyceps = { git = "https://github.com/hawkw/mycelium", default-features = false, features = [
+    "no-cache-pad",
+] }
 
 embedded-cli = { git = "https://github.com/funbiscuit/embedded-cli-rs" }
 ufmt = "0.2.0"
@@ -112,7 +133,10 @@ portable-atomic = "1.9"
 approx = "0.5"
 thiserror = { version = "2.0.7", default-features = false }
 
-mavio = { version = "0.4.2", features = ["embedded-io-async", "embedded-io", "common"]}
+mav-param = { git = "https://github.com/holsatus/mav-param", features = ["defmt"]}
+
+mavio = { path = "../../../git/mavio/mavio", features = ["embedded-io-async", "dlct-common"] }
+postcard-schema = { version = "0.2.1", features = ["derive"] }
 
 [dev-dependencies]
 futures-executor = { version = "0.3.31", features = ["thread-pool"] }

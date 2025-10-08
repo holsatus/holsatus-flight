@@ -11,5 +11,8 @@ pub(super) mod mavlink;
 pub(super) mod system;
 
 pub trait CommandHandler {
-    fn handler(&self, serial: impl Read<Error = ErrorKind> + Write<Error = ErrorKind>) -> impl Future<Output = Result<(), ErrorKind>>;
+    fn handler(
+        &self,
+        serial: impl Read<Error = ErrorKind> + Write<Error = ErrorKind>,
+    ) -> impl Future<Output = Result<(), ErrorKind>>;
 }

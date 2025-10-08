@@ -14,12 +14,13 @@ impl defmt::Format for Calib3DType {
     fn format(&self, fmt: defmt::Formatter) {
         match self {
             Calib3DType::None => defmt::write!(fmt, "None"),
-            Calib3DType::Small(_) => defmt::write!(fmt, "Small calib, formatting not yet supported"),
+            Calib3DType::Small(_) => {
+                defmt::write!(fmt, "Small calib, formatting not yet supported")
+            }
             Calib3DType::Full(_) => defmt::write!(fmt, "Full calib, formatting not yet supported"),
         }
     }
 }
-
 
 impl Default for Calib3DType {
     fn default() -> Self {
@@ -33,7 +34,7 @@ impl Calib3DType {
             Calib3DType::None => {
                 *self = Calib3DType::Small(SmallCalib3D::default());
                 self.set_bias(bias);
-            },
+            }
             Calib3DType::Small(cal) => cal.bias = Some(bias),
             Calib3DType::Full(cal) => cal.bias = Some(bias),
         }

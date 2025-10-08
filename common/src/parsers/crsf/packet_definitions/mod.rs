@@ -9,6 +9,13 @@ pub mod device_ping;
 pub mod link_statistics;
 pub mod rc_channels_packed;
 
+fn mut_array<const N: usize>(buf: &mut [u8]) -> Result<&mut [u8; N], super::Error> {
+    Ok(crate::utils::func::mut_array_start(buf).ok_or(super::Error::BufferError)?)
+}
+
+fn ref_array<const N: usize>(buf: &[u8]) -> Result<&[u8; N], super::Error> {
+    Ok(crate::utils::func::ref_array_start(buf).ok_or(super::Error::BufferError)?)
+}
 /// A trait encapsulationg a CRSF payload. This trait is used to encode and decode payloads
 /// to and from byte slices, as well as convert into a [`RawPacket`]s for transmitting elsewhere.
 #[allow(clippy::len_without_is_empty)]
@@ -18,11 +25,6 @@ where
 {
     /// The length in bytes of this payload when serialized.
     const LEN: usize;
-
-    /// Get the length in bytes of this payload when serialized.
-    fn len(&self) -> usize {
-        Self::LEN
-    }
 
     /// Get the packet type of this payload.
     fn packet_type(&self) -> PacketType;
@@ -51,35 +53,24 @@ pub trait Payload: AnyPayload {
             len: 4 + Self::LEN,
         };
 
-        // Insert the payload into the packet
-        if let Some(payload_buffer) = raw.buf.get_mut(3..) {
-            self.encode(payload_buffer)?;
-        } else {
-            debug_assert!(false, "Failed to get payload buffer")
+        // This should never be the case, but might as well
+        if raw.buf.len() < raw.len {
+            return Err(Error::BufferError)
         }
 
-        // Doing this after the encode ensures we do not change
-        // the contents of the RawPacket if the payload encoding fails.
+        // Insert standard header
         raw.buf[0] = sync_byte;
         raw.buf[1] = 2 + Self::LEN as u8;
         raw.buf[2] = self.packet_type() as u8;
 
+        // Insert the payload into the packet
+        self.encode(&mut raw.buf[3..])?;
+
         // Calculate the CRC checksum
         let mut crc = Crc8::new();
-        if let Some(crc_bytes) = raw.buf.get(2..3 + Self::LEN) {
-            crc.compute(crc_bytes);
-        } else {
-            debug_assert!(false, "Failed to get crc bytes")
-        }
+        crc.compute(&raw.buf[2..3 + Self::LEN]);
 
-        // Insert the calculated CRC into the packet
-        if let Some(crc_byte) = raw.buf.get_mut(3 + Self::LEN) {
-            *crc_byte = crc.get_checksum();
-        } else {
-            debug_assert!(false, "Failed to get crc byte")
-        }
-
-        raw.len = 4 + Self::LEN;
+        raw.buf[3 + Self::LEN] = crc.get_checksum();
 
         Ok(raw)
     }
@@ -107,37 +98,27 @@ pub trait ExtendedPayload: AnyPayload {
             len: 6 + Self::LEN,
         };
 
-        // Insert the payload into the packet
-        if let Some(payload_buffer) = raw.buf.get_mut(5..) {
-            self.encode(payload_buffer)?;
-        } else {
-            debug_assert!(false, "Failed to get payload buffer")
+        // This should never be the case, but might as well
+        if raw.buf.len() < raw.len {
+            return Err(Error::BufferError)
         }
 
-        // Doing this after the encode ensures we do not change
-        // the contents of the RawPacket if the payload encoding fails.
+        // Insert extended header
         raw.buf[0] = sync_byte;
         raw.buf[1] = 4 + Self::LEN as u8;
         raw.buf[2] = self.packet_type() as u8;
         raw.buf[3] = dst as u8;
         raw.buf[4] = src as u8;
 
+        // Insert the payload into the packet
+        self.encode(&mut raw.buf[5..])?;
+
         // Calculate the CRC checksum
         let mut crc = Crc8::new();
-        if let Some(crc_bytes) = raw.buf.get(2..5 + Self::LEN) {
-            crc.compute(crc_bytes);
-        } else {
-            debug_assert!(false, "Failed to get crc bytes")
-        }
+        crc.compute(&raw.buf[2..5 + Self::LEN]);
 
         // Insert the calculated CRC into the packet
-        if let Some(crc_byte) = raw.buf.get_mut(5 + Self::LEN) {
-            *crc_byte = crc.get_checksum();
-        } else {
-            debug_assert!(false, "Failed to get crc byte")
-        }
-
-        raw.len = 6 + Self::LEN;
+        raw.buf[5 + Self::LEN] = crc.get_checksum();
 
         Ok(raw)
     }
@@ -183,5 +164,5 @@ macro_rules! impl_extended_payload {
 }
 
 impl_payload!(link_statistics, LinkStatistics);
-impl_payload!(rc_channels_packed, RcChannelsPacked);
+// impl_payload!(rc_channels_packed, RcChannelsPacked);
 impl_extended_payload!(device_ping, DevicePing);

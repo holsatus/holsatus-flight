@@ -2,7 +2,9 @@ use sequential_storage::map::{SerializationError, Value};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    airframe::QuadRotorMixing, calibration::sens3d::Calib3DType, drivers::imu::ImuConfig, filters::rate_pid::RatePidCfg3D, rc_mapping::RcBindings, utils::rot_matrix::Rotation, NUM_IMU, NUM_MAG
+    airframe::QuadRotorMixing, calibration::sens3d::Calib3DType, drivers::imu::ImuConfig,
+    filters::rate_pid::RatePidCfg3D, rc_mapping::RcBindings, utils::rot_matrix::Rotation, NUM_IMU,
+    NUM_MAG,
 };
 
 use super::device::HardwareInfo;
@@ -62,13 +64,11 @@ pub struct ImuIntrinsics {
     pub gyr_cal: Calib3DType,
 }
 
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MagIntrinsics {
     pub mag_rot: Rotation,
     pub mag_cal: Calib3DType,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vehicle {
@@ -122,7 +122,7 @@ impl_keyed! {
 
 #[cfg(feature = "mavlink")]
 impl_keyed! {
-    0xF0 => crate::mavlink::MavStreamCfg
+    0xF0 => crate::mavlink::StreamCfgBundle
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,15 +130,18 @@ pub struct Wrap<T>(pub T);
 
 impl<'a, T: Serialize + Deserialize<'a>> Value<'a> for Wrap<T> {
     fn serialize_into(&self, buffer: &mut [u8]) -> Result<usize, SerializationError> {
-        postcard::to_slice(self, buffer).map(|slice| slice.len()).map_err(|e| match e {
-            postcard::Error::SerializeBufferFull => SerializationError::BufferTooSmall,
-            _ => SerializationError::InvalidFormat,
-        })
+        postcard::to_slice(self, buffer)
+            .map(|slice| slice.len())
+            .map_err(|e| match e {
+                postcard::Error::SerializeBufferFull => SerializationError::BufferTooSmall,
+                _ => SerializationError::InvalidFormat,
+            })
     }
 
     fn deserialize_from(buffer: &'a [u8]) -> Result<Self, SerializationError>
     where
-        Self: Sized {
+        Self: Sized,
+    {
         postcard::from_bytes(buffer).map_err(|e| match e {
             postcard::Error::SerializeBufferFull => SerializationError::BufferTooSmall,
             _ => SerializationError::InvalidFormat,

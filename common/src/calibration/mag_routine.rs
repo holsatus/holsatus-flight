@@ -1,6 +1,9 @@
-use crate::{errors::CalibrationError, filters::rate_pid::FeedbackHandle, tasks::calibrator::{CalibratorState, Sensor}};
+use crate::{errors::CalibrationError, filters::rate_pid::FeedbackHandle};
 
-use super::{sens3d::{Calib3DType, SmallCalib3D}, MagCalib};
+use super::{
+    sens3d::{Calib3DType, SmallCalib3D},
+    MagCalib,
+};
 
 #[derive(Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -18,8 +21,11 @@ pub struct MagCalCollecting {
     pub mean_distance: f32,
 }
 
-pub async fn calibrate_mag<'a>(config: MagCalib, sensor_id: u8, feedback: FeedbackHandle<'a, MagCalState>) -> Result<Calib3DType, CalibrationError> {
-
+pub async fn calibrate_mag<'a>(
+    config: MagCalib,
+    sensor_id: u8,
+    feedback: FeedbackHandle<'a, MagCalState>,
+) -> Result<Calib3DType, CalibrationError> {
     feedback.send(MagCalState::Initialized);
 
     let mut calibrator = MagCalibrator::<26>::new()
@@ -27,7 +33,8 @@ pub async fn calibrate_mag<'a>(config: MagCalib, sensor_id: u8, feedback: Feedba
         .num_neighbors(1);
 
     // Input channels
-    let mut rcv_raw_mag = crate::signals::RAW_MULTI_MAG_DATA.get(sensor_id as usize)
+    let mut rcv_raw_mag = crate::signals::RAW_MULTI_MAG_DATA
+        .get(sensor_id as usize)
         .ok_or(CalibrationError::MagInvalidId)?
         .receiver();
 
@@ -59,7 +66,6 @@ pub async fn calibrate_mag<'a>(config: MagCalib, sensor_id: u8, feedback: Feedba
         info!("Mean distance: {}", calibrator.get_mean_distance());
 
         if calibrator.get_mean_distance() > 0.018 {
-
             // If any outliers could be removed, continue
             // let mut removed_outliers = false;
             // while calibrator.remove_outliers() {
@@ -71,7 +77,6 @@ pub async fn calibrate_mag<'a>(config: MagCalib, sensor_id: u8, feedback: Feedba
             // }
 
             if let Some((bias, scale)) = calibrator.perform_calibration() {
-
                 info!("Calibration complete, bias: {:?}, scale: {:?}", bias, scale);
                 feedback.send(MagCalState::DoneSuccess(Calib3DType::Small(SmallCalib3D {
                     bias: Some(bias.into()),
@@ -93,8 +98,6 @@ pub async fn calibrate_mag<'a>(config: MagCalib, sensor_id: u8, feedback: Feedba
     }
 }
 
-
-use embassy_sync::{blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex}, signal::Signal, watch::Sender};
 use embassy_time::Timer;
 use nalgebra::{ComplexField, SMatrix, SMatrixView, SVector, Vector3};
 
@@ -238,18 +241,20 @@ impl<const N: usize> MagCalibrator<N> {
 
     // TODO - This is currently broken, and may not be the best way to remove outliers
     pub fn remove_outliers(&mut self) -> bool {
-
         let mut norms = SVector::<f32, N>::zeros();
-        (self.matrix.row_iter()).zip(norms.iter_mut()).take(self.matrix_filled).for_each(|(row, norms)| {
-            *norms = Vector3::new(row[0], row[1], row[2]).norm();
-        });
+        (self.matrix.row_iter())
+            .zip(norms.iter_mut())
+            .take(self.matrix_filled)
+            .for_each(|(row, norms)| {
+                *norms = Vector3::new(row[0], row[1], row[2]).norm();
+            });
 
         let variance = norms.variance();
 
         for (i, norm) in norms.iter().enumerate() {
             if (norm - 1.0).abs() > 2. * variance.sqrt() {
-                for j in i..N-1 {
-                    let next = self.matrix.row(j+1).into_owned();
+                for j in i..N - 1 {
+                    let next = self.matrix.row(j + 1).into_owned();
                     self.matrix.row_mut(j).copy_from(&next);
                 }
 
@@ -296,7 +301,7 @@ impl<const N: usize> MagCalibrator<N> {
         }
 
         // Unscale the offset values
-        let off= off.map(|x| x * self.pre_scaler);
+        let off = off.map(|x| x * self.pre_scaler);
 
         // TODO Add option for low-pass filtering this result
         Some((off, scale))

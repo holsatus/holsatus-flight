@@ -38,11 +38,11 @@ pub struct KalmanFilter<
 }
 
 impl<
-    const Nx: usize,
-    const Nu: usize,
-    const Ny: usize,
-    F: Scalar + SimdValue + ComplexField + Copy,
-> KalmanFilter<Nx, Nu, Ny, F>
+        const Nx: usize,
+        const Nu: usize,
+        const Ny: usize,
+        F: Scalar + SimdValue + ComplexField + Copy,
+    > KalmanFilter<Nx, Nu, Ny, F>
 {
     /// Provide kalman filter with all initial values
     pub fn new(

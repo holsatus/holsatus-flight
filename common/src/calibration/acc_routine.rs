@@ -5,20 +5,30 @@ use crate::*;
 use embassy_time::{Duration, Ticker};
 use nalgebra::{SMatrix, Vector3};
 
-use crate::{calibration::sens3d::SmallCalib3D, consts::GRAVITY, errors::CalibrationError, signals as s, types::measurements::Imu6DofData};
+use crate::{
+    calibration::sens3d::SmallCalib3D, consts::GRAVITY, errors::CalibrationError, signals as s,
+    types::measurements::Imu6DofData,
+};
 
 /// Routine to calibrate gyroscopes, by calculating their bias.
-pub async fn calibrate_acc(config: AccCalib, sensor_id: u8) -> Result<Calib3DType, CalibrationError> {
+pub async fn calibrate_acc(
+    config: AccCalib,
+    sensor_id: u8,
+) -> Result<Calib3DType, CalibrationError> {
     const ID: &str = "acc_calib";
 
     const ACC_BUFFER_SIZE: usize = 50;
 
     // Input channels
-    let mut rcv_raw_imu = s::RAW_MULTI_IMU_DATA.get(sensor_id as usize)
+    let mut rcv_raw_imu = s::RAW_MULTI_IMU_DATA
+        .get(sensor_id as usize)
         .ok_or(CalibrationError::AccInvalidId)?
         .receiver();
 
-    info!("{}: Starting accelerometer calibration on sensor {}, max std deviation of {} ", ID, sensor_id, config.max_var);
+    info!(
+        "{}: Starting accelerometer calibration on sensor {}, max std deviation of {} ",
+        ID, sensor_id, config.max_var
+    );
 
     // Array of calibrator instances
     let mut calibrator = AccCalibrator::<ACC_BUFFER_SIZE>::new(config.max_var);
@@ -32,7 +42,6 @@ pub async fn calibrate_acc(config: AccCalib, sensor_id: u8) -> Result<Calib3DTyp
 
     // Calibration loop
     let calib = 'calibration: loop {
-
         ticker.next().await;
 
         let Some(imu_data) = rcv_raw_imu.try_changed() else {
@@ -54,7 +63,7 @@ pub async fn calibrate_acc(config: AccCalib, sensor_id: u8) -> Result<Calib3DTyp
     info!("{}: Gyr calibration complete for sensor {}", ID, sensor_id);
 
     // All good, return bias
-        Ok(calib)
+    Ok(calib)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -89,7 +98,7 @@ struct AccCalibrator<const N: usize> {
     count: usize,
 }
 
-impl <const N: usize> AccCalibrator<N> {
+impl<const N: usize> AccCalibrator<N> {
     pub fn new(max_variance: f32) -> Self {
         Self {
             measured_gravity: MeasuredDirections::default(),
@@ -104,22 +113,22 @@ impl <const N: usize> AccCalibrator<N> {
         let acc = meas.acc;
 
         // Determine the direction of gravity
-        let direction = if acc[0] > acc[1].abs()*10. && acc[0] > acc[2].abs()*10. {
-                Direction::X_PLUS
-            } else if acc[0] < -acc[1].abs()*10. && acc[0] < -acc[2].abs()*10. {
-                Direction::X_MINUS
-            } else if acc[1] > acc[0].abs()*10. && acc[1] > acc[2].abs()*10. {
-                Direction::Y_PLUS
-            } else if acc[1] < -acc[0].abs()*10. && acc[1] < -acc[2].abs()*10. {
-                Direction::Y_MINUS
-            } else if acc[2] > acc[0].abs()*10. && acc[2] > acc[1].abs()*10. {
-                Direction::Z_PLUS
-            } else if acc[2] < -acc[0].abs()*10. && acc[2] < -acc[1].abs()*10. {
-                Direction::Z_MINUS
-            } else {
-                self.count = 0;
-                return None
-            };
+        let direction = if acc[0] > acc[1].abs() * 10. && acc[0] > acc[2].abs() * 10. {
+            Direction::X_PLUS
+        } else if acc[0] < -acc[1].abs() * 10. && acc[0] < -acc[2].abs() * 10. {
+            Direction::X_MINUS
+        } else if acc[1] > acc[0].abs() * 10. && acc[1] > acc[2].abs() * 10. {
+            Direction::Y_PLUS
+        } else if acc[1] < -acc[0].abs() * 10. && acc[1] < -acc[2].abs() * 10. {
+            Direction::Y_MINUS
+        } else if acc[2] > acc[0].abs() * 10. && acc[2] > acc[1].abs() * 10. {
+            Direction::Z_PLUS
+        } else if acc[2] < -acc[0].abs() * 10. && acc[2] < -acc[1].abs() * 10. {
+            Direction::Z_MINUS
+        } else {
+            self.count = 0;
+            return None;
+        };
 
         // defmt::println!("Direction: {:?}  from {:?}", defmt::Debug2Format(&direction), defmt::Debug2Format(&acc));
 
@@ -143,10 +152,13 @@ impl <const N: usize> AccCalibrator<N> {
                 #[cfg(not(feature = "defmt"))]
                 let to_print = direction;
 
-                warn!("[ACC CALIB]: Resetting {:?} measurement due to high variance", to_print);
+                warn!(
+                    "[ACC CALIB]: Resetting {:?} measurement due to high variance",
+                    to_print
+                );
                 self.count = 0;
-                return None
-            },
+                return None;
+            }
             // If buffer is not full, return
             None => return None,
         }
@@ -155,21 +167,30 @@ impl <const N: usize> AccCalibrator<N> {
         self.directions_measured.insert(direction);
 
         match direction {
-            Direction::X_PLUS =>  self.measured_gravity.x_plus = mean.x,
+            Direction::X_PLUS => self.measured_gravity.x_plus = mean.x,
             Direction::X_MINUS => self.measured_gravity.x_minus = mean.x,
-            Direction::Y_PLUS =>  self.measured_gravity.y_plus = mean.y,
+            Direction::Y_PLUS => self.measured_gravity.y_plus = mean.y,
             Direction::Y_MINUS => self.measured_gravity.y_minus = mean.y,
-            Direction::Z_PLUS =>  self.measured_gravity.z_plus = mean.z,
+            Direction::Z_PLUS => self.measured_gravity.z_plus = mean.z,
             Direction::Z_MINUS => self.measured_gravity.z_minus = mean.z,
-            _ => { unreachable!("This directions flag should only contains a single instance") },
+            _ => {
+                unreachable!("This directions flag should only contains a single instance")
+            }
         }
 
         self.count = 0;
 
         #[cfg(feature = "defmt")]
-        info!("[ACC CALIB]: Finished measuring {:?}, now have {:?}", defmt::Debug2Format(&direction), defmt::Debug2Format(&self.directions_measured));
+        info!(
+            "[ACC CALIB]: Finished measuring {:?}, now have {:?}",
+            defmt::Debug2Format(&direction),
+            defmt::Debug2Format(&self.directions_measured)
+        );
         #[cfg(not(feature = "defmt"))]
-        info!("[ACC CALIB]: Finished measuring {:?}, now have {:?}", direction, self.directions_measured);
+        info!(
+            "[ACC CALIB]: Finished measuring {:?}, now have {:?}",
+            direction, self.directions_measured
+        );
 
         if !self.is_done() {
             return None;
@@ -191,7 +212,10 @@ impl <const N: usize> AccCalibrator<N> {
             GRAVITY / (calib.z_plus - calib.z_minus) * 2.0,
         );
 
-        Some(Calib3DType::Small(SmallCalib3D {bias: Some(offset), scale: Some(scale)}))
+        Some(Calib3DType::Small(SmallCalib3D {
+            bias: Some(offset),
+            scale: Some(scale),
+        }))
     }
 
     pub fn acc_variance(&self) -> Option<f32> {

@@ -25,16 +25,12 @@ pub async fn main() {
 
     info!("{}: Entering main loop at {} Hz", ID, 1. / ts);
     '_infinite: loop {
-
         // NOTE The madgwick filter implementation assumes a coordinate system
         // where the positive Z direction is up. This is opposite to the
         // coordinate system used in the drone firmware. To correct for this, we
         // rotate the IMU data by 180 degrees around the X axis.
 
-        let attitude_q = match select(
-            rcv_mag_data.changed(),
-            rcv_imu_data.changed(),
-        ).await {
+        let attitude_q = match select(rcv_mag_data.changed(), rcv_imu_data.changed()).await {
             Either::First(mag_data) => {
                 // Get the latest IMU data also
                 let imu_data = rcv_imu_data.get().await;

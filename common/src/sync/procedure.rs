@@ -1,263 +1,185 @@
-use core::{marker::PhantomData, sync::atomic::Ordering};
-
-use embassy_futures::join::join;
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex as M, channel::Channel};
-use embassy_time::Instant;
-use maitake_sync::WaitMap;
+use core::sync::atomic::Ordering;
+use maitake_sync::wait_map::WaitMap;
+use mutex::{ConstInit, ScopedRawMutex};
 use portable_atomic::AtomicUsize;
 
-macro_rules! rpc_message {
-    (
-        REQ = $req_name:ident $(,)?
-        RES = $res_name:ident $(,)?
-        $(
-            $(#[$attr:meta])*
-            fn $variant:ident $(($req_type:ty))? => $res_type:ty $(,)?
-        ),
-    +) => {
-        pub enum $req_name<'a, 'b> {
-            $(
-                $(#[$attr])*
-                $variant(Handle<'a, 'b, $req_name<'a, 'b>, $res_name, requests::$variant>),
-            )+
-        }
+use super::channel::Channel;
 
-        pub enum $res_name {
-            $(
-                $variant($res_type),
-            )+
-        }
-
-        pub mod requests {
-
-            use $crate::sync::procedure::*;
-
-            $(
-                #[allow(unused)]
-                pub struct $variant $((pub $req_type))?;
-                impl <'a, 'b> Rpc<'b, $req_name<'a, 'b>, $res_name> for $variant
-                {
-                    type Res = $res_type;
-
-                    fn as_request(self, idx: usize, rpc: &'b Procedure<$req_name<'a, 'b>, $res_name>) -> $req_name<'a, 'b> {
-                        $req_name::$variant(Handle::new(idx, rpc, self))
-                    }
-
-                    fn make_response(res: Self::Res) -> $res_name {
-                        $res_name::$variant(res)
-                    }
-
-                    fn get_response(res: $res_name) -> Option<Self::Res> {
-                        match res {
-                            $res_name::$variant(ack) => Some(ack),
-                            _ => None
-                        }
-                    }
-                }
-            )+
-        }
-    };
+pub struct Procedure<M: ScopedRawMutex, Req, Res, const N: usize> {
+    index: AtomicUsize,
+    chan: Channel<(Req, Option<usize>), M, N>,
+    map: WaitMap<usize, Option<Res>, M>,
 }
 
-
-
-pub trait Rpc<'b, REQ, RES>: Sized {
-    type Res;
-    fn as_request(self, idx: usize, rpc: &'b Procedure<REQ, RES>) -> REQ;
-    fn make_response(res: Self::Res) -> RES;
-    fn get_response(res: RES) -> Option<Self::Res>;
+impl <M: ScopedRawMutex + ConstInit, Req, Res, const N: usize> Default for Procedure<M, Req, Res, N> {
+    fn default() -> Self {
+        Procedure::new()
+    }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("The incorrect response type was sent for this request")]
-    IncorrectResponse,
-    #[error("The handle used to respond to this request was dropped before making a response")]
-    HandleDropped,
-    #[error("The RPC channel is closed, and no further requests can be made ")]
-    RpcClosed,
-}
-
-pub struct Procedure<REQ, RES> {
-    count: portable_atomic::AtomicUsize,
-    chn: embassy_sync::channel::Channel<M, REQ, 2>,
-    map: maitake_sync::wait_map::WaitMap<usize, Option<RES>>,
-}
-
-impl <REQ, RES> Procedure<REQ, RES> {
-
-    pub const fn new() -> Self {
+impl<M: ScopedRawMutex, Req, Res, const N: usize> Procedure<M, Req, Res, N> {
+    pub const fn new() -> Self
+    where
+        M: ConstInit,
+    {
         Self {
-            count: AtomicUsize::new(0),
-            chn: Channel::new(),
-            map: WaitMap::new(),
+            chan: Channel::new(),
+            index: AtomicUsize::new(0),
+            map: WaitMap::new_with_raw_mutex(M::INIT),
         }
     }
 
-    pub async fn request<'b, R: Rpc<'b, REQ, RES>>(&'b self, req: R) -> Result<R::Res, Error> {
+    /// Receive a request
+    pub async fn receive_request(&self) -> (Req, Handle<'_, Res>) {
+        let (req, idx) = self.chan.receive().await;
+        (
+            req,
+            Handle {
+                map: &self.map,
+                idx,
+            },
+        )
+    }
 
-        // Obtain a unique ID for this request
-        let idx = self.count.fetch_add(1, Ordering::Relaxed);
+    /// Make a request and await the response.
+    ///
+    /// If a response is not required, use [`send`] instead.
+    pub async fn request(&self, req: Req) -> Option<Res> {
+        let idx = self.new_index();
 
-        // Construct the full request context
-        let req = req.as_request(idx, self);
+        // Insert outselves in the queue for the ID
+        let waiter = self.map.wait(idx);
+        let mut waiter = core::pin::pin!(waiter);
 
-        // Use join to first register the idx, and then send the request
-        let (wait_result, _) = join(
-            self.map.wait(idx),
-            self.chn.send(req)
-        ).await;
+        // Subscribing so we are registered prior to sending the request
+        waiter.as_mut().subscribe().await.ok()?;
+
+        // Make the request and send it over the channel
+        self.chan.send((req, Some(idx))).await;
 
         // Wait for the response
-        let response = wait_result.ok()
-            .ok_or(Error::RpcClosed)?
-            .ok_or(Error::HandleDropped)?;
-
-        // extract the correct response type
-        R::get_response(response)
-            .ok_or(Error::IncorrectResponse)
+        waiter.await.ok()?
     }
 
-    pub async fn get_request(&self) -> REQ {
-        self.chn.receive().await
+    /// Send a request without waiting for a response
+    ///
+    /// If a response is required, use [`request`] instead.
+    pub async fn send(&self, req: Req) {
+        self.chan.send((req, None)).await;
+    }
+
+    fn new_index(&self) -> usize {
+        self.index.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+/// Trait to do some type erasure of the underlying [`WaitMap`] for the [`Handle`]
+trait DynWaitMap<Res> {
+    fn wake(&self, key: usize, res: Option<Res>);
+}
+
+impl<Res, M: ScopedRawMutex> DynWaitMap<Res> for WaitMap<usize, Option<Res>, M> {
+    fn wake(&self, key: usize, res: Option<Res>) {
+        _ = self.wake(&key, res)
     }
 }
 
 /// Handle to produce a response to a specific request
-pub struct Handle<'a, 'b, REQ, RES, R: Rpc<'b, REQ, RES>> {
-    idx: usize,
-    map: &'b Procedure<REQ, RES>,
-    _p: PhantomData<&'a REQ>,
-    request: R,
+pub struct Handle<'a, Res> {
+    map: &'a dyn DynWaitMap<Res>,
+    idx: Option<usize>,
 }
 
-impl <'a, 'b, REQ, RES, R: Rpc<'b, REQ, RES>> Handle<'a, 'b, REQ, RES, R> {
-
-    fn new(idx: usize, map: &'b Procedure<REQ, RES>, request: R) -> Self {
-        Self {
-            idx, map, request, _p: PhantomData
-        }
-    }
-
+impl<Res> Handle<'_, Res> {
     /// Respond to the request, consuming this handle
-    pub fn respond(self, res: R::Res) {
-        self.map.map.wake(&self.idx, Some(R::make_response(res)));
+    /// and waking the requestee.
+    pub fn respond(self, res: Res) {
+        if let Some(idx) = self.idx {
+            self.map.wake(idx, Some(res));
+        }
     }
 
-    /// Cancel this request, notifying the requestee
-    pub fn cancel(&self) {
-        self.map.map.wake(&self.idx, None);
-    }
-}
-
-impl <'a, 'b, REQ, RES, R: Rpc<'b, REQ, RES>> Drop for Handle <'a, 'b, REQ, RES, R> {
-    fn drop(&mut self) {
-        self.cancel();
-    }
-}
-
-
-
-
-
-// ----- Example usage ------
-
-rpc_message!{
-    REQ = Request,
-    RES = Response,
-    fn GetTime => Instant,
-    fn SetTarget(f32) => ACK,
-    fn GetTarget => f32,
-}
-
-#[derive(PartialEq)]
-pub enum ACK {
-    Ack,
-    Deny,
-}
-
-static PROC: Procedure<Request, Response> = Procedure::new();
-
-async fn handler() {
-
-    let mut altitude = 0.0;
-
-    loop {
-        match PROC.get_request().await {
-            Request::GetTime(responder) => {
-                responder.respond(Instant::now());
-            },
-            Request::SetTarget(responder) => {
-                if responder.request.0 > 2.0 {
-                    altitude = responder.request.0;
-                    responder.respond(ACK::Ack);
-                } else {
-                    altitude = responder.request.0;
-                    responder.respond(ACK::Deny)
-                }
-            },
-            Request::GetTarget(responder) => {
-                responder.respond(altitude);
-            },
+    /// Notify the requestor that the request is closed.
+    fn close(&self) {
+        if let Some(idx) = self.idx {
+            self.map.wake(idx, None);
         }
     }
 }
 
+impl<Res> Drop for Handle<'_, Res> {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+// ---- playground ----
 
 #[cfg(test)]
 mod tests {
 
     use futures::task::SpawnExt;
+    use mutex::raw_impls::cs::CriticalSectionRawMutex as M;
 
     use super::*;
 
-    #[futures_test::test]
-    async fn test() {
-        static PROCEDURE: Procedure<Request, Response> = Procedure::new();
+    #[derive(Debug)]
+    enum Command {
+        Task(bool),
+        Exit,
+    }
 
-        let spawner = futures_test::task::noop_spawner_mut();
+    #[derive(Debug, PartialEq)]
+    enum Response {
+        Accepted,
+        Rejected,
+    }
 
+    #[test]
+    fn test() {
+        static PROCEDURE: Procedure<M, Command, Response, 10> = Procedure::new();
+        let mut spawner = futures_executor::LocalPool::new();
 
+        spawner
+            .spawner()
+            .spawn(async {
+                loop {
+                    let (req, handle) = PROCEDURE.receive_request().await;
 
-        spawner.spawn( async {
-
-            let target = PROCEDURE.request(requests::GetTarget).await.unwrap();
-
-            assert_eq!(target,1. );
-
-            if target > 100. {
-                let res = PROCEDURE.request(requests::SetTarget(10.)).await.unwrap();
-
-                if res == ACK::Ack {
-                    let target = PROCEDURE.request(requests::GetTarget).await.unwrap();
-                    assert_eq!(target,10. );
-                }
-            }
-        });
-
-
-
-
-        spawner.spawn(async {
-
-            let mut target = 1.0;
-
-            loop {
-                match PROCEDURE.get_request().await {
-                    Request::GetTime(_) => unimplemented!(),
-                    Request::SetTarget(handle) => {
-                        if (-100. .. 100.).contains(&handle.request.0) {
-                            target = handle.request.0;
-                            handle.respond(ACK::Ack);
-                        } else {
-                            handle.respond(ACK::Deny);
+                    match req {
+                        Command::Task(foo) => {
+                            handle.respond(match foo {
+                                true => Response::Accepted,
+                                false => Response::Rejected,
+                            });
                         }
-                    },
-                    Request::GetTarget(handle) => {
-                        handle.respond(target);
-                    },
+                        Command::Exit => {
+                            handle.respond(Response::Accepted);
+                            break;
+                        }
+                    }
                 }
-            }
-        });
+            })
+            .unwrap();
+
+        spawner
+            .spawner()
+            .spawn(async { requester().await.unwrap() })
+            .unwrap();
+
+        async fn requester() -> Option<()> {
+            let response = PROCEDURE.request(Command::Task(true)).await?;
+            assert_eq!(response, Response::Accepted);
+
+            let response = PROCEDURE.request(Command::Task(false)).await?;
+            assert_eq!(response, Response::Rejected);
+
+            let response = PROCEDURE.request(Command::Exit).await?;
+            assert_eq!(response, Response::Accepted);
+
+            Some(())
+        }
+
+        spawner.run();
     }
 }

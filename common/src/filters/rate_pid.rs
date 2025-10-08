@@ -1,4 +1,3 @@
-
 use crate::types::status::PidTerms;
 
 use super::{Lowpass, NthOrderLowpass, SlewRate};
@@ -78,7 +77,7 @@ impl Default for RatePidCfg3D {
 }
 
 impl RatePid {
-    pub fn new(kp: f32, ki: f32, kd: f32, ts: f32, tau: f32) -> Self {
+    pub fn new(kp: f32, ki: f32, kd: f32, tau: f32, ts: f32) -> Self {
         Self {
             kp,
             ki: ki * kp,
@@ -96,7 +95,7 @@ impl RatePid {
     }
 
     pub fn new_from_cfg(cfg: RatePidCfg, ts: f32) -> Self {
-        let mut pid = Self::new(cfg.kp, cfg.ki, cfg.kd, ts, cfg.tau);
+        let mut pid = Self::new(cfg.kp, cfg.ki, cfg.kd, cfg.tau, ts);
         if let Some(slew) = cfg.slew {
             pid = pid.slew(slew);
         }
@@ -126,7 +125,6 @@ impl RatePid {
     }
 
     pub fn update(&mut self, reference: f32, measurement: f32, prediction: f32) -> f32 {
-
         // Calculate proportional error (with slight overdrive to account for
         // air resistance)
 
@@ -136,7 +134,7 @@ impl RatePid {
 
         // Take derivatives of measurement (negative because d(ref - meas)/dt)
         let measurement_lp = self.d_lowpass.update(measurement);
-        let meas_derivative = - self.kd * (measurement_lp - self.prev_meas) / self.ts;
+        let meas_derivative = -self.kd * (measurement_lp - self.prev_meas) / self.ts;
         self.prev_meas = measurement_lp;
 
         // Calculate error integral (if reference is small) This ensures we do
@@ -150,7 +148,9 @@ impl RatePid {
 
         // Optionally slew-rate limit the reference signal to prevent very quick
         // changes from being clipped by derivative controller.
-        reference = self.d_slew.as_mut()
+        reference = self
+            .d_slew
+            .as_mut()
             .map_or(reference, |slew| slew.update(reference));
 
         // Calculate derivative
@@ -205,24 +205,24 @@ pub struct FeedbackHandle<'a, T> {
     sig: &'a Signal<NoopRawMutex, Option<T>>,
 }
 
-impl <'a, T> Drop for FeedbackHandle<'a, T> {
+impl<'a, T> Drop for FeedbackHandle<'a, T> {
     fn drop(&mut self) {
         self.sig.signal(None);
     }
 }
 
-impl <'a, T> FeedbackHandle<'a, T> {
+impl<'a, T> FeedbackHandle<'a, T> {
     pub fn send(&self, data: T) {
         self.sig.signal(Some(data));
     }
 }
 
-impl <T> Feedback<T> {
+impl<T> Feedback<T> {
     pub fn new() -> Self {
         Self { sig: Signal::new() }
     }
 
-    pub fn handle(&self) -> FeedbackHandle<T> {
+    pub fn handle(&self) -> FeedbackHandle<'_, T> {
         FeedbackHandle { sig: &self.sig }
     }
 

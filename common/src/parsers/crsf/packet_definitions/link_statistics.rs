@@ -26,13 +26,13 @@ pub fn raw_decode(data: &[u8; LEN]) -> LinkStatistics {
         uplink_rssi_1: data[0],
         uplink_rssi_2: data[1],
         uplink_link_quality: data[2],
-        uplink_snr: data[3] as i8,
+        uplink_snr: i8::from_le_bytes([data[3]]),
         active_antenna: data[4],
         rf_mode: data[5],
         uplink_tx_power: data[6],
         downlink_rssi: data[7],
         downlink_link_quality: data[8],
-        downlink_snr: data[9] as i8,
+        downlink_snr: i8::from_le_bytes([data[9]]),
     }
 }
 
@@ -41,11 +41,11 @@ pub fn raw_encode(link_statistics: &LinkStatistics, data: &mut [u8; LEN]) {
     data[0] = link_statistics.uplink_rssi_1;
     data[1] = link_statistics.uplink_rssi_2;
     data[2] = link_statistics.uplink_link_quality;
-    data[3] = link_statistics.uplink_snr as u8;
+    data[3] = link_statistics.uplink_snr.to_le_bytes()[0];
     data[4] = link_statistics.active_antenna;
     data[5] = link_statistics.rf_mode;
     data[6] = link_statistics.uplink_tx_power;
     data[7] = link_statistics.downlink_rssi;
     data[8] = link_statistics.downlink_link_quality;
-    data[9] = link_statistics.downlink_snr as u8;
+    data[9] = link_statistics.downlink_snr.to_le_bytes()[0];
 }

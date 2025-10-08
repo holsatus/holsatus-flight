@@ -1,10 +1,13 @@
+use crate::{
+    shell::{UBuffer, CLEAR_SCREEN, INTERRUPT},
+    types::status::ArmingBlocker,
+};
 use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Ticker};
 use embedded_cli::Command;
 use embedded_io::ErrorKind;
 use embedded_io_async::{Read, Write};
 use ufmt::{uWrite, uwrite};
-use crate::{shell::{UBuffer, CLEAR_SCREEN, INTERRUPT}, types::status::ArmingBlocker};
 
 #[derive(Command)]
 #[command(help_title = "Arming commands")]
@@ -14,28 +17,32 @@ pub enum ArmingCommand {
 
     /// View the arming safety flags
     Flags {
-
         /// The update frequency of the uptime display
         #[arg(short = 'f', long)]
-        frequency: Option<u8>
+        frequency: Option<u8>,
     },
 }
 
 impl super::CommandHandler for ArmingCommand {
-    async fn handler(&self, mut serial: impl Read<Error = ErrorKind> + Write<Error = ErrorKind>) -> Result<(), ErrorKind> {
+    async fn handler(
+        &self,
+        mut serial: impl Read<Error = ErrorKind> + Write<Error = ErrorKind>,
+    ) -> Result<(), ErrorKind> {
         match self {
             ArmingCommand::Status => {
-                serial.write_all(b"Fetching arming status is currently not available\n\r").await?;
-            },
+                serial
+                    .write_all(b"Fetching arming status is currently not available\n\r")
+                    .await?;
+            }
             ArmingCommand::Flags { frequency } => {
-                let mut maybe_ticker = frequency.map(|f|
-                    Ticker::every(Duration::from_hz(f as u64))
-                );
+                let mut maybe_ticker =
+                    frequency.map(|f| Ticker::every(Duration::from_hz(f as u64)));
 
                 loop {
-
                     let Some(blocker) = crate::signals::ARMING_BLOCKER.try_get() else {
-                        serial.write_all(b"ARMING_BLOCKER value not available\n\r").await?;
+                        serial
+                            .write_all(b"ARMING_BLOCKER value not available\n\r")
+                            .await?;
                         serial.flush().await?;
                         break;
                     };
@@ -49,7 +56,8 @@ impl super::CommandHandler for ArmingCommand {
                     // Hopefully the compiler is smart enough to optimize this,
                     // the iter_names method is const, so the longest should
                     // always be the same.
-                    let longest = ArmingBlocker::all().iter_names()
+                    let longest = ArmingBlocker::all()
+                        .iter_names()
                         .fold(0, |acc, (name, _)| acc.max(name.len()));
                     for (name, flag) in ArmingBlocker::all().iter_names() {
                         let mut buffer = UBuffer::<32>::new();
@@ -69,7 +77,7 @@ impl super::CommandHandler for ArmingCommand {
                         // Write buffer to serial
                         serial.write_all(&buffer.inner).await?;
                     }
-                    
+
                     serial.flush().await?;
 
                     // TODO - Maybe we can isolate this functionality into a
@@ -78,19 +86,22 @@ impl super::CommandHandler for ArmingCommand {
                         None => break,
                         Some(ticker) => {
                             let mut bytes = [0u8];
-                            if let Either::First(res) = select(
-                                serial.read(&mut bytes[..]),
-                                ticker.next()).await 
+                            if let Either::First(res) =
+                                select(serial.read(&mut bytes[..]), ticker.next()).await
                             {
                                 match res {
-                                    Ok(_) => if bytes[0] == *INTERRUPT { break },
+                                    Ok(_) => {
+                                        if bytes[0] == *INTERRUPT {
+                                            break;
+                                        }
+                                    }
                                     Err(e) => return Err(e),
                                 }
                             }
-                        },
+                        }
                     }
                 }
-            },
+            }
         }
 
         Ok(())

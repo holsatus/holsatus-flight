@@ -20,15 +20,17 @@ pub trait Reset {
 }
 
 pub async fn main<D, const BUFF: usize>(mut device: D) -> !
-where D: BlockDevice<512> + Reset
+where
+    D: BlockDevice<512> + Reset,
 {
     info!("Blackbox task started");
 
     let mut error_debounce: Option<(HolsatusError, Instant)> = None;
     loop {
         if let Err(error) = blackbox_run::<D, BUFF>(&mut device).await {
-            if error_debounce.is_none_or(|(prev_error,time)|
-            prev_error != error || time.elapsed().as_millis() > 1000) {
+            if error_debounce.is_none_or(|(prev_error, time)| {
+                prev_error != error || time.elapsed().as_millis() > 1000
+            }) {
                 info!("Error occurred, resetting device: {}", error);
                 error_debounce = Some((error, Instant::now()));
             }
@@ -37,18 +39,20 @@ where D: BlockDevice<512> + Reset
 }
 
 async fn blackbox_run<D, const BUFF: usize>(device: &mut D) -> Result<(), HolsatusError>
-where D: BlockDevice<512> + Reset
+where
+    D: BlockDevice<512> + Reset,
 {
     // Ensure device is in a known-good state
     if !device.reset().await {
         Err(BlackboxError::ResetFault)?
     }
 
-    // Messages likely stale at this point, drop them
-    if BLACKBOX_QUEUE.free_capacity() == 0 {
-        warn!("Channel was full, dropping all messages");
-        BLACKBOX_QUEUE.clear(); 
-    }
+    // TODO - reimplement
+    // // Messages likely stale at this point, drop them
+    // if BLACKBOX_QUEUE.free_capacity() == 0 {
+    //     warn!("Channel was full, dropping all messages");
+    //     BLACKBOX_QUEUE.clear();
+    // }
 
     // The BufStream holds a small local cache, and is what the filesystem uses directly
     let inner = BufStream::new(device);

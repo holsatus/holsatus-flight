@@ -5,18 +5,25 @@ use embassy_time::{Duration, Ticker};
 use nalgebra::{SMatrix, Vector3};
 
 /// Routine to calibrate gyroscopes, by calculating their bias.
-pub async fn calibrate_gyr_bias(config: GyrCalib, sensor_id: u8) -> Result<Vector3<f32>, CalibrationError>  {
+pub async fn calibrate_gyr_bias(
+    config: GyrCalib,
+    sensor_id: u8,
+) -> Result<Vector3<f32>, CalibrationError> {
     const ID: &str = "gyr_bias_calib";
 
     const ACC_BUFFER_SIZE: usize = 50;
     const ACC_SAMPLE_DIV: usize = 4;
 
     // Input channels
-    let mut rcv_raw_imu = s::RAW_MULTI_IMU_DATA.get(sensor_id as usize)
+    let mut rcv_raw_imu = s::RAW_MULTI_IMU_DATA
+        .get(sensor_id as usize)
         .ok_or(CalibrationError::GyrInvalidId)?
         .receiver();
 
-    info!("{}: Starting bias calibration on sensor {}, max variance of {} ", ID, sensor_id, config.max_var);
+    info!(
+        "{}: Starting bias calibration on sensor {}, max variance of {} ",
+        ID, sensor_id, config.max_var
+    );
 
     // Array of calibrator instances
     let mut calibrator = GyrCalibrator::<ACC_BUFFER_SIZE>::new(ACC_SAMPLE_DIV);
@@ -33,7 +40,6 @@ pub async fn calibrate_gyr_bias(config: GyrCalib, sensor_id: u8) -> Result<Vecto
 
     // Calibration loop
     let acc_variance = 'calibration: loop {
-
         ticker.next().await;
 
         let Some(imu_data) = rcv_raw_imu.try_changed() else {
@@ -51,7 +57,10 @@ pub async fn calibrate_gyr_bias(config: GyrCalib, sensor_id: u8) -> Result<Vecto
     };
 
     // Get existing calibration data or create new
-    info!("{}: Gyr calibration complete for sensor {} with variance {}", ID, sensor_id, acc_variance);
+    info!(
+        "{}: Gyr calibration complete for sensor {} with variance {}",
+        ID, sensor_id, acc_variance
+    );
 
     // Ensure variance is within limits
     if acc_variance > config.max_var {
@@ -74,7 +83,7 @@ struct GyrCalibrator<const N: usize> {
 // and average the result. This enables us to use a much smaller buffer, while still
 // getting a good estimate of the variance.
 
-impl <const N: usize> GyrCalibrator<N> {
+impl<const N: usize> GyrCalibrator<N> {
     pub fn new(acc_sample_div: usize) -> Self {
         Self {
             gyr_bias_sum: Vector3::zeros(),
@@ -88,7 +97,8 @@ impl <const N: usize> GyrCalibrator<N> {
         self.gyr_bias_sum += Vector3::from(meas.gyr);
 
         if self.sample_count % self.acc_sample_div == 0 {
-            self.acc_buffer.set_column(self.sample_count / self.acc_sample_div, &meas.acc.into());
+            self.acc_buffer
+                .set_column(self.sample_count / self.acc_sample_div, &meas.acc.into());
         }
 
         self.sample_count += 1;

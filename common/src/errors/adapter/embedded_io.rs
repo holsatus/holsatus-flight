@@ -19,7 +19,7 @@ pub enum EmbeddedIoError {
     ConnectionAborted,
     #[error("The network operation failed because it was not connected yet.")]
     NotConnected,
-    #[error("A socket address could not be bound because the address is already in use elsewhere.")]
+    #[error("A socket address could not be bound because the address is already in use.")]
     AddrInUse,
     #[error("A nonexistent interface was requested or the requested address was not local.")]
     AddrNotAvailable,
@@ -41,9 +41,11 @@ pub enum EmbeddedIoError {
     OutOfMemory,
     #[error("An attempted write could not write any data.")]
     WriteZero,
+    #[error("An attempted write could not write any data.")]
+    UnexpectedEof,
 }
 
-impl <E: embedded_io::Error> From<E> for EmbeddedIoError {
+impl<E: embedded_io::Error> From<E> for EmbeddedIoError {
     fn from(value: E) -> Self {
         use embedded_io::ErrorKind as E;
         match value.kind() {
@@ -69,3 +71,33 @@ impl <E: embedded_io::Error> From<E> for EmbeddedIoError {
         }
     }
 }
+
+// impl<E: embedded_io::Error> From<ReadExactError<E>> for EmbeddedIoError {
+//     fn from(value: ReadExactError<E>) -> Self {
+//         use embedded_io::ErrorKind as E;
+//         match value {
+//             ReadExactError::UnexpectedEof => EmbeddedIoError::UnexpectedEof,
+//             ReadExactError::Other(inner) => match inner.kind() {
+//                 E::Other => Self::Other,
+//                 E::NotFound => Self::NotFound,
+//                 E::PermissionDenied => Self::PermissionDenied,
+//                 E::ConnectionRefused => Self::ConnectionRefused,
+//                 E::ConnectionReset => Self::ConnectionReset,
+//                 E::ConnectionAborted => Self::ConnectionAborted,
+//                 E::NotConnected => Self::NotConnected,
+//                 E::AddrInUse => Self::AddrInUse,
+//                 E::AddrNotAvailable => Self::AddrNotAvailable,
+//                 E::BrokenPipe => Self::BrokenPipe,
+//                 E::AlreadyExists => Self::AlreadyExists,
+//                 E::InvalidInput => Self::InvalidInput,
+//                 E::InvalidData => Self::InvalidData,
+//                 E::TimedOut => Self::TimedOut,
+//                 E::Interrupted => Self::Interrupted,
+//                 E::Unsupported => Self::Unsupported,
+//                 E::OutOfMemory => Self::OutOfMemory,
+//                 E::WriteZero => Self::WriteZero,
+//                 _ => Self::Other,
+//             },
+//         }
+//     }
+// }

@@ -1,6 +1,7 @@
-pub mod reqres;
-// pub mod maitake_rpc;
-// pub mod maitake_rpc2;
-pub mod rpc;
-pub mod watch;
+pub mod broadcast;
 pub mod channel;
+pub mod lazy_lock;
+pub mod once_lock;
+pub mod procedure;
+pub mod serial;
+pub mod watch;

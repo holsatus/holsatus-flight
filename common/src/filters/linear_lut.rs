@@ -6,7 +6,6 @@ pub struct LinearLut<F: Float, const N: usize> {
 }
 
 impl<F: Float, const N: usize> LinearLut<F, N> {
-   
     pub fn get(&self, x: F) -> F {
         if self.points.is_empty() {
             return F::zero();
@@ -15,7 +14,11 @@ impl<F: Float, const N: usize> LinearLut<F, N> {
             return Self::linear_map(self.points[0], self.points[1], x);
         }
         if x >= self.points[self.points.len() - 1][0] {
-            return Self::linear_map(self.points[self.points.len() - 2], self.points[self.points.len() - 1], x);
+            return Self::linear_map(
+                self.points[self.points.len() - 2],
+                self.points[self.points.len() - 1],
+                x,
+            );
         }
         for i in 0..self.points.len() - 1 {
             if x >= self.points[i][0] && x <= self.points[i + 1][0] {

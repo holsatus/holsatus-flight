@@ -19,7 +19,6 @@ pub enum ControlMode {
     ///
     /// **NOTE**: This is only available with a working GPS module.
     Velocity,
-
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]

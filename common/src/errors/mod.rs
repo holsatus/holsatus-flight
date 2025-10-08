@@ -3,12 +3,12 @@ use thiserror::Error;
 
 pub mod adapter;
 use adapter::{
-    embedded_fatfs::EmbeddedFatfsError, embedded_hal::*, embedded_io::*, postcard::PostcardError
+    embedded_fatfs::EmbeddedFatfsError, embedded_hal::*, embedded_io::*,
+    embedded_storage::StorageError, postcard::PostcardError, sequential_storage::SequentialError,
 };
 
 #[non_exhaustive]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Error, Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Error, Debug, Clone, Copy, Eq, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum HolsatusError {
     #[error("Embedded-HAL {0}")]
@@ -33,6 +33,10 @@ pub enum HolsatusError {
     Calibration(#[from] CalibrationError),
     #[error("Mavlink error: {0}")]
     Mavlink(#[from] MavlinkError),
+    #[error("Sequential storage error: {0}")]
+    Sequential(#[from] SequentialError),
+    #[error("Embedded storage error: {0}")]
+    Storage(#[from] StorageError),
 }
 
 #[non_exhaustive]
@@ -113,6 +117,8 @@ pub enum MavlinkError {
     GenericIoError,
     #[error("Failed to read or write message from IO: {0}")]
     IoError(#[from] EmbeddedIoError),
+    #[error("The underlying IO device reached the end of file")]
+    IoEndOfFile,
     #[error("Could not start stream, all streamers are currently in use.")]
     MaxStreamers,
     #[error("No more room for adding extra peers.")]
@@ -139,8 +145,14 @@ pub enum MavlinkError {
     NoMessageHandler,
     #[error("Invalid payload length for a V1 message.")]
     InvalidV1Payload,
+    #[error("Invalid payload length for a V2 message.")]
+    V2PayloadIsTooLong,
     #[error("A remote procedure failed to respond.")]
     RpcFailure,
+    #[error("MAVLink frame can’t be process due to a small buffer.")]
+    FrameBufferIsTooSmall,
+    #[error("MAVLink frame can’t be process due to a small buffer.")]
+    InvalidHeader,
 }
 
 // #[cfg(feature = "mavio")]
@@ -162,6 +174,8 @@ impl From<mavio::error::FrameError> for MavlinkError {
             mavio::error::FrameError::Signature => MavlinkError::SignatureFailure,
             mavio::error::FrameError::Incompatible(_) => MavlinkError::Incompatible,
             mavio::error::FrameError::NotInDialect(id) => MavlinkError::UnknownMessageID(id),
+            mavio::error::FrameError::FrameBufferIsTooSmall { .. } => MavlinkError::FrameBufferIsTooSmall,
+            mavio::error::FrameError::InvalidHeader => MavlinkError::InvalidHeader,
         }
     }
 }
@@ -169,10 +183,13 @@ impl From<mavio::error::FrameError> for MavlinkError {
 impl From<mavio::error::SpecError> for MavlinkError {
     fn from(value: mavio::error::SpecError) -> Self {
         match value {
-            mavio::error::SpecError::UnsupportedMavLinkVersion { .. } => MavlinkError::UnsupportedVersion,
+            mavio::error::SpecError::UnsupportedMavLinkVersion { .. } => {
+                MavlinkError::UnsupportedVersion
+            }
             mavio::error::SpecError::NotInDialect(id) => MavlinkError::UnknownMessageID(id),
             mavio::error::SpecError::InvalidEnumValue { .. } => MavlinkError::InvalidEnum,
             mavio::error::SpecError::InvalidV1PayloadSize { .. } => MavlinkError::InvalidV1Payload,
+            mavio::error::SpecError::V2PayloadIsTooLong { .. } => MavlinkError::V2PayloadIsTooLong,
         }
     }
 }
@@ -192,7 +209,7 @@ pub struct Debounce<T> {
     inner: Option<(embassy_time::Instant, T)>,
 }
 
-impl <T: PartialEq + Clone> Debounce<T> {
+impl<T: PartialEq + Clone> Debounce<T> {
     pub fn new(duration: embassy_time::Duration) -> Self {
         Self {
             duration,
@@ -201,7 +218,11 @@ impl <T: PartialEq + Clone> Debounce<T> {
     }
 
     pub fn evaluate(&mut self, error: T) -> Option<T> {
-        if self.inner.as_ref().is_none_or(|(t, e)| t.elapsed() > self.duration || e != &error) {
+        if self
+            .inner
+            .as_ref()
+            .is_none_or(|(t, e)| t.elapsed() > self.duration || e != &error)
+        {
             self.inner = Some((embassy_time::Instant::now(), error.clone()));
             Some(error)
         } else {

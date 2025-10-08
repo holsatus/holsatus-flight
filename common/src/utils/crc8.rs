@@ -25,29 +25,27 @@ const CRC8_LUT: [u8; 256] = new_crc8_lut();
 
 /// Software based CRC8 implementation.
 pub(crate) struct Crc8 {
-    crc_val: u8,
-    crc_table: &'static [u8; 256],
+    digest: u8,
 }
 
 impl Crc8 {
     pub const fn new() -> Self {
         Crc8 {
-            crc_table: &CRC8_LUT,
-            crc_val: 0,
+            digest: 0,
         }
     }
 
     pub fn compute(&mut self, data: &[u8]) {
         for e in data {
-            self.crc_val = self.crc_table[(self.crc_val ^ e) as usize];
+            self.digest = CRC8_LUT[(self.digest ^ e) as usize];
         }
     }
 
     pub fn reset(&mut self) {
-        self.crc_val = 0;
+        self.digest = 0;
     }
 
     pub fn get_checksum(&self) -> u8 {
-        self.crc_val
+        self.digest
     }
 }

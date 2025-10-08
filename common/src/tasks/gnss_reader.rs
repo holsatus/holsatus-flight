@@ -1,4 +1,4 @@
-use embassy_time::{with_timeout, Duration};
+use embassy_time::{with_timeout, Duration, Instant};
 
 use crate::types::measurements::{GnssData, GnssTime};
 
@@ -38,7 +38,6 @@ pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
             match parsed {
                 Ok(packet) => match packet {
                     ublox::PacketRef::NavPvt(pvt) => {
-
                         let time = GnssTime {
                             year: pvt.year(),
                             month: pvt.month(),
@@ -49,6 +48,7 @@ pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
                         };
 
                         let gnss_packet = GnssData {
+                            timestamp_us: Instant::now().as_micros(),
                             time,
                             fix: pvt.fix_type().into(),
                             satellites: pvt.num_satellites(),
@@ -57,7 +57,7 @@ pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
                             altitude: pvt.height_meters() as f32,
                             horiz_accuracy: pvt.horiz_accuracy() as f32 / 1e2,
                             vert_accuracy: pvt.vert_accuracy() as f32 / 1e2,
-                            vel_north: pvt.vel_north() as f32 ,
+                            vel_north: pvt.vel_north() as f32,
                             vel_east: pvt.vel_east() as f32,
                             vel_down: pvt.vel_down() as f32,
                             vel_accuracy: pvt.speed_accuracy_estimate() as f32,

@@ -21,7 +21,10 @@ pub async fn main() -> ! {
 
     // Wait for the control mode to be defiend before routing starts
     let mut control_mode = get_or_warn!(rcv_control_mode).await;
-    info!("{}: Setting initial control mode to: {:?}", ID, control_mode);
+    info!(
+        "{}: Setting initial control mode to: {:?}",
+        ID, control_mode
+    );
 
     loop {
         // Listen to all signals in order of priority, and handle them asyncronously.

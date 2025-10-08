@@ -1,11 +1,15 @@
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
+use embassy_futures::select::select;
 use embedded_hal_async::spi::SpiDevice;
+use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use portable_atomic::{AtomicUsize, Ordering};
 
+use crate::calibration::sens3d::Calib3DType;
 use crate::signals::register_error;
-use crate::tasks::configurator::{GetImuInt, CONFIG_RPC};
+use crate::sync::channel::Channel;
+use crate::tasks::configurator2::load_or_default;
+use crate::types::config::ImuIntrinsics;
 use crate::types::measurements::Imu6DofData;
+use crate::utils::rot_matrix::Rotation;
 use crate::{
     drivers::imu::ImuConfig,
     hw_abstraction::{Imu6Dof, Imu9Dof},
@@ -16,13 +20,19 @@ use embedded_hal_async::i2c::I2c;
 
 static IMU_IDX: AtomicUsize = AtomicUsize::new(0);
 
-pub static TIME_SIG: Signal<CriticalSectionRawMutex, Instant> = Signal::new();
+pub enum Message {
+    SetConfig(),
+    SetImuRotation(Rotation),
+    SetAccCalib(Calib3DType),
+    SetGyrCalib(Calib3DType),
+}
 
-pub async fn main_6dof_i2c(
-    mut i2c: impl I2c,
-    config: &ImuConfig,
-    addr: Option<u8>,
-) -> ! {
+pub static CHANNEL: [Channel<Message, CriticalSectionRawMutex, 1>; NUM_IMU] = {
+    const CONST_INIT: Channel<Message, CriticalSectionRawMutex, 1> = Channel::new();
+    [CONST_INIT; NUM_IMU]
+};
+
+pub async fn main_6dof_i2c(mut i2c: impl I2c, config: &ImuConfig, addr: Option<u8>) -> ! {
     const ID: &str = "imu_setup_6dof_i2c";
     info!("{}: Task started", ID);
 
@@ -60,11 +70,7 @@ pub async fn main_6dof_spi(
     main_6dof(imu).await
 }
 
-pub async fn main_9dof_i2c(
-    mut i2c: impl I2c,
-    config: &ImuConfig,
-    addr: Option<u8>,
-) -> ! {
+pub async fn main_9dof_i2c(mut i2c: impl I2c, config: &ImuConfig, addr: Option<u8>) -> ! {
     const ID: &str = "imu_setup_9dof_i2c";
     info!("{}: Task started", ID);
 
@@ -82,9 +88,7 @@ pub async fn main_9dof_i2c(
     main_9dof(imu).await
 }
 
-pub async fn main_6dof(
-    mut imu: impl Imu6Dof,
-) -> ! {
+pub async fn main_6dof(mut imu: impl Imu6Dof) -> ! {
     const ID: &str = "imu_reader_6dof";
     info!("{}: Task started", ID);
 
@@ -92,17 +96,14 @@ pub async fn main_6dof(
     assert!(idx < NUM_IMU, "Invalid index for IMU reader task");
 
     // Task inputs
-    let mut rcv_cfg_acc_cal = s::CFG_MULTI_ACC_CAL[idx].receiver();
-    let mut rcv_cfg_gyr_cal = s::CFG_MULTI_GYR_CAL[idx].receiver();
-    let mut rcv_cfg_imu_rot = s::CFG_MULTI_IMU_ROT[idx].receiver();
+    let rcv_messages = CHANNEL[idx].receiver();
 
     // Task outputs
     let mut snd_raw_imu_data = s::RAW_MULTI_IMU_DATA[idx].sender();
     let mut snd_cal_imu_data = s::CAL_MULTI_IMU_DATA[idx].sender();
 
     // Wait for initial configuration values
-    let intrinsics = CONFIG_RPC.request(GetImuInt{id: 0}).await
-        .expect("The configurator must respond to early config calls");
+    let intrinsics = load_or_default::<ImuIntrinsics>(ID).await;
 
     let mut acc_cal = intrinsics.acc_cal;
     let mut gyr_cal = intrinsics.gyr_cal;
@@ -113,56 +114,59 @@ pub async fn main_6dof(
 
     info!("{}: Entering main loop", ID);
     'infinite: loop {
-        // Check if any of the configs have updated
-        rcv_cfg_acc_cal.try_changed().map(|new_acc_cal: _| acc_cal = new_acc_cal);
-        rcv_cfg_gyr_cal.try_changed().map(|new_gyr_cal: _| gyr_cal = new_gyr_cal);
-        rcv_cfg_imu_rot.try_changed().map(|new_imu_rot: _| imu_rot = new_imu_rot);
-
         // Tighter loop for when we are in flight
-        'hyper: loop {
+        match select(rcv_messages.receive(), ticker.next()).await {
+            embassy_futures::select::Either::First(message) => match message {
+                Message::SetConfig() => {}
+                Message::SetAccCalib(calib) => acc_cal = calib,
+                Message::SetGyrCalib(calib) => gyr_cal = calib,
+                Message::SetImuRotation(rot) => imu_rot = rot,
+            },
+            embassy_futures::select::Either::Second(()) => {
+                // Read the IMU data (accel and gyro)
+                let raw_imu_data = match imu.read_acc_gyr().await {
+                    Ok(raw_imu_data) => raw_imu_data,
+                    Err(error) => {
+                        error!("{}: Failed to read IMU data: {:?}", ID, error);
+                        register_error(error);
+                        continue 'infinite;
+                    }
+                };
 
-            ticker.next().await;
-            TIME_SIG.signal(Instant::now());
+                let timestamp = Instant::now();
 
-            // Read the IMU data (accel and gyro)
-            let raw_imu_data = match imu.read_acc_gyr().await {
-                Ok(raw_imu_data) => raw_imu_data,
-                Err(error) => {
-                    error!("{}: Failed to read IMU data: {:?}", ID, error);
-                    register_error(error);
-                    continue 'hyper;
+                // Apply rotation
+                let rot_acc_data = &imu_rot * raw_imu_data.acc.into();
+                let rot_gyr_data = &imu_rot * raw_imu_data.gyr.into();
+
+                // Apply offset and scale
+                let cal_acc_data = acc_cal.apply(rot_acc_data);
+                let cal_gyr_data = gyr_cal.apply(rot_gyr_data);
+
+                // Rotated RAW struct
+                let rot_imu_data = Imu6DofData {
+                    timestamp_us: timestamp.as_micros(),
+                    acc: rot_acc_data.into(),
+                    gyr: rot_gyr_data.into(),
+                };
+
+                // Calibrated struct
+                let cal_imu_data = Imu6DofData {
+                    timestamp_us: timestamp.as_micros(),
+                    acc: cal_acc_data.into(),
+                    gyr: cal_gyr_data.into(),
+                };
+
+                // Transmit
+                critical_section::with(|_| {
+                    snd_raw_imu_data.send(rot_imu_data);
+                    snd_cal_imu_data.send(cal_imu_data);
+                });
+
+                // As long as we are not in flight, we should check for updated configs
+                if !s::IN_FLIGHT.load(Ordering::Relaxed) {
+                    continue 'infinite;
                 }
-            };
-
-            // Apply rotation
-            let rot_acc_data = &imu_rot * raw_imu_data.acc.into();
-            let rot_gyr_data = &imu_rot * raw_imu_data.gyr.into();
-
-            // Apply offset and scale
-            let cal_acc_data = acc_cal.apply(rot_acc_data);
-            let cal_gyr_data = gyr_cal.apply(rot_gyr_data);
-
-            // Rotated RAW struct
-            let rot_imu_data = Imu6DofData {
-                acc: rot_acc_data.into(),
-                gyr: rot_gyr_data.into(),
-            };
-
-            // Calibrated struct
-            let cal_imu_data = Imu6DofData {
-                acc: cal_acc_data.into(),
-                gyr: cal_gyr_data.into(),
-            };
-
-            // Transmit
-            critical_section::with(|_| {
-                snd_raw_imu_data.send(rot_imu_data);
-                snd_cal_imu_data.send(cal_imu_data);
-            });
-
-            // As long as we are not in flight, we should check for updated configs
-            if !s::IN_FLIGHT.load(Ordering::Relaxed) {
-                continue 'infinite;
             }
         }
     }
@@ -170,7 +174,6 @@ pub async fn main_6dof(
 
 /// Not finished
 pub async fn main_9dof(mut marg: impl Imu9Dof) -> ! {
-
     const ID: &str = "imu_reader_9dof";
     info!("{}: Task started", ID);
 
@@ -203,18 +206,26 @@ pub async fn main_9dof(mut marg: impl Imu9Dof) -> ! {
     info!("{}: Entering main loop", ID);
     'infinite: loop {
         // Check if any of the configs have updated
-        rcv_cfg_acc_cal.try_changed().map(|new_acc_cal: _| acc_cal = new_acc_cal);
-        rcv_cfg_gyr_cal.try_changed().map(|new_gyr_cal: _| gyr_cal = new_gyr_cal);
-        rcv_cfg_imu_rot.try_changed().map(|new_imu_rot: _| imu_rot = new_imu_rot);
-        rcv_cfg_mag_cal.try_changed().map(|new_mag_cal: _| mag_cal = new_mag_cal);
-        rcv_cfg_mag_rot.try_changed().map(|new_mag_rot: _| mag_rot = new_mag_rot);
+        rcv_cfg_acc_cal
+            .try_changed()
+            .map(|new_acc_cal: _| acc_cal = new_acc_cal);
+        rcv_cfg_gyr_cal
+            .try_changed()
+            .map(|new_gyr_cal: _| gyr_cal = new_gyr_cal);
+        rcv_cfg_imu_rot
+            .try_changed()
+            .map(|new_imu_rot: _| imu_rot = new_imu_rot);
+        rcv_cfg_mag_cal
+            .try_changed()
+            .map(|new_mag_cal: _| mag_cal = new_mag_cal);
+        rcv_cfg_mag_rot
+            .try_changed()
+            .map(|new_mag_rot: _| mag_rot = new_mag_rot);
 
         // Tighter loop for when we are in flight
         let mut counter = 0;
         'hyper: loop {
-
             ticker.next().await;
-            TIME_SIG.signal(Instant::now());
 
             let imu_6dof_data: Imu6DofData<f32>;
             let mut mag_data: Option<[f32; 3]> = None;
@@ -226,7 +237,7 @@ pub async fn main_9dof(mut marg: impl Imu9Dof) -> ! {
                     Ok(raw_imu_data) => {
                         imu_6dof_data = raw_imu_data.into();
                         mag_data = Some(raw_imu_data.mag);
-                    },
+                    }
                     Err(error) => {
                         error!("{}: Failed to read IMU data: {:?}", ID, error);
                         register_error(error);
@@ -238,7 +249,7 @@ pub async fn main_9dof(mut marg: impl Imu9Dof) -> ! {
                 match marg.read_acc_gyr().await {
                     Ok(raw_imu_data) => {
                         imu_6dof_data = raw_imu_data;
-                    },
+                    }
                     Err(error) => {
                         error!("{}: Failed to read IMU data: {:?}", ID, error);
                         register_error(error);
@@ -248,6 +259,8 @@ pub async fn main_9dof(mut marg: impl Imu9Dof) -> ! {
             }
 
             counter = counter.wrapping_add(1);
+            
+            let timestamp = Instant::now();
 
             // Apply rotation
             let rot_acc_data = &imu_rot * imu_6dof_data.acc.into();
@@ -259,12 +272,14 @@ pub async fn main_9dof(mut marg: impl Imu9Dof) -> ! {
 
             // Rotated RAW struct
             let rot_imu_data = Imu6DofData {
+                timestamp_us: timestamp.as_micros(),
                 acc: rot_acc_data.into(),
                 gyr: rot_gyr_data.into(),
             };
 
             // Calibrated struct
             let cal_imu_data = Imu6DofData {
+                timestamp_us: timestamp.as_micros(),
                 acc: cal_acc_data.into(),
                 gyr: cal_gyr_data.into(),
             };

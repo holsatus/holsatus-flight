@@ -1,7 +1,7 @@
 pub mod angle_pid;
-pub mod rate_pid;
 pub mod linear_lut;
 pub mod motor_lin;
+pub mod rate_pid;
 
 use core::array::from_fn;
 use num_traits::Float;
@@ -11,15 +11,16 @@ pub trait SisoFilter {
     type Type;
     fn update(&mut self, input: Self::Type) -> Self::Type;
     fn as_dyn(&mut self) -> &mut dyn SisoFilter<Type = Self::Type>
-    where Self: Sized,
+    where
+        Self: Sized,
     {
-
         self as &mut dyn SisoFilter<Type = Self::Type>
     }
 }
 
 pub trait FilterStructure
-    where Self: SisoFilter + Clone,
+where
+    Self: SisoFilter + Clone,
 {
     // Convert the filter to be a `N`'th order filter of the same type.
     fn order<const N: usize>(self) -> Order<Self, N> {
@@ -38,7 +39,7 @@ pub trait FilterStructure
     }
 }
 
-impl <T: SisoFilter + Clone> FilterStructure for T {}
+impl<T: SisoFilter + Clone> FilterStructure for T {}
 
 #[derive(Clone)]
 pub struct Chain<F, F1: SisoFilter<Type = F>, F2: SisoFilter<Type = F>> {
@@ -46,7 +47,7 @@ pub struct Chain<F, F1: SisoFilter<Type = F>, F2: SisoFilter<Type = F>> {
     filter2: F2,
 }
 
-impl <F: Clone, F1: SisoFilter<Type = F>, F2: SisoFilter<Type = F>> SisoFilter for Chain<F, F1, F2> {
+impl<F: Clone, F1: SisoFilter<Type = F>, F2: SisoFilter<Type = F>> SisoFilter for Chain<F, F1, F2> {
     type Type = F;
     fn update(&mut self, input: Self::Type) -> Self::Type {
         self.filter2.update(self.filter1.update(input))
@@ -94,14 +95,14 @@ impl<T: Float> Lowpass<T> {
     }
 }
 
-impl <F: Float> SisoFilter for Lowpass<F> {
+impl<F: Float> SisoFilter for Lowpass<F> {
     type Type = F;
     fn update(&mut self, input: Self::Type) -> Self::Type {
         self.update(input)
     }
 }
 
-impl <F: SisoFilter, const N: usize> SisoFilter for Order<F, N> {
+impl<F: SisoFilter, const N: usize> SisoFilter for Order<F, N> {
     type Type = F::Type;
     fn update(&mut self, input: Self::Type) -> Self::Type {
         self.update(input)
@@ -116,9 +117,8 @@ pub struct Order<F: SisoFilter, const N: usize> {
 impl<F: SisoFilter, const N: usize> Order<F, N> {
     pub fn update(&mut self, x: F::Type) -> F::Type {
         self.filters.iter_mut().fold(x, |y, f| f.update(y))
+    }
 }
-}
-
 
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -257,7 +257,7 @@ impl<T: Float> Default for ExpoRates<T> {
     }
 }
 
-impl <T: Float> SisoFilter for ExpoRates<T> {
+impl<T: Float> SisoFilter for ExpoRates<T> {
     type Type = T;
     fn update(&mut self, input: Self::Type) -> Self::Type {
         self.apply(input)
@@ -327,45 +327,45 @@ impl Linear<f32> {
     pub const fn const_default() -> Self {
         Self {
             factor: 1.0,
-            offset: 0.0
+            offset: 0.0,
         }
     }
 }
 
 impl Linear<f32> {
-    pub fn new(in_min: f32, in_max: f32, out_min: f32, out_max: f32) -> Self {
+    pub const fn new(in_min: f32, in_max: f32, out_min: f32, out_max: f32) -> Self {
         let mut new = Self::const_default();
         new.set(in_min, in_max, out_min, out_max);
         new
     }
 
     // Change the mapping of the linear function
-    pub fn set_params(&mut self, in_min: f32, in_max: f32, out_min: f32, out_max: f32) {
+    pub const fn set_params(&mut self, in_min: f32, in_max: f32, out_min: f32, out_max: f32) {
         self.factor = (out_max - out_min) / (in_max - in_min);
         self.offset = out_min - in_min * (out_max - out_min) / (in_max - in_min);
     }
 
-    pub fn set(&mut self, in_min: f32, in_max: f32, out_min: f32, out_max: f32) {
+    pub const fn set(&mut self, in_min: f32, in_max: f32, out_min: f32, out_max: f32) {
         self.factor = (out_max - out_min) / (in_max - in_min);
         self.offset = out_min - in_min * (out_max - out_min) / (in_max - in_min);
     }
 
-    pub fn map(&self, sig: f32) -> f32 {
+    pub const fn map(&self, sig: f32) -> f32 {
         sig * self.factor + self.offset
     }
 
     /// Returns (factor, offset) or for a*x+b, (a, b)
-    pub fn params(&self) -> (f32, f32) {
+    pub const fn params(&self) -> (f32, f32) {
         (self.factor, self.offset)
     }
 
     /// Returns (factor, offset) or for a*x+b, (a, b)
-    pub fn params_mut(&mut self) -> (&mut f32, &mut f32) {
+    pub const fn params_mut(&mut self) -> (&mut f32, &mut f32) {
         (&mut self.factor, &mut self.offset)
     }
 }
 
-impl <T: Float, const N: usize> SisoFilter for MovingAverage<T, N> {
+impl<T: Float, const N: usize> SisoFilter for MovingAverage<T, N> {
     type Type = T;
     fn update(&mut self, input: Self::Type) -> Self::Type {
         self.update(input)

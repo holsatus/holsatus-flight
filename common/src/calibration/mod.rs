@@ -5,9 +5,9 @@ pub mod sens3d;
 
 #[derive(Debug, Clone)]
 pub enum Calibrate {
-    Acc((AccCalib, Option<u8>)),
-    Gyr((GyrCalib, Option<u8>)),
-    Mag((MagCalib, Option<u8>)),
+    Acc(AccCalib, Option<u8>),
+    Gyr(GyrCalib, Option<u8>),
+    Mag(MagCalib, Option<u8>),
 }
 
 #[derive(Debug, Clone, Default)]

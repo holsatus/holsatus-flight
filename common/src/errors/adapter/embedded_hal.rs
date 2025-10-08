@@ -17,7 +17,7 @@ pub enum EmbeddedI2cError {
     Other,
 }
 
-impl <E: embedded_hal::i2c::Error> From<E> for EmbeddedI2cError {
+impl<E: embedded_hal::i2c::Error> From<E> for EmbeddedI2cError {
     fn from(value: E) -> Self {
         use embedded_hal::i2c::ErrorKind as E;
         match value.kind() {
@@ -47,7 +47,7 @@ pub enum EmbeddedSpiError {
     Other,
 }
 
-impl <E: embedded_hal::spi::Error> From<E> for EmbeddedSpiError {
+impl<E: embedded_hal::spi::Error> From<E> for EmbeddedSpiError {
     fn from(value: E) -> Self {
         use embedded_hal::spi::ErrorKind as E;
         match value.kind() {
@@ -69,10 +69,10 @@ pub enum EmbeddedDigError {
     Other,
 }
 
-impl <E: embedded_hal::digital::Error> From<E> for EmbeddedDigError {
+impl<E: embedded_hal::digital::Error> From<E> for EmbeddedDigError {
     fn from(value: E) -> Self {
         match value.kind() {
-            _ => Self::Other
+            _ => Self::Other,
         }
     }
 }

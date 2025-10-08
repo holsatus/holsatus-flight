@@ -1,8 +1,8 @@
 use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Ticker};
 
-use crate::types::blackbox::{get_angle_log, LoggableType};
 use crate::types::blackbox::get_rate_log;
+use crate::types::blackbox::{get_angle_log, LoggableType};
 
 use crate::errors::BlackboxError;
 use crate::{get_or_warn, signals as s};
@@ -21,9 +21,9 @@ pub async fn main() -> ! {
     let mut counter = 0u8;
     loop {
         // Update the log preset of wait for the next logging tick
-        if let Either::First(new_preset)= select(rcv_log_preset.changed(), ticker.next()).await {
+        if let Either::First(new_preset) = select(rcv_log_preset.changed(), ticker.next()).await {
             preset = new_preset;
-            continue
+            continue;
         }
 
         // RATE LOG

@@ -3,7 +3,6 @@ use mavio::dialects::common::messages::MissionItemInt;
 use crate::errors::MavlinkError;
 
 pub async fn handle_mission_item_int(mission: MissionItemInt) -> Result<(), MavlinkError> {
-
     // TODO: Implement mission protocol
     match mission.command {
         // MavCmd::MAV_CMD_MISSION_START => todo!(),

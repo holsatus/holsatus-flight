@@ -6,10 +6,10 @@ pub use crate::filters::Linear;
 
 use super::Binding;
 
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize, num_enum::TryFromPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
 pub enum Axis {
-
     // Primary control axes
     Roll,
     Pitch,
@@ -25,9 +25,9 @@ pub enum Axis {
     Aux6,
     Aux7,
     Aux8,
-    Aux9,
-
+    
     // Maybe excessive, but might as well
+    Aux9,
     Aux10,
     Aux11,
     Aux12,
@@ -44,9 +44,19 @@ pub struct AnalogBind {
     pub in_min: u16,
     pub in_max: u16,
     pub deadband: u8,
-    pub fullrange: bool,
-    pub reverse: bool,
+    pub flags: AnalogFlags,
     pub rates: Rates,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct AnalogFlags(u8);
+
+bitflags::bitflags! {
+    impl AnalogFlags: u8 {
+        const FULLRANGE = 1 << 0;
+        const REVERSE = 1 << 0;
+    }
 }
 
 impl From<AnalogBind> for Binding {
@@ -69,10 +79,9 @@ impl AnalogBind {
         }
 
         // Normalize and clamp the value to the range (-1, 1)
-        let value = ((2 * value) as f32 / (self.in_max - self.in_min - 1) as f32)
-            .clamp(-1., 1.);
+        let value = ((2 * value) as f32 / (self.in_max - self.in_min - 1) as f32).clamp(-1., 1.);
 
-        if self.reverse {
+        if self.flags.contains(AnalogFlags::REVERSE) {
             -value
         } else {
             value
@@ -91,11 +100,10 @@ impl AnalogBind {
         }
 
         // Normalize and clamp the value to the range (0, 1)
-        let value = (value as f32 / (self.in_max - self.in_min) as f32)
-            .clamp(0., 1.);
+        let value = (value as f32 / (self.in_max - self.in_min) as f32).clamp(0., 1.);
 
         // Reverse the value if needed
-        if self.reverse {
+        if self.flags.contains(AnalogFlags::REVERSE) {
             1.0 - value
         } else {
             value
@@ -149,8 +157,40 @@ impl RatesTrait for Linear<f32> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct Actual {
+pub struct ActualConfig {
+    /// Sensitivity (rate of change) at maximum deflection
+    pub rate: u16,
 
+    /// Expo pushes the effect of `rate` further from the center
+    pub expo: u16,
+
+    /// Sensitivity (rate of change) of input values around center
+    pub cent: u16,
+}
+
+impl Into<Actual> for ActualConfig {
+    fn into(self) -> Actual {
+        Actual {
+            rate: self.rate as f32 / 1000.0,
+            expo: self.expo as f32 / 1000.0,
+            cent: self.cent as f32 / 1000.0,
+        }
+    }
+}
+
+impl Into<ActualConfig> for Actual {
+    fn into(self) -> ActualConfig {
+        ActualConfig {
+            rate: (self.rate * 1000.0) as u16,
+            expo: (self.expo * 1000.0) as u16,
+            cent: (self.cent * 1000.0) as u16,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Actual {
     /// Sensitivity (rate of change) at maximum deflection
     pub rate: f32,
 
@@ -199,12 +239,11 @@ impl Actual {
 
 impl RatesTrait for Actual {
     fn apply(&self, val: f32) -> f32 {
-        self.cent * val + (self.rate - self.cent)
-        * (val.abs() * (val.powi(5) * self.expo + val * (1.0 - self.expo)))
+        self.cent * val
+            + (self.rate - self.cent)
+                * (val.abs() * (val.powi(5) * self.expo + val * (1.0 - self.expo)))
     }
 }
-
-
 
 pub enum ConfigurationError {
     InvalidRange,

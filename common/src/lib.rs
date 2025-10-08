@@ -1,34 +1,37 @@
 #![no_std]
 #![deny(clippy::large_futures)]
 
-
 // Export the logging macros for either defmt or log
 #[macro_use]
 #[macro_export]
 pub mod logging;
 
-pub mod consts;
 pub mod airframe;
 pub mod calibration;
+pub mod consts;
 pub mod drivers;
 pub mod estimators;
 pub mod filters;
+pub mod geo;
 pub mod health;
 pub mod hw_abstraction;
 pub mod parsers;
 pub mod rc_mapping;
+pub mod shell;
 pub mod signals;
 pub mod sync;
+// pub mod task;
 pub mod tasks;
 pub mod types;
 pub mod utils;
-pub mod geo;
-pub mod shell;
+
+mod serial_manager;
 
 pub mod errors;
 
 #[cfg(feature = "mavlink")]
 pub mod mavlink;
+// pub mod mavlink2;
 
 #[cfg(not(feature = "arch-std"))]
 use num_traits::Float;
@@ -60,7 +63,7 @@ macro_rules! get_or_warn {
     ($rcv:ident) => {
         async {
             loop {
-                use embassy_time::{Duration, with_timeout};
+                use embassy_time::{with_timeout, Duration};
                 match with_timeout(Duration::from_secs(1), $rcv.get()).await {
                     Ok(value) => break value,
                     Err(_) => trace!("{}: Awaiting value for <{}>", ID, stringify!($rcv)),

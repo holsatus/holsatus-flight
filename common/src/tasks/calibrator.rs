@@ -1,12 +1,14 @@
 use embassy_futures::select::{select, Either};
 
-use super::configurator::{CfgMsg, CONFIG_RPC};
 use crate::{
     calibration::{
         acc_routine::calibrate_acc,
         gyr_routine::calibrate_gyr_bias,
-        mag_routine::{calibrate_mag, MagCalState}, Calibrate
-    }, filters::rate_pid::Feedback, signals::{self as s, register_error}, tasks::configurator::{SetAccCal, SetGyrCal, SetMagCal}
+        mag_routine::{calibrate_mag, MagCalState},
+        Calibrate,
+    },
+    filters::rate_pid::Feedback,
+    signals::{self as s, register_error},
 };
 
 #[derive(Debug, PartialEq, Clone)]
@@ -33,13 +35,15 @@ pub async fn main() -> ! {
     loop {
         snd_calibrator_state.send(CalibratorState::Idle);
         match rcv_calibrate.changed().await {
-
             // Calibrate accelerometer
-            Calibrate::Acc((acc_calib, Some(idx))) => {
+            Calibrate::Acc(acc_calib, Some(idx)) => {
                 snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Acc));
                 match calibrate_acc(acc_calib, idx).await {
                     Ok(calibration) => {
-                        CONFIG_RPC.request(SetAccCal{id: idx, cal: calibration}).await;
+                        use crate::tasks::imu_reader::{Message, CHANNEL};
+                        if let Some(channel) = CHANNEL.get(idx as usize) {
+                            channel.send(Message::SetAccCalib(calibration)).await;
+                        }
                     }
                     Err(error) => {
                         register_error(error);
@@ -47,19 +51,25 @@ pub async fn main() -> ! {
                     }
                 }
             }
-            Calibrate::Acc((_acc_calib, None)) => {
+            Calibrate::Acc(_acc_calib, None) => {
                 error!("Simultaneous accelerometer calibration not yet supported")
             }
 
             // Calibrate gyroscope
-            Calibrate::Gyr((gyr_calib, Some(idx))) => {
+            Calibrate::Gyr(gyr_calib, Some(idx)) => {
                 snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Gyr));
                 match calibrate_gyr_bias(gyr_calib, idx).await {
                     Ok(calibration_bias) => {
-                        let mut calibration = s::CFG_MULTI_GYR_CAL[idx as usize]
-                            .try_get().unwrap_or_default();
-                        calibration.set_bias(calibration_bias);
-                        CONFIG_RPC.request(SetGyrCal{id: idx, cal: calibration}).await;
+                        use crate::calibration::sens3d::{Calib3DType, SmallCalib3D};
+                        use crate::tasks::imu_reader::{Message, CHANNEL};
+                        if let Some(channel) = CHANNEL.get(idx as usize) {
+                            channel
+                                .send(Message::SetGyrCalib(Calib3DType::Small(SmallCalib3D {
+                                    bias: Some(calibration_bias),
+                                    scale: None,
+                                })))
+                                .await;
+                        }
                     }
                     Err(error) => {
                         register_error(error);
@@ -67,21 +77,23 @@ pub async fn main() -> ! {
                     }
                 }
             }
-            Calibrate::Gyr((_gyr_calib, None)) => {
+            Calibrate::Gyr(_gyr_calib, None) => {
                 error!("Simultaneous gyro calibration not yet supported")
             }
 
             // Calibrate magnetometer
-            Calibrate::Mag((mag_calib, Some(idx))) => {
+            Calibrate::Mag(mag_calib, Some(idx)) => {
+                warn!("Unimplemented!");
                 let feedback = Feedback::new();
-                match select(
-                    calibrate_mag(mag_calib, idx, feedback.handle()),
-                    async { while let Some(state) = feedback.receive().await {
+                match select(calibrate_mag(mag_calib, idx, feedback.handle()), async {
+                    while let Some(state) = feedback.receive().await {
                         snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Mag(state)));
                     }
-                }).await {
-                    Either::First(Ok(calibration)) => {
-                        CONFIG_RPC.request(SetMagCal{id: idx, cal: calibration}).await;
+                })
+                .await
+                {
+                    Either::First(Ok(_calibration)) => {
+                        warn!("Unimplemented!")
                     }
                     Either::First(Err(error)) => {
                         register_error(error);
@@ -92,7 +104,7 @@ pub async fn main() -> ! {
                     }
                 }
             }
-            Calibrate::Mag((_mag_calib, None)) => {
+            Calibrate::Mag(_mag_calib, None) => {
                 error!("Simultaneous gyro calibration not yet supported")
             }
         }

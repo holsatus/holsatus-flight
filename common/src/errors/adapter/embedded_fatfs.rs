@@ -35,7 +35,7 @@ pub enum EmbeddedFatfsError {
     Other,
 }
 
-impl <E> From<Error<BufStreamError<E>>> for EmbeddedFatfsError {
+impl<E> From<Error<BufStreamError<E>>> for EmbeddedFatfsError {
     fn from(value: Error<BufStreamError<E>>) -> Self {
         match value {
             Error::Io(_) => Self::IoDevice,
@@ -54,7 +54,7 @@ impl <E> From<Error<BufStreamError<E>>> for EmbeddedFatfsError {
     }
 }
 
-impl <E> From<Error<BufStreamError<E>>> for HolsatusError {
+impl<E> From<Error<BufStreamError<E>>> for HolsatusError {
     fn from(value: Error<BufStreamError<E>>) -> Self {
         EmbeddedFatfsError::from(value).into()
     }

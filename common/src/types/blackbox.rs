@@ -1,10 +1,12 @@
 use embassy_time::Instant;
 use serde::{Deserialize, Serialize};
 
-use crate::{filters::rate_pid::RatePidCfg3D, rc_mapping::digital::RcEvent, signals::BLACKBOX_QUEUE};
+use crate::{
+    filters::rate_pid::RatePidCfg3D, rc_mapping::digital::RcEvent, signals::BLACKBOX_QUEUE,
+};
 
-use crate::errors::HolsatusError;
 use super::status::PidTerms;
+use crate::errors::HolsatusError;
 
 #[derive(Debug, Copy, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -60,8 +62,7 @@ impl RateDivision {
     /// clog the log channel. Compared to `should_run_synced` which will try to
     /// ensure that the subdivisions grouped together in time.
     pub fn should_run_balanced(&self, counter: u8) -> bool {
-        self != &RateDivision::Disabled &&
-        counter & self.bits() == self.offset()
+        self != &RateDivision::Disabled && counter & self.bits() == self.offset()
     }
 
     /// Returns true if the subdivision should run for the given counter value.
@@ -70,11 +71,9 @@ impl RateDivision {
     /// well aligned in time. Compared to `should_run_balanced` which will try
     /// to ensure that the subdivisions are evenly distributed in time.
     pub fn should_run_synced(&self, counter: u8) -> bool {
-        self != &RateDivision::Disabled &&
-        counter & self.bits() == 0
+        self != &RateDivision::Disabled && counter & self.bits() == 0
     }
 }
-
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -215,23 +214,19 @@ pub enum Event {
 
 impl From<HolsatusError> for LoggableType {
     fn from(value: HolsatusError) -> Self {
-        LoggableType::Event(
-            TsEvent {
-                timestamp_us: Instant::now().as_micros(),
-                event: Event::Error(value),
-            }
-        )
+        LoggableType::Event(TsEvent {
+            timestamp_us: Instant::now().as_micros(),
+            event: Event::Error(value),
+        })
     }
 }
 
 impl From<RcEvent> for LoggableType {
     fn from(value: RcEvent) -> Self {
-        LoggableType::Event(
-            TsEvent {
-                timestamp_us: Instant::now().as_micros(),
-                event: Event::RcEvent(value),
-            }
-        )
+        LoggableType::Event(TsEvent {
+            timestamp_us: Instant::now().as_micros(),
+            event: Event::RcEvent(value),
+        })
     }
 }
 
@@ -258,17 +253,15 @@ pub async fn log_event(event: Event) {
         .send(LoggableType::Event(TsEvent {
             timestamp_us: Instant::now().as_micros(),
             event,
-        }
-    )).await
+        }))
+        .await
 }
 
 /// Send an error to be logged in the blackbox
 pub fn log_error(error: impl Into<HolsatusError>) {
     // TODO: Handle full queue better TODO: Add option to send to telemetry
-    _ = BLACKBOX_QUEUE
-        .try_send(LoggableType::Event(TsEvent {
-            timestamp_us: Instant::now().as_micros(),
-            event: Event::Error(error.into()),
-        }
-    ));
+    _ = BLACKBOX_QUEUE.try_send(LoggableType::Event(TsEvent {
+        timestamp_us: Instant::now().as_micros(),
+        event: Event::Error(error.into()),
+    }));
 }

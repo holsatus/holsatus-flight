@@ -22,24 +22,33 @@ pub enum MavlinkCommand {
 }
 
 impl super::CommandHandler for MavlinkCommand {
-    async fn handler(&self, mut serial: impl embedded_io_async::Read<Error = embedded_io::ErrorKind> + embedded_io_async::Write<Error = embedded_io::ErrorKind>) -> Result<(), embedded_io::ErrorKind> {
-
+    async fn handler(
+        &self,
+        mut serial: impl embedded_io_async::Read<Error = embedded_io::ErrorKind>
+            + embedded_io_async::Write<Error = embedded_io::ErrorKind>,
+    ) -> Result<(), embedded_io::ErrorKind> {
         match self {
             MavlinkCommand::Status => {
-                serial.write_all(b"Fetching MAVLink status is currently not available\n\r").await?;
+                serial
+                    .write_all(b"Fetching MAVLink status is currently not available\n\r")
+                    .await?;
             }
             MavlinkCommand::Id { set_sys, set_comp } => {
                 if let Some(set_sys) = set_sys {
                     let mut buffer = UBuffer::<32>::new();
                     uwrite!(buffer, "Setting system ID to {}\n\r", set_sys)?;
                     serial.write_all(&buffer.inner).await?;
-                    crate::mavlink::MAV_REQUEST.send(crate::mavlink::MavRequest::SetSysId { id: *set_sys }).await;
+                    crate::mavlink::MAV_REQUEST
+                        .send(crate::mavlink::Request::SetSystemId { id: *set_sys })
+                        .await;
                 }
                 if let Some(set_comp) = set_comp {
                     let mut buffer = UBuffer::<32>::new();
                     uwrite!(buffer, "Setting component ID to {}\n\r", set_comp)?;
                     serial.write_all(&buffer.inner).await?;
-                    crate::mavlink::MAV_REQUEST.send(crate::mavlink::MavRequest::SetCompId { id: *set_comp }).await;
+                    crate::mavlink::MAV_REQUEST
+                        .send(crate::mavlink::Request::SetComponentId { id: *set_comp })
+                        .await;
                 }
             }
         }

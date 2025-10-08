@@ -1,9 +1,8 @@
-
 use crate::signals as s;
 use embassy_time::{Duration, Ticker};
 
 macro_rules! show_rate {
-    
+
     ($($signal:ident$([$idx:literal])? => $prev:ident),* $(,)?) => {
         // Initialize previous message IDs for each signal
         $(

@@ -63,10 +63,7 @@ pub async fn main(driver: impl Driver<'static>, info: &'static HardwareInfo) -> 
     join(run_future(usb), shell_future(class)).await.0
 }
 
-pub async fn shell_future<D: Driver<'static>>(
-    mut serial: CdcAcmClass<'static, D>,
-) -> ! {
-
+pub async fn shell_future<D: Driver<'static>>(mut serial: CdcAcmClass<'static, D>) -> ! {
     const TASK_ID: &str = "usb_manager/echo";
 
     let mut rcv_usb_connected = s::USB_CONNECTED.receiver();
@@ -76,13 +73,12 @@ pub async fn shell_future<D: Driver<'static>>(
         rcv_usb_connected.get_and(|connected| *connected).await;
         serial.wait_connection().await;
 
-        if let Err(e) = crate::shell::run_cli(UsbEio{ usb: &mut serial} ).await {
+        if let Err(e) = crate::shell::run_cli(UsbEio { usb: &mut serial }).await {
             let h_error: crate::errors::adapter::embedded_io::EmbeddedIoError = e.into();
             error!("{}: Error running shell: {:?}", TASK_ID, h_error);
         }
     }
 }
-
 
 pub(super) async fn run_future<D: Driver<'static>>(mut usb: UsbDevice<'static, D>) -> ! {
     const TASK_ID: &str = "usb_manager/run";
@@ -111,17 +107,17 @@ struct UsbEio<'a, D: Driver<'static>> {
     usb: &'a mut CdcAcmClass<'static, D>,
 }
 
-impl <'a, D: Driver<'static>> embedded_io_async::ErrorType for UsbEio<'a, D> {
+impl<'a, D: Driver<'static>> embedded_io_async::ErrorType for UsbEio<'a, D> {
     type Error = embedded_io_async::ErrorKind;
 }
 
-impl <'a, D: Driver<'static>> embedded_io_async::Read for UsbEio<'a, D> {
+impl<'a, D: Driver<'static>> embedded_io_async::Read for UsbEio<'a, D> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         self.usb.read_packet(buf).await.map_err(err_map)
     }
 }
 
-impl <'a, D: Driver<'static>> embedded_io_async::Write for UsbEio<'a,D> {
+impl<'a, D: Driver<'static>> embedded_io_async::Write for UsbEio<'a, D> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         trace!("Writing {} bytes to USB: {:?}", buf.len(), buf);
         let mut written = 0;
@@ -133,7 +129,7 @@ impl <'a, D: Driver<'static>> embedded_io_async::Write for UsbEio<'a,D> {
     }
 }
 
-impl <'a, D: Driver<'static>> embedded_io::Write for UsbEio<'a,D> {
+impl<'a, D: Driver<'static>> embedded_io::Write for UsbEio<'a, D> {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         embassy_futures::block_on(async {
             <Self as embedded_io_async::Write>::write(self, buf).await

@@ -1,58 +1,82 @@
-use core::cell::RefCell;
-
-use critical_section::Mutex;
 use maitake_sync::WaitQueue;
-use mutex::raw_impls::cs::CriticalSectionRawMutex;
+use mutex::{BlockingMutex, ConstInit, ScopedRawMutex};
 
-pub struct Watch<T> {
-    state: Mutex<RefCell<State<T>>>,
-    wait: WaitQueue<CriticalSectionRawMutex>,
+pub struct Watch<T, M: ScopedRawMutex> {
+    state: BlockingMutex<M, State<T>>,
+    wait: WaitQueue<M>,
+}
+
+impl<T: Clone, M: ScopedRawMutex + ConstInit> Default for Watch<T, M> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 struct State<T> {
     value: Option<T>,
-    msg_id: usize
+    msg_id: usize,
 }
 
-impl <T: Clone> Watch<T> {
-
-    pub const fn new() -> Self {
+impl<T: Clone, M: ScopedRawMutex> Watch<T, M> {
+    pub const fn new() -> Self
+    where
+        M: ConstInit,
+    {
         Self {
-            wait: WaitQueue::new_with_raw_mutex(CriticalSectionRawMutex::new()),
-            state: Mutex::new(RefCell::new(State{
+            wait: WaitQueue::new_with_raw_mutex(M::INIT),
+            state: BlockingMutex::new(State {
                 value: None,
                 msg_id: 0,
-            })),
+            }),
         }
     }
 
-    pub const fn sender(&self) -> Sender<'_, T> {
+    pub const fn sender(&self) -> Sender<'_, T, M> {
         Sender { watch: self }
     }
 
-    pub const fn receiver(&self) -> Receiver<'_, T> {
-        Receiver { watch: self, msg_id: 0 }
+    pub const fn receiver(&self) -> Receiver<'_, T, M> {
+        Receiver {
+            watch: self,
+            msg_id: 0,
+        }
     }
 
     pub fn try_get(&self) -> Option<T> {
-        self.inner_getter(None, None).map(|(value, _)|value)
+        self.inner_getter(None, None).map(|(value, _)| value)
+    }
+
+    pub fn is(&self, other: &T) -> bool
+    where
+        T: PartialEq,
+    {
+        self.state
+            .with_lock(|state| state.value.as_ref().is_some_and(|inner| inner == other))
     }
 
     pub fn try_get_and(&self, mut pred: impl FnMut(&T) -> bool) -> Option<T> {
-        self.inner_getter(None, Some(&mut pred)).map(|(value, _)|value)
+        self.inner_getter(None, Some(&mut pred))
+            .map(|(value, _)| value)
     }
 
     pub fn get_msg_id(&self) -> usize {
-        critical_section::with(|cs|{
-            self.state.borrow_ref(cs).msg_id
-        })
+        self.state.with_lock(|state| state.msg_id)
     }
 
-    fn send(&self, value: T) {
-        critical_section::with(|cs| {
-            let mut borrow = self.state.borrow_ref_mut(cs);
-            borrow.msg_id = borrow.msg_id.wrapping_add(1);
-            borrow.value = Some(value);
+    pub fn send(&self, value: T) {
+        self.state.with_lock(|state| {
+            state.msg_id = state.msg_id.wrapping_add(1);
+            state.value = Some(value);
+        });
+        self.wait.wake_all();
+    }
+
+    fn modify(&self, value: impl FnOnce(&mut T)) {
+        self.state.with_lock(|state| {
+            if let Some(inner) = &mut state.value {
+                state.msg_id = state.msg_id.wrapping_add(1);
+                value(inner);
+            }
         });
         self.wait.wake_all();
     }
@@ -60,18 +84,16 @@ impl <T: Clone> Watch<T> {
     fn inner_getter(
         &self,
         msg_id: Option<usize>,
-        pred: Option<&mut dyn FnMut(&T) -> bool>
+        pred: Option<&mut dyn FnMut(&T) -> bool>,
     ) -> Option<(T, usize)> {
-        critical_section::with(|cs| {
-            let b = self.state.borrow_ref(cs);
-
+        self.state.with_lock(|state| {
             // Check if the Watch's msg_id is newer than our own.
             //
             // Use wrapping sub instead of b.msg_id > msg_id, to account for overflow, and to
             // ensure an overflowed subtraction will not panic. In theory, a receiver that is
             // _exactly_ 2^usize::BITS messages behind will be able to miss that particular
             // message. Though that seems extremely unlikely in any real application (right?)
-            if msg_id.is_some_and(|msg_id|b.msg_id.wrapping_sub(msg_id) == 0) {
+            if msg_id.is_some_and(|msg_id| state.msg_id.wrapping_sub(msg_id) == 0) {
                 return None;
             }
 
@@ -79,26 +101,26 @@ impl <T: Clone> Watch<T> {
             //
             // Though since the check above is more likely to fail in the average running program
             // we check that first, so we can return earlier.
-            let Some(value) = &b.value else {
+            let Some(value) = &state.value else {
                 return None;
             };
 
             // Finally test whether the predicate function (if any) is happy
-            if pred.is_some_and(|pred|!pred(value)) {
+            if pred.is_some_and(|pred| !pred(value)) {
                 return None;
             }
 
-            Some((value.clone(), b.msg_id))
+            Some((value.clone(), state.msg_id))
         })
     }
 }
 
-pub struct Receiver<'a, T> {
-    watch: &'a Watch<T>,
-    msg_id: usize
+pub struct Receiver<'a, T, M: ScopedRawMutex> {
+    watch: &'a Watch<T, M>,
+    msg_id: usize,
 }
 
-impl <'a, T: Clone> Receiver<'a, T> {
+impl<T: Clone, M: ScopedRawMutex> Receiver<'_, T, M> {
     pub async fn changed(&mut self) -> T {
         loop {
             // The `Wait` is guaranteed to get woken by a `wake_all`
@@ -112,16 +134,18 @@ impl <'a, T: Clone> Receiver<'a, T> {
                     // This future should never fail to yield Result::Ok
                     let result = wait_future.await;
                     debug_assert!(result.is_ok())
-                },
+                }
             }
         }
     }
 
     pub fn try_changed(&mut self) -> Option<T> {
-        self.watch.inner_getter(Some(self.msg_id), None).map(|(value, msg_id)| {
-            self.msg_id = msg_id;
-            value
-        })
+        self.watch
+            .inner_getter(Some(self.msg_id), None)
+            .map(|(value, msg_id)| {
+                self.msg_id = msg_id;
+                value
+            })
     }
 
     pub async fn changed_and(&mut self, mut pred: impl FnMut(&T) -> bool) -> T {
@@ -132,16 +156,18 @@ impl <'a, T: Clone> Receiver<'a, T> {
                 _ => {
                     let result = wait_future.await;
                     debug_assert!(result.is_ok())
-                },
+                }
             }
         }
     }
 
     pub fn try_changed_and(&mut self, mut pred: impl FnMut(&T) -> bool) -> Option<T> {
-        self.watch.inner_getter(Some(self.msg_id), Some(&mut pred)).map(|(value, msg_id)| {
-            self.msg_id = msg_id;
-            value
-        })
+        self.watch
+            .inner_getter(Some(self.msg_id), Some(&mut pred))
+            .map(|(value, msg_id)| {
+                self.msg_id = msg_id;
+                value
+            })
     }
 
     pub async fn get(&mut self) -> T {
@@ -152,7 +178,7 @@ impl <'a, T: Clone> Receiver<'a, T> {
                 _ => {
                     let result = wait_future.await;
                     debug_assert!(result.is_ok())
-                },
+                }
             }
         }
     }
@@ -172,38 +198,72 @@ impl <'a, T: Clone> Receiver<'a, T> {
                 _ => {
                     let result = wait_future.await;
                     debug_assert!(result.is_ok())
-                },
+                }
             }
         }
     }
 
     pub fn try_get_and(&mut self, mut pred: impl FnMut(&T) -> bool) -> Option<T> {
-        self.watch.inner_getter(None, Some(&mut pred)).map(|(value, msg_id)| {
-            self.msg_id = msg_id;
-            value
-        })
+        self.watch
+            .inner_getter(None, Some(&mut pred))
+            .map(|(value, msg_id)| {
+                self.msg_id = msg_id;
+                value
+            })
     }
 }
 
-pub struct Sender<'a, T> {
-    watch: &'a Watch<T>
+pub struct Sender<'a, T, M: ScopedRawMutex> {
+    watch: &'a Watch<T, M>,
 }
 
-impl <'a, T: Clone> Sender<'a, T> {
+impl<T: Clone, M: ScopedRawMutex> Sender<'_, T, M> {
     pub fn send(&mut self, value: T) {
         self.watch.send(value);
+    }
+
+    pub fn modify(&mut self, value: impl FnOnce(&mut T)) {
+        self.watch.modify(value);
     }
 }
 
 #[cfg(test)]
-mod tests{
+mod tests {
 
-    use embassy_futures::yield_now;
+    use core::{
+        future::Future,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
     use futures::task::SpawnExt;
+    use mutex::raw_impls::cs::CriticalSectionRawMutex;
 
     use super::*;
 
     static TEST_NUMBERS: &[i32] = &[1, 3, 3, 7];
+
+    pub fn yield_now() -> impl Future<Output = ()> {
+        YieldNowFuture { yielded: false }
+    }
+
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    struct YieldNowFuture {
+        yielded: bool,
+    }
+
+    impl Future for YieldNowFuture {
+        type Output = ();
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if self.yielded {
+                Poll::Ready(())
+            } else {
+                self.yielded = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
 
     async fn multi_yield(num: usize) {
         for _ in 0..num {
@@ -213,96 +273,107 @@ mod tests{
 
     #[test]
     fn test_async_changed() {
-        static WATCH: Watch<i32> = Watch::new();
+        static WATCH: Watch<i32, CriticalSectionRawMutex> = Watch::new();
         let mut spawner = futures_executor::LocalPool::new();
 
         // Receiver task
-        spawner.spawner().spawn(async {
-            let mut receiver = WATCH.receiver();
-
-            for expected in TEST_NUMBERS {
-                assert_eq!(receiver.changed().await, *expected);
-                multi_yield(5).await;
-            }
-        }).unwrap();
-
-        // Sender task
-        spawner.spawner().spawn(async {
-            let mut sender = WATCH.sender();
-
-            for number in TEST_NUMBERS {
-                sender.send(*number);
-                multi_yield(10).await;
-            }
-        }).unwrap();
-
-        spawner.run();
-    }
-
-
-    #[test]
-    fn test_async_multi_changed() {
-        static WATCH: Watch<i32> = Watch::new();
-        let mut spawner = futures_executor::LocalPool::new();
-
-        // Receiver _multiple_ tasks
-        for _ in 0..10 {
-            spawner.spawner().spawn(async {
+        spawner
+            .spawner()
+            .spawn(async {
                 let mut receiver = WATCH.receiver();
 
                 for expected in TEST_NUMBERS {
                     assert_eq!(receiver.changed().await, *expected);
                     multi_yield(5).await;
                 }
-            }).unwrap();
-        }
+            })
+            .unwrap();
 
         // Sender task
-        spawner.spawner().spawn(async {
-            let mut sender = WATCH.sender();
+        spawner
+            .spawner()
+            .spawn(async {
+                let mut sender = WATCH.sender();
 
-            for number in TEST_NUMBERS {
-                sender.send(*number);
-                multi_yield(10).await;
-            }
-        }).unwrap();
+                for number in TEST_NUMBERS {
+                    sender.send(*number);
+                    multi_yield(10).await;
+                }
+            })
+            .unwrap();
 
         spawner.run();
     }
 
+    #[test]
+    fn test_async_multi_changed() {
+        static WATCH: Watch<i32, CriticalSectionRawMutex> = Watch::new();
+        let mut spawner = futures_executor::LocalPool::new();
+
+        // Receiver _multiple_ tasks
+        for _ in 0..10 {
+            spawner
+                .spawner()
+                .spawn(async {
+                    let mut receiver = WATCH.receiver();
+
+                    for expected in TEST_NUMBERS {
+                        assert_eq!(receiver.changed().await, *expected);
+                        multi_yield(5).await;
+                    }
+                })
+                .unwrap();
+        }
+
+        // Sender task
+        spawner
+            .spawner()
+            .spawn(async {
+                let mut sender = WATCH.sender();
+
+                for number in TEST_NUMBERS {
+                    sender.send(*number);
+                    multi_yield(10).await;
+                }
+            })
+            .unwrap();
+
+        spawner.run();
+    }
 
     #[test]
     fn test_async_get() {
-        static WATCH: Watch<i32> = Watch::new();
+        static WATCH: Watch<i32, CriticalSectionRawMutex> = Watch::new();
         let mut spawner = futures_executor::LocalPool::new();
 
         // Send value _once_
         WATCH.sender().send(10);
 
         // Receiver task
-        spawner.spawner().spawn(async {
-            let mut receiver = WATCH.receiver();
+        spawner
+            .spawner()
+            .spawn(async {
+                let mut receiver = WATCH.receiver();
 
-            // Without yielding
-            for _ in 0..5 {
-                assert_eq!(receiver.get().await, 10);
-            }
+                // Without yielding
+                for _ in 0..5 {
+                    assert_eq!(receiver.get().await, 10);
+                }
 
-            // With yielding
-            for _ in 0..5 {
-                assert_eq!(receiver.get().await, 10);
-                multi_yield(10).await
-            }
-        }).unwrap();
+                // With yielding
+                for _ in 0..5 {
+                    assert_eq!(receiver.get().await, 10);
+                    multi_yield(10).await
+                }
+            })
+            .unwrap();
 
         spawner.run();
     }
 
-
     #[test]
     fn test_various() {
-
-        static WATCH: Watch<i32> = Watch::new();
+        static WATCH: Watch<i32, CriticalSectionRawMutex> = Watch::new();
 
         let mut sender = WATCH.sender();
         let mut receiver = WATCH.receiver();
@@ -323,22 +394,20 @@ mod tests{
 
         sender.send(30);
 
-        assert_eq!(receiver.try_get_and(|v|v > &25), Some(30));
-        assert_eq!(receiver.try_get_and(|v|v > &35), None);
-        assert_eq!(receiver.try_get_and(|v|v > &25), Some(30));
+        assert_eq!(receiver.try_get_and(|v| v > &25), Some(30));
+        assert_eq!(receiver.try_get_and(|v| v > &35), None);
+        assert_eq!(receiver.try_get_and(|v| v > &25), Some(30));
 
         sender.send(40);
 
-        assert_eq!(receiver.try_changed_and(|v|v > &25), Some(40));
-        assert_eq!(receiver.try_changed_and(|v|v > &35), None);
-        assert_eq!(receiver.try_changed_and(|v|v > &25), None);
+        assert_eq!(receiver.try_changed_and(|v| v > &25), Some(40));
+        assert_eq!(receiver.try_changed_and(|v| v > &35), None);
+        assert_eq!(receiver.try_changed_and(|v| v > &25), None);
     }
-
 
     #[test]
     fn test_overflowing() {
-
-        static WATCH: Watch<i32> = Watch::new();
+        static WATCH: Watch<i32, CriticalSectionRawMutex> = Watch::new();
 
         let mut sender = WATCH.sender();
         let mut receiver = WATCH.receiver();
@@ -347,9 +416,7 @@ mod tests{
         sender.send(10);
 
         // Force the msg_id to almost overflow
-        critical_section::with(|cs| {
-            WATCH.state.borrow_ref_mut(cs).msg_id = usize::MAX - 5;
-        });
+        WATCH.state.with_lock(|inner| inner.msg_id = usize::MAX - 5);
 
         // Make the receiver update its internal msg_id
         assert_eq!(receiver.try_changed(), Some(10));

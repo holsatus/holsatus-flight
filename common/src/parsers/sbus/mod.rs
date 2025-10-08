@@ -41,6 +41,7 @@ pub enum State {
 pub struct SbusParser {
     buffer: [u8; PACKET_SIZE],
     state: State,
+    len: usize,
 }
 
 impl SbusParser {
@@ -48,6 +49,7 @@ impl SbusParser {
         SbusParser {
             buffer: [0; PACKET_SIZE],
             state: State::AwaitingHead,
+            len: 0,
         }
     }
 
@@ -72,6 +74,19 @@ impl SbusParser {
         }
 
         None
+    }
+
+    pub async fn read(&mut self, mut reader: impl super::BufReadExt + embedded_io_async::Read) -> Result<SbusPacket, ParseError> {
+
+        // Read until we reach a sync byte
+        let skipped = reader.skip_until(HEAD_BYTE).await.map_err(|_|ParseError::NoSyncronization)?;
+        self.buffer[0] = HEAD_BYTE;
+
+        if skipped > 0 { warn!("Skipped {} bytes to find SBUS header", skipped) }
+
+        reader.read_exact(&mut self.buffer[1..]).await.map_err(|_|ParseError::NoSyncronization)?;
+
+        self.try_parse()
     }
 
     /// Push array of `u8` bytes into buffer.
@@ -154,6 +169,7 @@ impl SbusParser {
 
         // Initialize channels with 11-bit mask
         let mut ch: [u16; 16] = [0x07FF; 16];
+
         // Trust me bro
         ch[0] &= (buf[1] as u16) | (buf[2] as u16) << 8;
         ch[1] &= (buf[2] as u16) >> 3 | (buf[3] as u16) << 5;
@@ -202,8 +218,8 @@ fn is_flag_set(flag_byte: u8, shift_by: u8) -> bool {
 mod tests {
     use hex_literal::hex;
 
-    use crate::parsers::sbus;
     use crate::errors::ParseError;
+    use crate::parsers::sbus;
 
     const RAW_BYTES: [u8; 25] =
         hex!("0F E0 03 1F 58 C0 07 16 B0 80 05 2C 60 01 0B F8 C0 07 00 00 00 00 00 03 00");

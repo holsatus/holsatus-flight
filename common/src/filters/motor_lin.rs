@@ -10,8 +10,8 @@ pub struct MotorLin<T: Float> {
     f_max: T,
 }
 
-impl <T: Float> MotorLin<T> {
-    pub fn new(a: T, b: T, min :T, max: T) -> Self {
+impl<T: Float> MotorLin<T> {
+    pub fn new(a: T, b: T, min: T, max: T) -> Self {
         let mut this = Self {
             a,
             b,
@@ -29,12 +29,12 @@ impl <T: Float> MotorLin<T> {
 
     pub fn command_to_force(&self, command: T) -> T {
         let x = command.clamp(self.c_min, self.c_max);
-        self.a*x*x/(T::one() + self.b*x*x)
+        self.a * x * x / (T::one() + self.b * x * x)
     }
 
     pub fn force_to_command(&self, thrust: T) -> T {
         let x = thrust.clamp(self.f_min, self.f_max);
-        (x/(self.a - x*self.b)).sqrt()
+        (x / (self.a - x * self.b)).sqrt()
     }
 
     /// Map a thrust command from the range [0,1] to [0,1] with the inverse mapping function
@@ -50,5 +50,4 @@ impl <T: Float> MotorLin<T> {
     pub fn max_force(&self) -> T {
         self.f_max
     }
-
 }

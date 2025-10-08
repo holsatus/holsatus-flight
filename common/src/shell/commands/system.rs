@@ -7,7 +7,6 @@ use ufmt::uwrite;
 
 use crate::shell::{UBuffer, INTERRUPT};
 
-
 #[derive(Command)]
 #[command(help_title = "System commands")]
 pub enum SystemCommand {
@@ -16,25 +15,25 @@ pub enum SystemCommand {
 
     /// Show the system uptime
     Uptime {
-
         /// The update frequency of the uptime display
         #[arg(short = 'f', long)]
-        frequency: Option<u8>
+        frequency: Option<u8>,
     },
 }
 
 impl super::CommandHandler for SystemCommand {
-    async fn handler(&self, mut serial: impl Read<Error = ErrorKind> + Write<Error = ErrorKind>) -> Result<(), ErrorKind> {
+    async fn handler(
+        &self,
+        mut serial: impl Read<Error = ErrorKind> + Write<Error = ErrorKind>,
+    ) -> Result<(), ErrorKind> {
         match self {
             SystemCommand::Reboot => {
                 serial.write_all(b"Rebooting...\n").await?;
-            },
+            }
             SystemCommand::Uptime { frequency } => {
-
                 // Configure ticker if a frequency is provided
-                let mut maybe_ticker = frequency.map(|f|
-                    Ticker::every(Duration::from_hz(f as u64))
-                );
+                let mut maybe_ticker =
+                    frequency.map(|f| Ticker::every(Duration::from_hz(f as u64)));
 
                 loop {
                     let millis = embassy_time::Instant::now().as_millis();
@@ -48,19 +47,22 @@ impl super::CommandHandler for SystemCommand {
                         None => break,
                         Some(ticker) => {
                             let mut bytes = [0u8];
-                            if let Either::First(res) = select(
-                                serial.read(&mut bytes[..]),
-                                ticker.next()).await 
+                            if let Either::First(res) =
+                                select(serial.read(&mut bytes[..]), ticker.next()).await
                             {
                                 match res {
-                                    Ok(_) => if bytes[0] == *INTERRUPT { break },
+                                    Ok(_) => {
+                                        if bytes[0] == *INTERRUPT {
+                                            break;
+                                        }
+                                    }
                                     Err(e) => return Err(e),
                                 }
                             }
-                        },
+                        }
                     }
                 }
-            },
+            }
         }
 
         Ok(())

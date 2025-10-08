@@ -1,4 +1,3 @@
-
 use crate::signals as s;
 use embassy_time::{Duration, Ticker};
 

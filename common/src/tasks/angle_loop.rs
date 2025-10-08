@@ -3,7 +3,8 @@ use core::f32::consts::PI;
 use nalgebra::UnitQuaternion;
 
 use crate::{
-    filters::{angle_pid::Pid, SlewRate}, get_or_warn, signals as sig
+    filters::{angle_pid::Pid, SlewRate},
+    get_or_warn, signals as sig,
 };
 
 #[embassy_executor::task]
@@ -45,7 +46,7 @@ pub async fn main() -> ! {
     info!("{}: Entering main loop", ID);
     loop {
         let attitude = rcv_attitude.changed().await;
-        let angle_sp = rcv_angle_sp.get().await.map(|e|e / 12.);
+        let angle_sp = rcv_angle_sp.get().await.map(|e| e / 12.);
 
         let slew_sp = [
             slew[0].update(angle_sp[0]),

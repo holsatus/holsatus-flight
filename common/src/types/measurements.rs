@@ -1,9 +1,21 @@
 use num_traits::Num;
 use serde::{Deserialize, Serialize};
 
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ViconData {
+    pub timestamp_us: u64,
+    pub quality: u8,
+    pub position: [f32; 3],
+    pub attitude: [f32; 3],
+}
+
+
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Imu6DofData<T: Num> {
+    pub timestamp_us: u64,
     pub gyr: [T; 3],
     pub acc: [T; 3],
 }
@@ -11,6 +23,7 @@ pub struct Imu6DofData<T: Num> {
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Imu9DofData<T: Num> {
+    pub timestamp_us: u64,
     pub gyr: [T; 3],
     pub acc: [T; 3],
     pub mag: [T; 3],
@@ -19,6 +32,7 @@ pub struct Imu9DofData<T: Num> {
 impl<T: Num> From<Imu9DofData<T>> for Imu6DofData<T> {
     fn from(data: Imu9DofData<T>) -> Self {
         Self {
+            timestamp_us: data.timestamp_us,
             gyr: data.gyr,
             acc: data.acc,
         }
@@ -39,6 +53,7 @@ pub struct GnssTime {
 #[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct GnssData {
+    pub timestamp_us: u64,
     pub time: GnssTime,
     pub fix: GnssFix,
     pub satellites: u8,
@@ -71,7 +86,7 @@ pub enum GnssFix {
     TimeOnly,
 }
 
-impl From<ublox::GpsFix> for GnssFix{
+impl From<ublox::GpsFix> for GnssFix {
     fn from(fix: ublox::GpsFix) -> Self {
         match fix {
             ublox::GpsFix::Fix2D => Self::Fix2D,
