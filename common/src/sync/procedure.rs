@@ -1,23 +1,25 @@
 use core::sync::atomic::Ordering;
-use maitake_sync::wait_map::WaitMap;
+use maitake_sync::{blocking::DefaultMutex, wait_map::WaitMap};
 use mutex::{ConstInit, ScopedRawMutex};
 use portable_atomic::AtomicUsize;
 
 use super::channel::Channel;
 
-pub struct Procedure<M: ScopedRawMutex, Req, Res, const N: usize> {
+pub struct Procedure<Req, Res, const N: usize, M: ScopedRawMutex = DefaultMutex> {
     index: AtomicUsize,
-    chan: Channel<(Req, Option<usize>), M, N>,
+    chan: Channel<(Req, Option<usize>), N, M>,
     map: WaitMap<usize, Option<Res>, M>,
 }
 
-impl <M: ScopedRawMutex + ConstInit, Req, Res, const N: usize> Default for Procedure<M, Req, Res, N> {
+impl<M: ScopedRawMutex + ConstInit, Req, Res, const N: usize> Default
+    for Procedure<Req, Res, N, M>
+{
     fn default() -> Self {
         Procedure::new()
     }
 }
 
-impl<M: ScopedRawMutex, Req, Res, const N: usize> Procedure<M, Req, Res, N> {
+impl<M: ScopedRawMutex, Req, Res, const N: usize> Procedure<Req, Res, N, M> {
     pub const fn new() -> Self
     where
         M: ConstInit,
@@ -90,19 +92,26 @@ pub struct Handle<'a, Res> {
     idx: Option<usize>,
 }
 
-impl<Res> Handle<'_, Res> {
+impl<'a, Res> Handle<'a, Res> {
+    /// Returns true if the sender of this request expects a response.
+    ///
+    /// This may be checked if the response is expensive to compute.
+    pub fn expects_response(&self) -> bool {
+        self.idx.is_some()
+    }
+
     /// Respond to the request, consuming this handle
     /// and waking the requestee.
     pub fn respond(self, res: Res) {
-        if let Some(idx) = self.idx {
-            self.map.wake(idx, Some(res));
+        if let Some(index) = self.idx {
+            self.map.wake(index, Some(res));
         }
     }
 
     /// Notify the requestor that the request is closed.
     fn close(&self) {
-        if let Some(idx) = self.idx {
-            self.map.wake(idx, None);
+        if let Some(index) = self.idx {
+            self.map.wake(index, None);
         }
     }
 }
@@ -115,11 +124,10 @@ impl<Res> Drop for Handle<'_, Res> {
 
 // ---- playground ----
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "defmt")))]
 mod tests {
 
     use futures::task::SpawnExt;
-    use mutex::raw_impls::cs::CriticalSectionRawMutex as M;
 
     use super::*;
 
@@ -137,7 +145,7 @@ mod tests {
 
     #[test]
     fn test() {
-        static PROCEDURE: Procedure<M, Command, Response, 10> = Procedure::new();
+        static PROCEDURE: Procedure<Command, Response, 10> = Procedure::new();
         let mut spawner = futures_executor::LocalPool::new();
 
         spawner

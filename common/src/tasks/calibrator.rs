@@ -7,8 +7,9 @@ use crate::{
         mag_routine::{calibrate_mag, MagCalState},
         Calibrate,
     },
-    filters::rate_pid::Feedback,
+    calibration::Feedback,
     signals::{self as s, register_error},
+    tasks::param_storage,
 };
 
 #[derive(Debug, PartialEq, Clone)]
@@ -36,13 +37,21 @@ pub async fn main() -> ! {
         snd_calibrator_state.send(CalibratorState::Idle);
         match rcv_calibrate.changed().await {
             // Calibrate accelerometer
-            Calibrate::Acc(acc_calib, Some(idx)) => {
+            Calibrate::Acc(acc_calib, _) => {
+                let idx = 0;
                 snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Acc));
                 match calibrate_acc(acc_calib, idx).await {
                     Ok(calibration) => {
-                        use crate::tasks::imu_reader::{Message, CHANNEL};
+                        use crate::tasks::imu_reader::{params::TABLE, Message, CHANNEL};
+
+                        // TODO: This is hacky. Subsystems should not modify parameter tables directly
                         if let Some(channel) = CHANNEL.get(idx as usize) {
-                            channel.send(Message::SetAccCalib(calibration)).await;
+                            let mut table = TABLE.params.write().await;
+                            table.cal_acc = calibration;
+                            info!("[{}] Setting acc calib: {:?}", ID, table.cal_acc);
+                            channel.send(Message::ReloadParams).await;
+                            param_storage::send(param_storage::Request::SaveTable(TABLE.name))
+                                .await;
                         }
                     }
                     Err(error) => {
@@ -51,23 +60,26 @@ pub async fn main() -> ! {
                     }
                 }
             }
-            Calibrate::Acc(_acc_calib, None) => {
-                error!("Simultaneous accelerometer calibration not yet supported")
-            }
-
             // Calibrate gyroscope
-            Calibrate::Gyr(gyr_calib, Some(idx)) => {
+            Calibrate::Gyr(gyr_calib, _) => {
+                let idx = 0;
                 snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Gyr));
                 match calibrate_gyr_bias(gyr_calib, idx).await {
                     Ok(calibration_bias) => {
-                        use crate::calibration::sens3d::{Calib3DType, SmallCalib3D};
-                        use crate::tasks::imu_reader::{Message, CHANNEL};
+                        use crate::calibration::sens3d::Calib3D;
+                        use crate::tasks::imu_reader::{params::TABLE, Message, CHANNEL};
+
+                        // TODO: This is hacky. Subsystems should not modify parameter tables directly
                         if let Some(channel) = CHANNEL.get(idx as usize) {
-                            channel
-                                .send(Message::SetGyrCalib(Calib3DType::Small(SmallCalib3D {
-                                    bias: Some(calibration_bias),
-                                    scale: None,
-                                })))
+                            let mut table = TABLE.params.write().await;
+                            table.cal_gyr = Calib3D {
+                                bias: calibration_bias.into(),
+                                ..Calib3D::const_default()
+                            };
+
+                            info!("[{}] Setting gyr calib: {:?}", ID, table.cal_gyr);
+                            channel.send(Message::ReloadParams).await;
+                            param_storage::send(param_storage::Request::SaveTable(TABLE.name))
                                 .await;
                         }
                     }
@@ -77,12 +89,9 @@ pub async fn main() -> ! {
                     }
                 }
             }
-            Calibrate::Gyr(_gyr_calib, None) => {
-                error!("Simultaneous gyro calibration not yet supported")
-            }
-
             // Calibrate magnetometer
-            Calibrate::Mag(mag_calib, Some(idx)) => {
+            Calibrate::Mag(mag_calib, _) => {
+                let idx = 0;
                 warn!("Unimplemented!");
                 let feedback = Feedback::new();
                 match select(calibrate_mag(mag_calib, idx, feedback.handle()), async {
@@ -103,9 +112,6 @@ pub async fn main() -> ! {
                         error!("Calibration feedback signal was dropped")
                     }
                 }
-            }
-            Calibrate::Mag(_mag_calib, None) => {
-                error!("Simultaneous gyro calibration not yet supported")
             }
         }
     }

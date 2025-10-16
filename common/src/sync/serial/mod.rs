@@ -1,7 +1,7 @@
 use maitake_sync::WaitCell;
 
 mod error;
-use error::AtomicError;
+use error::AtomicErrorKind;
 
 mod grant;
 pub use grant::{GrantReader, GrantWriter};
@@ -10,11 +10,10 @@ mod hard;
 pub use hard::{HardReader, HardWriter};
 
 mod soft;
-pub use soft::{SoftReader, SoftWriter, BufReadExt};
+pub use soft::{BufReadExt, SoftReader, SoftWriter};
 
-mod bbbuffer;
-pub use bbbuffer::BufferState;
-
+mod buffer;
+pub use buffer::BufferState;
 
 /// Internal state to back a [`SerialWriter`] or [`SerialReader`] connection
 ///
@@ -42,7 +41,7 @@ pub struct SerialState {
     buffer: BufferState,
     wait_writer: WaitCell,
     wait_reader: WaitCell,
-    error: AtomicError,
+    error: AtomicErrorKind,
 }
 
 impl SerialState {
@@ -63,7 +62,7 @@ impl SerialState {
             buffer: BufferState::new(),
             wait_writer: WaitCell::new(),
             wait_reader: WaitCell::new(),
-            error: AtomicError::new(),
+            error: AtomicErrorKind::new(),
         }
     }
 }
@@ -124,15 +123,8 @@ impl<'a> SerialWriter<'a> {
     pub fn new(state: &'a SerialState, buf: &'a mut [u8]) -> Option<SerialWriter<'a>> {
         let (producer, consumer) = state.buffer.init(buf)?;
 
-        let software = soft::SoftWriter {
-            producer,
-            state,
-        };
-
-        let hardware = hard::HardReader {
-            consumer,
-            state,
-        };
+        let software = soft::SoftWriter { producer, state };
+        let hardware = hard::HardReader { consumer, state };
 
         Some(SerialWriter { software, hardware })
     }
@@ -160,11 +152,8 @@ impl<'a> SerialWriter<'a> {
     /// let (hardware, software) = serial.split();
     /// ```
     pub fn split(self) -> (soft::SoftWriter<'a>, hard::HardReader<'a>) {
-        let SerialWriter {
-            software: hardware,
-            hardware: software,
-        } = self;
-        (hardware, software)
+        let SerialWriter { software, hardware } = self;
+        (software, hardware)
     }
 }
 
@@ -188,7 +177,7 @@ impl<'a> SerialWriter<'a> {
 #[macro_export]
 macro_rules! new_serial_writer {
     ($n:literal) => {{
-        use $crate::sync::serial::{SerialState, StaticBuf, SerialWriter};
+        use $crate::sync::serial::{SerialState, SerialWriter, StaticBuf};
         static STATE: SerialState = SerialState::new();
         static BUFFER: StaticBuf<$n> = StaticBuf::new();
         SerialWriter::new(&STATE, BUFFER.take()).unwrap()
@@ -245,15 +234,12 @@ impl<'a> SerialReader<'a> {
     pub fn new(state: &'a SerialState, buf: &'a mut [u8]) -> Option<SerialReader<'a>> {
         let (producer, consumer) = state.buffer.init(buf)?;
 
-        let hardware = hard::HardWriter {
-            producer,
-            state,
-        };
+        let hardware = hard::HardWriter { producer, state };
 
         let software = soft::SoftReader {
             consumer,
             state,
-            grant: None
+            grant: None,
         };
 
         Some(SerialReader { hardware, software })
@@ -307,7 +293,7 @@ impl<'a> SerialReader<'a> {
 #[macro_export]
 macro_rules! new_serial_reader {
     ($n:literal) => {{
-        use $crate::sync::serial::{SerialState, StaticBuf, SerialReader};
+        use $crate::sync::serial::{SerialReader, SerialState, StaticBuf};
         static STATE: SerialState = SerialState::new();
         static BUFFER: StaticBuf<$n> = StaticBuf::new();
         SerialReader::new(&STATE, BUFFER.take()).unwrap()
@@ -316,7 +302,7 @@ macro_rules! new_serial_reader {
 
 /// Used for statically allocating a buffer that requires a mutable reference
 pub struct StaticBuf<const N: usize> {
-    buf: static_cell::ConstStaticCell<[u8; N]>
+    buf: static_cell::ConstStaticCell<[u8; N]>,
 }
 
 impl<const N: usize> Default for StaticBuf<N> {
@@ -325,17 +311,16 @@ impl<const N: usize> Default for StaticBuf<N> {
     }
 }
 
-impl <const N: usize> StaticBuf<N> {
+impl<const N: usize> StaticBuf<N> {
     pub const fn new() -> Self {
         Self {
-            buf: static_cell::ConstStaticCell::new([0u8; N])
+            buf: static_cell::ConstStaticCell::new([0u8; N]),
         }
     }
 
     pub fn take(&'static self) -> &'static mut [u8; N] {
         self.buf.take()
     }
-
 
     pub fn try_take(&'static self) -> Option<&'static mut [u8; N]> {
         self.buf.try_take()

@@ -55,7 +55,7 @@ pub trait Payload: AnyPayload {
 
         // This should never be the case, but might as well
         if raw.buf.len() < raw.len {
-            return Err(Error::BufferError)
+            return Err(Error::BufferError);
         }
 
         // Insert standard header
@@ -100,7 +100,7 @@ pub trait ExtendedPayload: AnyPayload {
 
         // This should never be the case, but might as well
         if raw.buf.len() < raw.len {
-            return Err(Error::BufferError)
+            return Err(Error::BufferError);
         }
 
         // Insert extended header

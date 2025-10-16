@@ -4,6 +4,7 @@ pub mod packet_definitions;
 pub mod packet_type;
 
 use super::RcParser;
+use crate::errors::adapter::embedded_io::map_ree;
 use crate::errors::{adapter::embedded_io::EmbeddedIoError, ParseError};
 
 impl RcParser for CrsfParser {
@@ -42,8 +43,9 @@ const MAX_LEN_BYTE: u8 = CRSF_MAX_LEN as u8 - MIN_LEN_BYTE;
 pub const CRSF_SYNC_BYTE: u8 = 0xC8;
 const CRSF_HEADER_LEN: usize = 2;
 
+use crate::serial::IoReader;
+use crate::sync::serial::BufReadExt;
 use crate::utils::crc8::Crc8;
-use embedded_io::Error as _;
 use embedded_io_async::Read;
 use packet_containers::{Packet, RawPacket};
 
@@ -56,8 +58,8 @@ use packet_type::PacketType;
 #[derive(thiserror::Error)]
 pub enum Error {
     #[error("Io error: {0}")]
-    IoError(#[from] EmbeddedIoError),
-    #[error("No sync byte")]
+    IoError(EmbeddedIoError),
+    #[error("No sync byte was found in the byte stream")]
     NoSyncByte,
     #[error("Unknown type index: {typ}")]
     InvalidType { typ: u8 },
@@ -73,41 +75,35 @@ pub enum Error {
     InvalidPayload,
     #[error("Crc mismatch, {exp} != {act}")]
     CrcMismatch { exp: u8, act: u8 },
-    #[error("Payload could not be parsed")]
+    #[error("Some internal buffering logic was incorrect")]
     BufferError,
 }
 
-impl <E: embedded_io::Error> From<E> for Error {
+impl<E: embedded_io_async::Error> From<E> for Error {
     fn from(value: E) -> Self {
         Error::IoError(value.kind().into())
     }
 }
 
-/// Annoying wrapper struct to adapt ReadExactError
-struct Ree<E>(embedded_io::ReadExactError<E>);
-
-impl <E: embedded_io::Error> From<Ree<E>> for Error {
-    fn from(value: Ree<E>) -> Self {
-        match value.0 {
-            embedded_io::ReadExactError::UnexpectedEof => EmbeddedIoError::UnexpectedEof.into(),
-            embedded_io::ReadExactError::Other(inner) => inner.into(),
-        }
-    }
-}
-
 /// Represents a packet reader
 pub struct CrsfParser {
-    state: usize,
+    seeking: State,
     digest: Crc8,
     raw: RawPacket,
     type_check: bool,
+}
+
+enum State {
+    AwaitingSync,
+    AwaitingLen,
+    Reading,
 }
 
 impl CrsfParser {
     /// Creates a new PacketReader struct
     pub const fn new() -> Self {
         Self {
-            state: 0,
+            seeking: State::AwaitingSync,
             digest: Crc8::new(),
             raw: RawPacket::empty(),
             type_check: true,
@@ -118,19 +114,18 @@ impl CrsfParser {
     ///
     /// Useful in situations when timeout is triggered but a packet is not parsed
     pub fn reset(&mut self) {
-        self.state = 0;
+        self.seeking = State::AwaitingSync;
         self.digest.reset();
         self.raw.len = 0; // Soft-reset the buffer
     }
 
-    pub async fn read_packet(&mut self, reader: impl super::BufReadExt + Read) -> Result<Packet, Error> {
+    pub async fn read_packet(&mut self, reader: &mut IoReader) -> Result<Packet, Error> {
         self.read(reader).await?.to_packet()
     }
 
-    pub async fn read(&mut self, mut reader: impl super::BufReadExt + Read) -> Result<&RawPacket, Error> {
-
+    pub async fn read<R: BufReadExt + Read>(&mut self, mut reader: R) -> Result<&RawPacket, Error> {
         // Read until we reach a sync byte
-        let skipped = reader.skip_until(CRSF_SYNC_BYTE).await.map_err(Ree)?;
+        let skipped = reader.skip_until(CRSF_SYNC_BYTE).await.map_err(map_ree)?;
 
         if skipped > 0 {
             warn!("Skipped {} bytes to find CRSF header", skipped);
@@ -138,7 +133,6 @@ impl CrsfParser {
 
         let exp_len;
         match reader.fill_buf().await? {
-
             // Proper implementations should not reach here
             &[] => return Err(Error::IoError(EmbeddedIoError::UnexpectedEof)),
 
@@ -148,34 +142,33 @@ impl CrsfParser {
                 if len != CRSF_SYNC_BYTE {
                     reader.consume(1);
                 }
-                return Err(Error::InvalidLength { len: len as u8 })
+                return Err(Error::InvalidLength { len: len as u8 });
             }
 
             // Received *some* amont of payload
-            [len, payload @ ..] => {
-
+            [len, maybe_payload @ ..] => {
                 self.raw.buf[1] = *len;
-                
-                let rcv_len = payload.len();
+
+                let rcv_len = maybe_payload.len();
                 exp_len = self.raw.buf[1] as usize;
-                
+
                 // We received all bytes needed
                 if rcv_len >= exp_len {
-                    self.raw.buf[2..exp_len + 2]
-                        .copy_from_slice(&payload[..exp_len]);
-                    reader.consume(exp_len + 1);
-
+                    self.raw.buf[2..exp_len + 2].copy_from_slice(&maybe_payload[..exp_len]);
+                    reader.consume(1 + exp_len);
                 } else {
                     // Copy and consume received bytes
-                    self.raw.buf[2..rcv_len + 2]
-                        .copy_from_slice(payload);
-                    reader.consume(rcv_len + 1);
-                    
+                    self.raw.buf[2..rcv_len + 2].copy_from_slice(maybe_payload);
+                    reader.consume(1 + rcv_len);
+
                     // Determine the region of the raw buffer we need to fill
                     let remaining = rcv_len - exp_len;
                     let range = (2 + rcv_len)..(2 + rcv_len + remaining);
 
-                    reader.read_exact(&mut self.raw.buf[range]).await.map_err(Ree)?
+                    reader
+                        .read_exact(&mut self.raw.buf[range])
+                        .await
+                        .map_err(map_ree)?
                 }
             }
         }
@@ -205,12 +198,12 @@ impl CrsfParser {
     ) -> (Option<Result<&'r RawPacket, Error>>, &'b [u8]) {
         let mut reader = crate::utils::bytes_reader::BytesReader::new(bytes);
         let packet = 'state_machine: loop {
-            match self.state {
-                0 => {
+            match self.seeking {
+                State::AwaitingSync => {
                     while let Some(sync_byte) = reader.next() {
                         if sync_byte == CRSF_SYNC_BYTE {
                             self.raw.buf[0] = sync_byte;
-                            self.state = 1;
+                            self.seeking = State::AwaitingLen;
                             continue 'state_machine;
                         }
                     }
@@ -219,7 +212,7 @@ impl CrsfParser {
                         break Some(Err(Error::NoSyncByte));
                     }
                 }
-                1 => {
+                State::AwaitingLen => {
                     let Some(len_byte) = reader.next() else {
                         break None;
                     };
@@ -227,7 +220,7 @@ impl CrsfParser {
                         MIN_LEN_BYTE..=MAX_LEN_BYTE => {
                             self.raw.buf[1] = len_byte;
                             self.raw.len = CRSF_HEADER_LEN;
-                            self.state = self.raw.len;
+                            self.seeking = State::Reading;
                         }
                         _ => {
                             self.reset();
@@ -235,7 +228,7 @@ impl CrsfParser {
                         }
                     }
                 }
-                n => {
+                State::Reading => {
                     if reader.is_empty() {
                         break None;
                     }
@@ -272,7 +265,7 @@ impl CrsfParser {
 
                     if self.raw.len >= final_len {
                         self.digest.reset();
-                        self.state = 0;
+                        self.seeking = State::AwaitingSync;
                         break Some(Ok(&self.raw));
                     }
                 }
@@ -428,23 +421,26 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_async_read_segments() {
         // similar to the doc-test at the top
         let mut reader = CrsfParser::new();
-        let data: &[u8] = &[0xc8, 24, 0x16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 239];
-        
+        let data: &[u8] = &[
+            0xc8, 24, 0x16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 239,
+        ];
+
         let mut buffer = data.as_ref();
-        
+
         futures_executor::block_on(async {
             let result = reader.read(&mut buffer).await;
-            assert_eq!(result.unwrap().to_packet().unwrap(), Packet::RcChannelsPacked(RcChannelsPacked([0; 16])));
+            assert_eq!(
+                result.unwrap().to_packet().unwrap(),
+                Packet::RcChannelsPacked(RcChannelsPacked([0; 16]))
+            );
 
             assert_eq!(buffer.len(), 0);
         })
     }
-
 
     #[test]
     fn test_async_read_segments_double() {
@@ -456,16 +452,22 @@ mod tests {
         ];
 
         let mut buffer = data.as_ref();
-        
+
         futures_executor::block_on(async {
             let result = reader.read(&mut buffer).await;
-            assert_eq!(result.unwrap().to_packet().unwrap(), Packet::RcChannelsPacked(RcChannelsPacked([0; 16])));
+            assert_eq!(
+                result.unwrap().to_packet().unwrap(),
+                Packet::RcChannelsPacked(RcChannelsPacked([0; 16]))
+            );
 
             assert_eq!(buffer.len(), 26);
 
             let result = reader.read(&mut buffer).await;
-            assert_eq!(result.unwrap().to_packet().unwrap(), Packet::RcChannelsPacked(RcChannelsPacked([0; 16])));
-          
+            assert_eq!(
+                result.unwrap().to_packet().unwrap(),
+                Packet::RcChannelsPacked(RcChannelsPacked([0; 16]))
+            );
+
             assert_eq!(buffer.len(), 0);
         })
     }
@@ -545,49 +547,5 @@ mod tests {
             result,
             Err(Error::CrcMismatch { act: 239, exp: 42 })
         ));
-    }
-}
-
-struct BufReader<R: Read, const N: usize> {
-    reader: R,
-    buf: [u8; N],
-    len: usize,
-}
-
-impl <R: Read, const N: usize> BufReader<R, N> {
-    pub const fn new(reader: R) -> Self {
-        BufReader {
-            reader,
-            buf: [0; N],
-            len: 0,
-        }
-    }
-}
-
-impl <R: Read, const N: usize> embedded_io_async::ErrorType for BufReader<R, N> {
-    type Error = R::Error;
-}
-
-impl <R: Read, const N: usize> embedded_io_async::BufRead for BufReader<R, N> {
-    async fn fill_buf(&mut self) -> Result<&[u8], Self::Error> {
-        let bytes = self.reader.read(&mut self.buf[self.len..]).await?;
-        Ok(&self.buf[self.len..bytes + self.len])
-    }
-
-    fn consume(&mut self, amt: usize) {
-        self.len = (self.len + amt).min(self.buf.len())
-    }
-}
-
-impl <R: Read, const N: usize> embedded_io_async::Read for BufReader<R, N> {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        if self.len > 0 {
-            let amt = buf.len().min(self.len);
-            buf[..amt].copy_from_slice(&self.buf[..amt]);
-            self.len -= amt;
-            Ok(amt)
-        } else {
-            self.reader.read(buf).await
-        }
     }
 }

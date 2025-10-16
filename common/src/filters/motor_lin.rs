@@ -37,12 +37,6 @@ impl<T: Float> MotorLin<T> {
         (x / (self.a - x * self.b)).sqrt()
     }
 
-    /// Map a thrust command from the range [0,1] to [0,1] with the inverse mapping function
-    /// of `MotorLin::force_to_command`.
-    pub fn command_linearized(&self, command: T) -> T {
-        self.force_to_command(command * self.max_force())
-    }
-
     pub fn min_force(&self) -> T {
         self.f_min
     }

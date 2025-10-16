@@ -40,6 +40,8 @@ use static_cell::StaticCell;
 
 use crate::errors::{Debounce, MavlinkError};
 
+// pub mod params;
+
 pub struct MavMode {
     mode: AtomicU8,
 }

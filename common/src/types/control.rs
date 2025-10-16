@@ -17,8 +17,13 @@ pub enum ControlMode {
     /// make the drone hold its position if no stick deflection.
     /// Some deflection will correspond to some velocity.
     ///
-    /// **NOTE**: This is only available with a working GPS module.
+    /// **NOTE**: This is only available with a valid position estimate
     Velocity,
+
+    /// The vehicle is operating autonomously
+    ///
+    /// **NOTE**: This is only available with a valid position estimate
+    Autonomous,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]

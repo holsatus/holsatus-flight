@@ -1,16 +1,15 @@
 use num_traits::Num;
 use serde::{Deserialize, Serialize};
 
-
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ViconData {
     pub timestamp_us: u64,
-    pub quality: u8,
     pub position: [f32; 3],
+    pub pos_var: [[f32; 3]; 3],
     pub attitude: [f32; 3],
+    pub att_var: [[f32; 3]; 3],
 }
-
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

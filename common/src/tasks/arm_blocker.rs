@@ -1,10 +1,9 @@
 use core::f32::consts::FRAC_1_SQRT_2;
 
 use crate::{
-    multi_receiver, signals as s,
-    tasks::calibrator::CalibratorState, types::status::ArmingBlocker, NUM_IMU,
+    calibration::sens3d::Calib3D, signals as s, tasks::calibrator::CalibratorState,
+    types::status::ArmingBlocker,
 };
-use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Instant, Ticker};
 use nalgebra::Vector3;
 
@@ -15,18 +14,22 @@ pub struct ArmingBlockerConfig {
     max_throttle_cmd: f32,
     max_attitude_cmd: f32,
     boot_grace_secs: u8,
-    system_load_limit: f32,
+    // system_load_limit: f32,
 }
 
 impl Default for ArmingBlockerConfig {
     fn default() -> Self {
         Self {
-            ignore_mask: ArmingBlocker::empty(),
+            ignore_mask: ArmingBlocker::NO_ACC_DATA
+                | ArmingBlocker::NO_GYR_DATA
+                | ArmingBlocker::USB_CONNECTED
+                | ArmingBlocker::SYSTEM_LOAD
+                | ArmingBlocker::RESERVED,
             max_attitude: FRAC_1_SQRT_2,
             max_throttle_cmd: 0.1,
             max_attitude_cmd: 0.1,
             boot_grace_secs: 5,
-            system_load_limit: 0.98,
+            // system_load_limit: 0.98,
         }
     }
 }
@@ -39,11 +42,8 @@ pub async fn main() -> ! {
     // Input channels
     let mut rcv_attitude_euler = s::AHRS_ATTITUDE.receiver();
     let mut rcv_rc_status = s::RC_STATUS.receiver();
-    let mut rcv_arm_motors = s::CMD_ARM_MOTORS.receiver();
     let mut rcv_calibrator_state = s::CALIBRATOR_STATE.receiver();
-    let mut rcv_gyr_cal = multi_receiver!(s::CFG_MULTI_GYR_CAL, NUM_IMU);
-    let mut rcv_acc_cal = multi_receiver!(s::CFG_MULTI_ACC_CAL, NUM_IMU);
-    let mut rcv_rc_controls = s::RC_ANALOG_RATE.receiver();
+    let mut rcv_rc_analog = s::RC_ANALOG_UNIT.receiver();
     let mut rcv_usb_connected = s::USB_CONNECTED.receiver();
     // let mut rcv_loop_health = s::LOOP_HEALTH.receiver();
     // let mut rcv_landed_state = s::LANDED_STATE.receiver();
@@ -63,7 +63,7 @@ pub async fn main() -> ! {
 
     let config = ArmingBlockerConfig::default();
 
-    'infinite: loop {
+    loop {
         // Wait for procedure command (or ticker, not explicitly needed)
         ticker.next().await;
 
@@ -74,7 +74,7 @@ pub async fn main() -> ! {
         }
 
         // Check if the attitude commands are too high
-        if let Some(controls) = rcv_rc_controls.try_changed() {
+        if let Some(controls) = rcv_rc_analog.try_changed() {
             let controls_vec = Vector3::from(controls.roll_pitch_yaw());
             let high_throttle_cmd = controls.throttle() > config.max_throttle_cmd;
             let high_attitude_cmd = controls_vec.norm() > config.max_attitude_cmd;
@@ -87,29 +87,33 @@ pub async fn main() -> ! {
             local_arm_blocker_flag.set(ArmingBlocker::RX_FAILSAFE, rc_status.failsafe);
         }
 
-        // Check if the active accelerometer is calibrated
-        if let Some(acc_cal) = rcv_acc_cal[0].try_changed() {
-            local_arm_blocker_flag.set(ArmingBlocker::NO_ACC_CALIB, !acc_cal.has_bias());
-        }
-
-        // Check if the active gyroscpe is calibrated
-        if let Some(gyr_cal) = rcv_gyr_cal[0].try_changed() {
-            local_arm_blocker_flag.set(ArmingBlocker::NO_GYR_CALIB, !gyr_cal.has_bias());
-        }
+        // Check if the active accelerometer and gyroscope is calibrated
+        // TODO: This is a terrible way to do it, at least we should use Option
+        let params = crate::tasks::imu_reader::params::TABLE
+            .read_initialized()
+            .await;
+        local_arm_blocker_flag.set(
+            ArmingBlocker::NO_ACC_CALIB,
+            params.cal_acc == Calib3D::const_default(),
+        );
+        local_arm_blocker_flag.set(
+            ArmingBlocker::NO_GYR_CALIB,
+            params.cal_gyr == Calib3D::const_default(),
+        );
+        drop(params);
 
         /*
-
         // Check if the loop frequency health is too low
         if let Some(loop_health) = rcv_loop_health.try_changed() {
             local_arm_blocker_flag.set(ArmingBlocker::SYSTEM_LOAD, loop_health < 0.98);
         }
-        */
 
-        // // Check if the active IMU is currently assigned to a sensor
-        // if let Some(imu_redundancy) = rcv_imu_active_id.try_changed() {
-        //     local_arm_blocker_flag.set(ArmingBlocker::NO_GYR_DATA, imu_redundancy.is_none());
-        //     local_arm_blocker_flag.set(ArmingBlocker::NO_ACC_DATA, imu_redundancy.is_none());
-        // }
+        // Check if the active IMU is currently assigned to a sensor
+        if let Some(imu_redundancy) = rcv_imu_active_id.try_changed() {
+            local_arm_blocker_flag.set(ArmingBlocker::NO_GYR_DATA, imu_redundancy.is_none());
+            local_arm_blocker_flag.set(ArmingBlocker::NO_ACC_DATA, imu_redundancy.is_none());
+        }
+        */
 
         // Check if a sensor is currently calibrating
         if let Some(calibrating) = rcv_calibrator_state.try_changed() {

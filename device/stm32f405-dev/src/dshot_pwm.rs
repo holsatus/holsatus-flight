@@ -1,5 +1,4 @@
 ///! Dshot driver for the stm32f405 using a timer-backed PWM
-
 use dshot_encoder;
 use embassy_stm32::{
     gpio::OutputType,
@@ -7,8 +6,7 @@ use embassy_stm32::{
     timer::{
         low_level::CountingMode,
         simple_pwm::{PwmPin, SimplePwm},
-        Ch1Dma, Ch2Dma, Ch3Dma, Ch4Dma, Channel1Pin, Channel2Pin, Channel3Pin, Channel4Pin,
-        GeneralInstance4Channel,
+        Ch1, Ch2, Ch3, Ch4, Dma, GeneralInstance4Channel, TimerPin,
     },
     Peri,
 };
@@ -18,10 +16,10 @@ use common::hw_abstraction::OutputGroup;
 pub struct DshotPwm<'d, T, DMA1, DMA2, DMA3, DMA4>
 where
     T: GeneralInstance4Channel,
-    DMA1: Ch1Dma<T>,
-    DMA2: Ch2Dma<T>,
-    DMA3: Ch3Dma<T>,
-    DMA4: Ch4Dma<T>,
+    DMA1: Dma<T, Ch1>,
+    DMA2: Dma<T, Ch2>,
+    DMA3: Dma<T, Ch3>,
+    DMA4: Dma<T, Ch4>,
 {
     pwm: SimplePwm<'d, T>,
     dma1: Peri<'d, DMA1>,
@@ -34,17 +32,17 @@ where
 impl<'d, T, DMA1, DMA2, DMA3, DMA4> DshotPwm<'d, T, DMA1, DMA2, DMA3, DMA4>
 where
     T: GeneralInstance4Channel,
-    DMA1: Ch1Dma<T>,
-    DMA2: Ch2Dma<T>,
-    DMA3: Ch3Dma<T>,
-    DMA4: Ch4Dma<T>,
+    DMA1: Dma<T, Ch1>,
+    DMA2: Dma<T, Ch2>,
+    DMA3: Dma<T, Ch3>,
+    DMA4: Dma<T, Ch4>,
 {
     pub fn new(
         timer: Peri<'d, T>,
-        pin1: Peri<'d, impl Channel1Pin<T>>,
-        pin2: Peri<'d, impl Channel2Pin<T>>,
-        pin3: Peri<'d, impl Channel3Pin<T>>,
-        pin4: Peri<'d, impl Channel4Pin<T>>,
+        pin1: Peri<'d, impl TimerPin<T, Ch1>>,
+        pin2: Peri<'d, impl TimerPin<T, Ch2>>,
+        pin3: Peri<'d, impl TimerPin<T, Ch3>>,
+        pin4: Peri<'d, impl TimerPin<T, Ch4>>,
         dma1: Peri<'d, DMA1>,
         dma2: Peri<'d, DMA2>,
         dma3: Peri<'d, DMA3>,
@@ -53,10 +51,10 @@ where
     ) -> Self {
         let mut pwm = SimplePwm::new(
             timer,
-            Some(PwmPin::new_ch1(pin1, OutputType::PushPull)),
-            Some(PwmPin::new_ch2(pin2, OutputType::PushPull)),
-            Some(PwmPin::new_ch3(pin3, OutputType::PushPull)),
-            Some(PwmPin::new_ch4(pin4, OutputType::PushPull)),
+            Some(PwmPin::new(pin1, OutputType::PushPull)),
+            Some(PwmPin::new(pin2, OutputType::PushPull)),
+            Some(PwmPin::new(pin3, OutputType::PushPull)),
+            Some(PwmPin::new(pin4, OutputType::PushPull)),
             Hertz::khz(khz),
             CountingMode::EdgeAlignedUp,
         );
@@ -92,10 +90,18 @@ where
         let command3 = self.construct_command(commands.3);
 
         // Cannot use join(f,f,f,f) here since the pwm/timer type is borrowed mutably
-        self.pwm.waveform_ch1(self.dma1.reborrow(), command0.as_slice()).await;
-        self.pwm.waveform_ch2(self.dma2.reborrow(), command1.as_slice()).await;
-        self.pwm.waveform_ch3(self.dma3.reborrow(), command2.as_slice()).await;
-        self.pwm.waveform_ch4(self.dma4.reborrow(), command3.as_slice()).await;
+        self.pwm
+            .waveform(self.dma1.reborrow(), command0.as_slice())
+            .await;
+        self.pwm
+            .waveform(self.dma2.reborrow(), command1.as_slice())
+            .await;
+        self.pwm
+            .waveform(self.dma3.reborrow(), command2.as_slice())
+            .await;
+        self.pwm
+            .waveform(self.dma4.reborrow(), command3.as_slice())
+            .await;
     }
 
     fn construct_command(&self, cmd: u16) -> [u16; 17] {
@@ -107,12 +113,10 @@ where
             .take(16) // Leave 1 bit low at the end
             .rev()
             .enumerate()
-            .for_each(|(i, v)|
-                match (cmd >> i) & 0x1 {
-                    0 => *v = self.bit.0,
-                    _ => *v = self.bit.1,
-                }
-            );
+            .for_each(|(i, v)| match (cmd >> i) & 0x1 {
+                0 => *v = self.bit.0,
+                _ => *v = self.bit.1,
+            });
         dshot_pwm
     }
 }
@@ -120,10 +124,10 @@ where
 impl<'d, T, DMA1, DMA2, DMA3, DMA4> OutputGroup for DshotPwm<'d, T, DMA1, DMA2, DMA3, DMA4>
 where
     T: GeneralInstance4Channel,
-    DMA1: Ch1Dma<T>,
-    DMA2: Ch2Dma<T>,
-    DMA3: Ch3Dma<T>,
-    DMA4: Ch4Dma<T>,
+    DMA1: Dma<T, Ch1>,
+    DMA2: Dma<T, Ch2>,
+    DMA3: Dma<T, Ch3>,
+    DMA4: Dma<T, Ch4>,
 {
     async fn set_motor_speeds(&mut self, speed: [u16; 4]) {
         self.transmit((
@@ -155,5 +159,5 @@ where
         .await
     }
 
-    async fn make_beep(&mut self) { }
+    async fn make_beep(&mut self) {}
 }

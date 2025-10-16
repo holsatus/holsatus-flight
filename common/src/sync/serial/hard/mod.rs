@@ -1,4 +1,4 @@
-use super::bbbuffer::{Consumer, Producer};
+use super::buffer::{Consumer, Producer};
 use embedded_io_async::{ErrorType, Read, Write};
 
 use super::{
@@ -15,19 +15,21 @@ impl HardWriter<'_> {
     pub async fn grant_writer(&mut self) -> GrantWriter<'_> {
         loop {
             let subscribtion = self.state.wait_writer.subscribe().await;
+            // use core::sync::atomic::{compiler_fence, Ordering};
+            // compiler_fence(Ordering::AcqRel);
             match self.producer.grant_max_remaining() {
                 Ok(grant_inner) => {
                     return GrantWriter {
                         state: self.state,
                         inner: grant_inner,
-                    }
+                    };
                 }
 
-                Err(super::bbbuffer::Error::GrantInProgress) => {
+                Err(super::buffer::Error::GrantInProgress) => {
                     panic!("Double-grants are illegal!");
                 }
 
-                _ => {
+                Err(super::buffer::Error::InsufficientSize) => {
                     let res = subscribtion.await;
                     debug_assert!(res.is_ok());
                 }
@@ -73,19 +75,20 @@ impl HardReader<'_> {
     pub async fn grant_reader(&mut self) -> GrantReader<'_> {
         loop {
             let subscribtion = self.state.wait_reader.subscribe().await;
+
             match self.consumer.read() {
                 Ok(grant_inner) => {
                     return GrantReader {
                         state: self.state,
                         inner: grant_inner,
-                    }
+                    };
                 }
 
-                Err(super::bbbuffer::Error::GrantInProgress) => {
+                Err(super::buffer::Error::GrantInProgress) => {
                     panic!("Double-grants are illegal!");
                 }
 
-                _ => {
+                Err(super::buffer::Error::InsufficientSize) => {
                     let res = subscribtion.await;
                     debug_assert!(res.is_ok());
                 }
@@ -119,9 +122,13 @@ impl HardReader<'_> {
     pub async fn connect<W: Write>(&mut self, mut writer: W) {
         loop {
             let grant = self.grant_reader().await;
+
             match writer.write(grant.buffer()).await {
                 Ok(0) => break,
-                Ok(bytes) => grant.release(bytes),
+                Ok(bytes) => {
+                    info!("[hard_reader] Wrote {} bytes to hardware", bytes);
+                    grant.release(bytes)
+                }
                 Err(error) => {
                     drop(grant);
                     self.insert_error(error)

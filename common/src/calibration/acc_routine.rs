@@ -1,4 +1,4 @@
-use super::{sens3d::Calib3DType, AccCalib};
+use super::{sens3d::Calib3D, AccCalib};
 
 use crate::*;
 
@@ -6,15 +6,11 @@ use embassy_time::{Duration, Ticker};
 use nalgebra::{SMatrix, Vector3};
 
 use crate::{
-    calibration::sens3d::SmallCalib3D, consts::GRAVITY, errors::CalibrationError, signals as s,
-    types::measurements::Imu6DofData,
+    consts::GRAVITY, errors::CalibrationError, signals as s, types::measurements::Imu6DofData,
 };
 
 /// Routine to calibrate gyroscopes, by calculating their bias.
-pub async fn calibrate_acc(
-    config: AccCalib,
-    sensor_id: u8,
-) -> Result<Calib3DType, CalibrationError> {
+pub async fn calibrate_acc(config: AccCalib, sensor_id: u8) -> Result<Calib3D, CalibrationError> {
     const ID: &str = "acc_calib";
 
     const ACC_BUFFER_SIZE: usize = 50;
@@ -60,7 +56,7 @@ pub async fn calibrate_acc(
     };
 
     // Get existing calibration data or create new
-    info!("{}: Gyr calibration complete for sensor {}", ID, sensor_id);
+    info!("{}: Acc calibration complete for sensor {}", ID, sensor_id);
 
     // All good, return bias
     Ok(calib)
@@ -109,7 +105,7 @@ impl<const N: usize> AccCalibrator<N> {
         }
     }
 
-    pub fn collect(&mut self, meas: Imu6DofData<f32>) -> Option<Calib3DType> {
+    pub fn collect(&mut self, meas: Imu6DofData<f32>) -> Option<Calib3D> {
         let acc = meas.acc;
 
         // Determine the direction of gravity
@@ -146,15 +142,15 @@ impl<const N: usize> AccCalibrator<N> {
             // If variance is within limits, continue
             Some(var) if var < self.max_variance => {}
             // If variance is too high, reset
-            Some(_) => {
+            Some(var) => {
                 #[cfg(feature = "defmt")]
                 let to_print = defmt::Debug2Format(&direction);
                 #[cfg(not(feature = "defmt"))]
                 let to_print = direction;
 
                 warn!(
-                    "[ACC CALIB]: Resetting {:?} measurement due to high variance",
-                    to_print
+                    "[ACC CALIB]: Resetting {:?} measurement due to high variance (failed {} < {})",
+                    to_print, var, self.max_variance,
                 );
                 self.count = 0;
                 return None;
@@ -212,10 +208,10 @@ impl<const N: usize> AccCalibrator<N> {
             GRAVITY / (calib.z_plus - calib.z_minus) * 2.0,
         );
 
-        Some(Calib3DType::Small(SmallCalib3D {
-            bias: Some(offset),
-            scale: Some(scale),
-        }))
+        Some(Calib3D {
+            bias: offset.into(),
+            scale: scale.into(),
+        })
     }
 
     pub fn acc_variance(&self) -> Option<f32> {

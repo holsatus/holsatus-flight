@@ -4,14 +4,20 @@ use embassy_time::Duration;
 use nalgebra::UnitQuaternion;
 
 use crate::{
-    calibration::{sens3d::Calib3DType, Calibrate}, errors::HolsatusError, filters::rate_pid::RatePidCfg3D, health::redundancy::Mode, rc_mapping::RcBindings, sync::{broadcast::Broadcast, channel::Channel, once_lock::OnceLock}, tasks::calibrator::CalibratorState, types::{
+    calibration::Calibrate,
+    errors::HolsatusError,
+    health::redundancy::Mode,
+    sync::{broadcast::Broadcast, channel::Channel, once_lock::OnceLock},
+    tasks::{calibrator::CalibratorState, eskf::EskfEstimate},
+    types::{
         actuators::MotorsState,
-        blackbox::{LogPreset, LoggableType},
-        config::{BootConfig, Vehicle},
-        control::{ControlMode, RcAnalog},
+        blackbox::LoggableType,
+        config::BootConfig,
+        control::RcAnalog,
         measurements::{GnssData, Imu6DofData, Imu9DofData, ViconData},
         status::{ArmingBlocker, PidTerms, RcStatus},
-    }, utils::rot_matrix::Rotation, NUM_IMU, NUM_MAG
+    },
+    NUM_IMU, NUM_MAG,
 };
 
 /// Helper macro to create multiple independent instances
@@ -43,7 +49,7 @@ use crate::sync::watch::Watch;
 use mutex::raw_impls::cs::CriticalSectionRawMutex as M;
 
 /// Channel for all system errors to be published to.
-pub static ERR_CHANNEL: Broadcast<HolsatusError, M, 4> = Broadcast::new();
+pub static ERR_CHANNEL: Broadcast<HolsatusError, 4, M> = Broadcast::new();
 
 /// Immediately publish an error to the global error channel.
 pub fn register_error(error: impl Into<HolsatusError>) {
@@ -66,22 +72,20 @@ pub static AHRS_ATTITUDE: Watch<[f32; 3], M> = Watch::new();
 
 /// Raw data packet from GNSS module
 pub static RAW_GNSS_DATA: Watch<GnssData, M> = Watch::new();
-pub static RAW_VICON_DATA: Watch<ViconData, M> = Watch::new();
-pub static ESKF_VICON_POS: Watch<[f32; 3], M> = Watch::new();
-pub static ESKF_VICON_VEL: Watch<[f32; 3], M> = Watch::new();
-pub static ESKF_VICON_ATT: Watch<[f32; 4], M> = Watch::new();
+pub static VICON_POSITION_ESTIMATE: Watch<ViconData, M> = Watch::new();
+pub static ESKF_ESTIMATE: Watch<EskfEstimate, M> = Watch::new();
 
 // Setpoint signals for the controller tasks
-pub static TRUE_THROTTLE_SP: Watch<f32, M> = Watch::new();
+pub static TRUE_Z_THRUST_SP: Watch<f32, M> = Watch::new();
 pub static TRUE_VELOCITY_SP: Watch<[f32; 3], M> = Watch::new();
-pub static TRUE_ANGLE_SP: Watch<[f32; 3], M> = Watch::new();
+pub static TRUE_ATTITUDE_Q_SP: Watch<UnitQuaternion<f32>, M> = Watch::new();
 pub static TRUE_RATE_SP: Watch<[f32; 3], M> = Watch::new();
 pub static SLEW_RATE_SP: Watch<[f32; 3], M> = Watch::new();
 pub static FF_PRED_GYR: Watch<[f32; 3], M> = Watch::new();
 
 // Setpoint outputs, to be routed by the signal_router task
 pub static POS_TO_VEL_SP: Watch<[f32; 3], M> = Watch::new();
-pub static VEL_TO_ANGLE_SP: Watch<[f32; 3], M> = Watch::new();
+pub static VEL_TO_ANGLE_SP: Watch<UnitQuaternion<f32>, M> = Watch::new();
 pub static ANGLE_TO_RATE_SP: Watch<[f32; 3], M> = Watch::new();
 pub static RC_AXES_SP: Watch<[f32; 3], M> = Watch::new();
 
@@ -98,9 +102,6 @@ pub static RATE_PID_TERMS: Watch<[PidTerms; 3], M> = Watch::new();
 pub static COMP_FUSE_GYR: Watch<[f32; 3], M> = Watch::new();
 
 pub static ANGLE_PID_TERMS: Watch<[PidTerms; 3], M> = Watch::new();
-
-// Control mode, defined by the commander task
-pub static CONTROL_MODE: Watch<ControlMode, M> = Watch::new();
 
 // Enable or disable the integrators for the attitude controllers
 pub static ATTITUDE_INT_EN: Watch<bool, M> = Watch::new();
@@ -125,17 +126,8 @@ pub static CMD_CALIBRATE: Watch<Calibrate, M> = Watch::new();
 /// The boot configuration is only read once at startup
 pub static BOOT_CONFIG: OnceLock<BootConfig> = OnceLock::new();
 
-// CONFIGURATION SIGNALS //
-pub static CFG_RC_BINDINGS: Watch<RcBindings, M> = Watch::new();
-pub static CFG_MOTOR_DIRS: Watch<[bool; 4], M> = Watch::new();
-pub static CFG_VEHICLE_INFO: Watch<Vehicle, M> = Watch::new();
-pub static CFG_LOG_PRESET: Watch<LogPreset, M> = Watch::new();
-
-pub static CFG_RATE_LOOP_PIDS: Watch<RatePidCfg3D, M> = Watch::new();
-pub static CFG_CONTROL_FREQ: Watch<u16, M> = Watch::new();
-
 // The event bus is mainly meant for aggerating system events
-pub static BLACKBOX_QUEUE: Channel<LoggableType, M, 10> = Channel::new();
+pub static BLACKBOX_QUEUE: Channel<LoggableType, 10, M> = Channel::new();
 
 pub static OUTPUT_OVERRIDE: AtomicBool = AtomicBool::new(false);
 pub static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
@@ -159,13 +151,6 @@ macro_rules! get_ctrl_freq {
     };
 }
 
-multi_watch!(CFG_MULTI_MAG_ROT, Rotation, NUM_MAG, 2);
-multi_watch!(CFG_MULTI_MAG_CAL, Calib3DType, NUM_MAG, 2);
-
-multi_watch!(CFG_MULTI_IMU_ROT, Rotation, NUM_IMU, 2);
-multi_watch!(CFG_MULTI_ACC_CAL, Calib3DType, NUM_IMU, 2);
-multi_watch!(CFG_MULTI_GYR_CAL, Calib3DType, NUM_IMU, 2);
-
 multi_watch!(RAW_MULTI_IMU_DATA, Imu6DofData<f32>, NUM_IMU, 2);
 multi_watch!(CAL_MULTI_IMU_DATA, Imu6DofData<f32>, NUM_IMU, 2);
 
@@ -175,4 +160,4 @@ multi_watch!(CAL_MULTI_MAG_DATA, [f32; 3], NUM_MAG, 2);
 pub static IMU_MODES: Watch<[Mode; NUM_IMU], M> = Watch::new();
 
 #[cfg(feature = "mavlink")]
-pub use crate::mavlink::MAV_REQUEST;
+pub use crate::mavlink2::Message;

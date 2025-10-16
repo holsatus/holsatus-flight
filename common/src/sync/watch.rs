@@ -1,7 +1,7 @@
-use maitake_sync::WaitQueue;
+use maitake_sync::{blocking::DefaultMutex, WaitQueue};
 use mutex::{BlockingMutex, ConstInit, ScopedRawMutex};
 
-pub struct Watch<T, M: ScopedRawMutex> {
+pub struct Watch<T, M: ScopedRawMutex = DefaultMutex> {
     state: BlockingMutex<M, State<T>>,
     wait: WaitQueue<M>,
 }
@@ -115,7 +115,7 @@ impl<T: Clone, M: ScopedRawMutex> Watch<T, M> {
     }
 }
 
-pub struct Receiver<'a, T, M: ScopedRawMutex> {
+pub struct Receiver<'a, T, M: ScopedRawMutex = DefaultMutex> {
     watch: &'a Watch<T, M>,
     msg_id: usize,
 }
@@ -213,7 +213,7 @@ impl<T: Clone, M: ScopedRawMutex> Receiver<'_, T, M> {
     }
 }
 
-pub struct Sender<'a, T, M: ScopedRawMutex> {
+pub struct Sender<'a, T, M: ScopedRawMutex = DefaultMutex> {
     watch: &'a Watch<T, M>,
 }
 

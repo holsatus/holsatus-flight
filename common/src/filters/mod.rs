@@ -317,12 +317,6 @@ pub struct Linear<T: Float + Serialize> {
     offset: T,
 }
 
-impl From<Linear<f32>> for crate::rc_mapping::analog::Rates {
-    fn from(linear: Linear<f32>) -> Self {
-        crate::rc_mapping::analog::Rates::Linear(linear)
-    }
-}
-
 impl Linear<f32> {
     pub const fn const_default() -> Self {
         Self {

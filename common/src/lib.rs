@@ -16,40 +16,39 @@ pub mod geo;
 pub mod health;
 pub mod hw_abstraction;
 pub mod parsers;
-pub mod rc_mapping;
-pub mod shell;
+// pub mod rc_mapping;
 pub mod signals;
 pub mod sync;
 // pub mod task;
+pub mod serial;
 pub mod tasks;
 pub mod types;
 pub mod utils;
 
-mod serial_manager;
+pub mod shell;
 
 pub mod errors;
 
-#[cfg(feature = "mavlink")]
-pub mod mavlink;
-// pub mod mavlink2;
+pub mod mavlink2;
 
+#[allow(unused)]
 #[cfg(not(feature = "arch-std"))]
-use num_traits::Float;
+use num_traits::Float as _;
 
 // Re-exported for implementors
 pub use embassy_futures;
 pub use embassy_sync;
 pub use embassy_time;
-pub use embassy_usb;
 pub use embedded_io;
 pub use embedded_io_async;
 pub use embedded_storage_async;
+pub use grantable_io;
 pub use heapless;
+pub use mav_param;
 pub use nalgebra;
 
-const MAIN_LOOP_FREQ: usize = 1000;
-const ANGLE_LOOP_DIV: usize = 10;
-const POS_LOOP_DIV: usize = 100;
+#[cfg(feature = "usb")]
+pub use embassy_usb;
 
 const DSHOT_MIN: u16 = 48;
 const DSHOT_MAX: u16 = 2047;
@@ -57,6 +56,8 @@ const DSHOT_MAX: u16 = 2047;
 const NUM_IMU: usize = 2;
 const NUM_MAG: usize = 2;
 const MOTOR_TIMEOUT_MS: u8 = 100;
+
+const MAX_IO_STREAMS: usize = 6;
 
 #[macro_export]
 macro_rules! get_or_warn {
@@ -71,4 +72,46 @@ macro_rules! get_or_warn {
             }
         }
     };
+}
+
+#[macro_export]
+macro_rules! const_default {
+    ($type:ty => { $($token:tt)+ } ) => {
+        impl $crate::ConstDefault for $type {
+            const DEFAULT: Self = Self::const_default();
+        }
+
+        impl $type {
+            pub const fn const_default() -> Self {
+                Self { $($token)+ }
+            }
+        }
+
+        impl Default for $type {
+            fn default() -> Self {
+                Self::const_default()
+            }
+        }
+    };
+    ($type:ty => $($token:tt)+ ) => {
+        impl $crate::ConstDefault for $type {
+            const DEFAULT: Self = Self::const_default();
+        }
+
+        impl $type {
+            pub const fn const_default() -> Self {
+                $($token)+
+            }
+        }
+
+        impl Default for $type {
+            fn default() -> Self {
+                Self::const_default()
+            }
+        }
+    };
+}
+
+pub trait ConstDefault {
+    const DEFAULT: Self;
 }

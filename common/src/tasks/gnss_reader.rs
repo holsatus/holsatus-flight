@@ -2,9 +2,12 @@ use embassy_time::{with_timeout, Duration, Instant};
 
 use crate::types::measurements::{GnssData, GnssTime};
 
-pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
+#[embassy_executor::task]
+pub async fn main(stream_id: &'static str) -> ! {
     const ID: &str = "gnss_reader";
     info!("{}: Task started", ID);
+
+    let mut stream = crate::serial::claim(stream_id).unwrap();
 
     let mut snd_raw_gnss_data = crate::signals::RAW_GNSS_DATA.sender();
 
@@ -16,17 +19,18 @@ pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
     info!("{}: Entering main loop", ID);
     'parsing: loop {
         // Read serial data, but with a timeout
-        let bytes = match with_timeout(Duration::from_secs(1), uart_rx.read(&mut buffer)).await {
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(_)) => {
-                error!("{}: Failed to read serial data", ID);
-                continue 'parsing;
-            }
-            Err(_) => {
-                warn!("{}: Timeout while reading serial data", ID);
-                continue 'parsing;
-            }
-        };
+        let bytes =
+            match with_timeout(Duration::from_secs(1), stream.reader.read(&mut buffer)).await {
+                Ok(Ok(bytes)) => bytes,
+                Ok(Err(_)) => {
+                    error!("{}: Failed to read serial data", ID);
+                    continue 'parsing;
+                }
+                Err(_) => {
+                    warn!("{}: Timeout while reading serial data", ID);
+                    continue 'parsing;
+                }
+            };
 
         // Exhaustively parse bytes. This might immediately overwrite
         // a just-parsed packet, but it ensures we use the latest packet.

@@ -2,7 +2,7 @@ use ahrs::Ahrs;
 use embassy_futures::select::{select, Either};
 use nalgebra::{UnitQuaternion, Vector3};
 
-use crate::{signals as s, utils::rot_matrix::rot_x_180};
+use crate::{get_ctrl_freq, signals as s, utils::rot_matrix::rot_x_180};
 
 #[embassy_executor::task]
 pub async fn main() {
@@ -19,7 +19,7 @@ pub async fn main() {
     let mut snd_ahrs_attitude_q = s::AHRS_ATTITUDE_Q.sender();
     let mut snd_ahrs_attitude = s::AHRS_ATTITUDE.sender();
 
-    let ts = 1.0 / crate::MAIN_LOOP_FREQ as f32;
+    let ts = 1.0 / get_ctrl_freq!() as f32;
 
     let mut ahrs = ahrs::Madgwick::new(ts, 0.01);
 

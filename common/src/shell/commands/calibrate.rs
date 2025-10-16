@@ -1,15 +1,19 @@
 use embassy_time::{with_timeout, Duration, Timer};
 use embedded_cli::Command;
-use embedded_io::ErrorKind;
 use embedded_io_async::{Read, Write};
 use ufmt::{uDisplay, uwrite};
 
 use crate::{
-    calibration::{mag_routine::MagCalState},
-    shell::UBuffer,
-    tasks::{calibrator::Sensor, commander::{message::*, PROCEDURE}},
+    calibration::mag_routine::MagCalState,
+    errors::adapter::embedded_io::EmbeddedIoError,
+    tasks::{
+        calibrator::Sensor,
+        commander::{message::*, PROCEDURE},
+    },
+    utils::u_types::UBuffer,
 };
 
+#[allow(unused)] // TODO until implementation is fixed
 #[derive(Command)]
 #[command(help_title = "Calibration commands")]
 pub enum CalibrateCommand {
@@ -72,24 +76,30 @@ pub enum CalibrateCommand {
 impl super::CommandHandler for CalibrateCommand {
     async fn handler(
         &self,
-        mut serial: impl Read<Error = ErrorKind> + Write<Error = ErrorKind>,
-    ) -> Result<(), ErrorKind> {
+        mut serial: impl Read<Error = EmbeddedIoError> + Write<Error = EmbeddedIoError>,
+    ) -> Result<(), EmbeddedIoError> {
         match self {
             CalibrateCommand::Acc {
-                sensor,
-                max_variance,
-                max_dropped,
+                sensor: _,
+                max_variance: _,
+                max_dropped: _,
             } => {
-                const DEFAULT_MAX_VAR: f32 = 0.1;
-                const DEFAULT_MAX_DROPPED: usize = 5;
+                const _DEFAULT_MAX_VAR: f32 = 0.1;
+                const _DEFAULT_MAX_DROPPED: usize = 5;
 
                 serial
                     .write_all(b"Requesting accelerometer calibration\n\r")
                     .await?;
-                PROCEDURE.request(Request {
-                    command: DoCalibration { sensor_id: None, sensor_type: SensorType::Accelerometer }.into(),
-                    origin: Origin::Unspecified,
-                }).await;
+                PROCEDURE
+                    .request(Request {
+                        command: DoCalibration {
+                            sensor_id: None,
+                            sensor_type: SensorType::Accelerometer,
+                        }
+                        .into(),
+                        origin: Origin::Unspecified,
+                    })
+                    .await;
 
                 // Give the calibrator some time to start
                 Timer::after_millis(10).await;
@@ -113,7 +123,7 @@ impl super::CommandHandler for CalibrateCommand {
                         crate::tasks::calibrator::CalibratorState::Calibrating(Sensor::Acc) => {
                             let mut buffer = UBuffer::<32>::new();
                             uwrite!(buffer, "Calibrating sensor\n\r")?;
-                            serial.write_all(&buffer.inner).await?;
+                            serial.write_all(buffer.bytes()).await?;
                         }
                         _ => {
                             serial
@@ -127,22 +137,28 @@ impl super::CommandHandler for CalibrateCommand {
                 }
             }
             CalibrateCommand::Gyr {
-                sensor,
-                max_variance,
-                max_dropped,
-                duration,
+                sensor: _,
+                max_variance: _,
+                max_dropped: _,
+                duration: _,
             } => {
-                const DEFAULT_MAX_VAR: f32 = 0.01;
-                const DEFAULT_MAX_DROPPED: usize = 5;
-                const DEFAULT_DURATION: u8 = 5;
+                const _DEFAULT_MAX_VAR: f32 = 0.01;
+                const _DEFAULT_MAX_DROPPED: usize = 5;
+                const _DEFAULT_DURATION: u8 = 5;
 
                 serial
                     .write_all(b"Requesting gyroscope calibration\n\r")
                     .await?;
-                PROCEDURE.request(Request {
-                    command: DoCalibration { sensor_id: None, sensor_type: SensorType::Gyroscope }.into(),
-                    origin: Origin::Unspecified,
-                }).await;
+                PROCEDURE
+                    .request(Request {
+                        command: DoCalibration {
+                            sensor_id: None,
+                            sensor_type: SensorType::Gyroscope,
+                        }
+                        .into(),
+                        origin: Origin::Unspecified,
+                    })
+                    .await;
 
                 // Give the calibrator some time to start
                 Timer::after_millis(10).await;
@@ -166,7 +182,7 @@ impl super::CommandHandler for CalibrateCommand {
                         crate::tasks::calibrator::CalibratorState::Calibrating(Sensor::Gyr) => {
                             let mut buffer = UBuffer::<32>::new();
                             uwrite!(buffer, "Calibrating sensor\n\r")?;
-                            serial.write_all(&buffer.inner).await?;
+                            serial.write_all(buffer.bytes()).await?;
                         }
                         _ => {
                             serial
@@ -180,22 +196,28 @@ impl super::CommandHandler for CalibrateCommand {
                 }
             }
             CalibrateCommand::Mag {
-                sensor,
-                max_dropped,
-                pre_scalar,
+                sensor: _,
+                max_dropped: _,
+                pre_scalar: _,
             } => {
-                const DEFAULT_MAX_VAR: f32 = 0.01;
-                const DEFAULT_MAX_DROPPED: usize = 5;
-                const DEFAULT_PRESCALAR: f32 = 50.;
-                const DEFAULT_DURATION: u8 = 5;
+                const _DEFAULT_MAX_VAR: f32 = 0.01;
+                const _DEFAULT_MAX_DROPPED: usize = 5;
+                const _DEFAULT_PRESCALAR: f32 = 50.;
+                const _DEFAULT_DURATION: u8 = 5;
 
                 serial
                     .write_all(b"Requesting gyroscope calibration\n\r")
                     .await?;
-                PROCEDURE.request(Request {
-                    command: DoCalibration { sensor_id: None, sensor_type: SensorType::Magnetometer }.into(),
-                    origin: Origin::Unspecified,
-                }).await;
+                PROCEDURE
+                    .request(Request {
+                        command: DoCalibration {
+                            sensor_id: None,
+                            sensor_type: SensorType::Magnetometer,
+                        }
+                        .into(),
+                        origin: Origin::Unspecified,
+                    })
+                    .await;
 
                 // Give the calibrator some time to start
                 Timer::after_millis(10).await;
@@ -221,7 +243,7 @@ impl super::CommandHandler for CalibrateCommand {
                             MagCalState::Initialized => {
                                 let mut buffer = UBuffer::<32>::new();
                                 uwrite!(buffer, "Calibrating sensor\n\r")?;
-                                serial.write_all(&buffer.inner).await?;
+                                serial.write_all(buffer.bytes()).await?;
                             }
                             MagCalState::Collecting(state) => {
                                 let mut buffer = UBuffer::<64>::new();
@@ -233,17 +255,17 @@ impl super::CommandHandler for CalibrateCommand {
                                     Float(state.sample[1], 2),
                                     Float(state.sample[2], 2)
                                 )?;
-                                serial.write_all(&buffer.inner).await?;
+                                serial.write_all(buffer.bytes()).await?;
                             }
                             MagCalState::DoneSuccess(_) => {
                                 let mut buffer = UBuffer::<32>::new();
                                 uwrite!(buffer, "Successfully calibrated magnetometer!\n\r")?;
-                                serial.write_all(&buffer.inner).await?;
+                                serial.write_all(buffer.bytes()).await?;
                             }
                             MagCalState::DoneFailed(_) => {
                                 let mut buffer = UBuffer::<32>::new();
                                 uwrite!(buffer, "Failed to calibrated magnetomter\n\r")?;
-                                serial.write_all(&buffer.inner).await?;
+                                serial.write_all(buffer.bytes()).await?;
                             }
                         },
                         _ => {

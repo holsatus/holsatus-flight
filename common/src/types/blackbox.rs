@@ -1,9 +1,7 @@
 use embassy_time::Instant;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    filters::rate_pid::RatePidCfg3D, rc_mapping::digital::RcEvent, signals::BLACKBOX_QUEUE,
-};
+use crate::{filters::rate_pid::RatePidCfg3D, signals::BLACKBOX_QUEUE};
 
 use super::status::PidTerms;
 use crate::errors::HolsatusError;
@@ -133,7 +131,7 @@ pub struct BlackboxConfig {
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct RateLog {
     timestamp_us: u64,
-    setpoint: [f32; 3],
+    setpoint: [f32; 4],
     measurement: [f32; 3],
     pid_int: [PidTerms; 3],
     motors: [u16; 4],
@@ -143,7 +141,7 @@ pub fn get_rate_log() -> Option<RateLog> {
     use crate::signals as s;
     Some(RateLog {
         timestamp_us: Instant::now().as_micros(),
-        setpoint: s::TRUE_ANGLE_SP.try_get()?,
+        setpoint: s::TRUE_ATTITUDE_Q_SP.try_get()?.as_vector().clone_owned().into(),
         measurement: s::CAL_IMU_DATA.try_get()?.gyr,
         pid_int: s::RATE_PID_TERMS.try_get()?,
         motors: s::MOTORS_STATE.try_get()?.as_speeds(),
@@ -155,17 +153,10 @@ pub struct RateMetaLog {
     meta: RatePidCfg3D,
 }
 
-pub fn get_rate_meta_log() -> Option<RateMetaLog> {
-    use crate::signals as s;
-    Some(RateMetaLog {
-        meta: s::CFG_RATE_LOOP_PIDS.try_get()?,
-    })
-}
-
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct AngleLog {
     timestamp_us: u64,
-    setpoint: [f32; 3],
+    setpoint: [f32; 4],
     att_estimate: [f32; 3],
     accelerometer: [f32; 3],
     pid_int: [PidTerms; 3],
@@ -175,7 +166,7 @@ pub fn get_angle_log() -> Option<AngleLog> {
     use crate::signals as s;
     Some(AngleLog {
         timestamp_us: Instant::now().as_micros(),
-        setpoint: s::TRUE_ANGLE_SP.try_get()?,
+        setpoint: s::TRUE_ATTITUDE_Q_SP.try_get()?.as_vector().clone_owned().into(),
         att_estimate: s::AHRS_ATTITUDE.try_get()?,
         accelerometer: s::CAL_IMU_DATA.try_get()?.acc,
         pid_int: s::ANGLE_PID_TERMS.try_get()?,
@@ -207,7 +198,7 @@ pub struct MissionLog {
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum Event {
-    RcEvent(RcEvent),
+    // RcEvent(RcEvent),
     Error(HolsatusError),
     // ArmBlocker(ArmingBlocker), enable serde
 }
@@ -221,14 +212,14 @@ impl From<HolsatusError> for LoggableType {
     }
 }
 
-impl From<RcEvent> for LoggableType {
-    fn from(value: RcEvent) -> Self {
-        LoggableType::Event(TsEvent {
-            timestamp_us: Instant::now().as_micros(),
-            event: Event::RcEvent(value),
-        })
-    }
-}
+// impl From<RcEvent> for LoggableType {
+//     fn from(value: RcEvent) -> Self {
+//         LoggableType::Event(TsEvent {
+//             timestamp_us: Instant::now().as_micros(),
+//             event: Event::RcEvent(value),
+//         })
+//     }
+// }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct TsEvent {

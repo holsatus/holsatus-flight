@@ -1,11 +1,8 @@
-use super::bbbuffer::{Consumer, GrantR, Producer};
+use super::buffer::{Consumer, GrantR, Producer};
 use embedded_io::ReadExactError;
 use embedded_io_async::{BufRead, ErrorKind, ErrorType, Read, Write};
 
-use super::{
-    grant::GrantWriter,
-    SerialState,
-};
+use super::{grant::GrantWriter, SerialState};
 
 pub struct SoftWriter<'a> {
     pub(super) producer: Producer<'a>,
@@ -26,18 +23,15 @@ impl SoftWriter<'_> {
                     return Ok(GrantWriter {
                         state: self.state,
                         inner: grant_inner,
-                    })
+                    });
                 }
 
-                // Instead of infinitely looping, return an approximate
-                // embedded_io::ErroKind error.
-                Err(super::bbbuffer::Error::GrantInProgress) => {
-                    debug_assert!(false, "Double-grants are illegal!");
-                    return Err(ErrorKind::InvalidInput);
+                Err(super::buffer::Error::GrantInProgress) => {
+                    panic!("Double-grants are illegal!");
                 }
 
                 // No bytes available to read, wait for subscription
-                _ => {
+                Err(super::buffer::Error::InsufficientSize) => {
                     let res = subscription.await;
                     debug_assert!(res.is_ok());
                 }
@@ -46,7 +40,13 @@ impl SoftWriter<'_> {
     }
 
     pub async fn write(&mut self, buf: &[u8]) -> Result<usize, ErrorKind> {
-        Ok(self.grant_writer().await?.copy_max_from(buf))
+        self.grant_writer()
+            .await
+            .map(|grant| grant.copy_max_from(buf))
+    }
+
+    pub async fn flush(&mut self) -> Result<(), ErrorKind> {
+        Ok(()) // TODO: Imlpement forwarding flush
     }
 
     pub async fn write_all(&mut self, buf: &[u8]) {
@@ -69,13 +69,12 @@ impl<'a> SoftReader<'a> {
                 return Err(error);
             }
 
-            // Release any existing grant,
-            // double-grants are illegal anyway
+            // Release any existing grant, double-grants are illegal anyway
             self.grant = None;
 
             match self.consumer.read() {
                 Ok(g) => return Ok(self.grant.insert(g)),
-                _ => _ = subscription.await
+                _ => _ = subscription.await,
             }
         }
     }
@@ -90,15 +89,7 @@ impl<'a> SoftReader<'a> {
     }
 
     async fn fill_buf(&mut self) -> Result<&[u8], ErrorKind> {
-        let grant = self.get_grant().await?;
-
-        match grant.buf().get(grant.to_release..) {
-            Some(slice) => Ok(slice),
-            None => {
-                debug_assert!(false, "Invalid slice index");
-                Err(ErrorKind::InvalidData)
-            },
-        }
+        self.get_grant().await.map(|grant| grant.buf())
     }
 
     fn consume(&mut self, amt: usize) {
@@ -106,7 +97,6 @@ impl<'a> SoftReader<'a> {
             grant.release(amt);
         }
     }
-
 }
 
 // ---- embedded-io-async impls ---- //
@@ -118,6 +108,10 @@ impl ErrorType for SoftWriter<'_> {
 impl Write for SoftWriter<'_> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         SoftWriter::write(self, buf).await
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        SoftWriter::flush(self).await
     }
 }
 
@@ -152,7 +146,7 @@ pub trait BufReadExt: BufRead {
                 let available = self.fill_buf().await?;
 
                 if available.is_empty() {
-                    return Err(ReadExactError::UnexpectedEof)
+                    return Err(ReadExactError::UnexpectedEof);
                 }
 
                 match available.iter().position(|p| *p == delim) {
@@ -169,17 +163,17 @@ pub trait BufReadExt: BufRead {
     }
 }
 
-impl <R: BufRead> BufReadExt for R {}
+impl<R: BufRead> BufReadExt for R {}
 
 mod test {
-    
+
     #[test]
     fn test_buf_read_skip_until() {
-        use embedded_io_async::Write;
         use crate::{new_serial_reader, sync::serial::soft::BufReadExt};
+        use embedded_io_async::Write;
 
         const BUF: &[u8] = b"dingus_foo_bar_baz";
-        
+
         let mut reader = new_serial_reader!(20);
 
         futures_executor::block_on(async {
@@ -205,11 +199,11 @@ mod test {
 
     #[test]
     fn test_buf_read() {
-        use embedded_io_async::{Write};
         use crate::new_serial_reader;
+        use embedded_io_async::Write;
 
         const BUF: &[u8] = b"_foo_bar_baz";
-        
+
         let mut reader = new_serial_reader!(20);
 
         futures_executor::block_on(async {

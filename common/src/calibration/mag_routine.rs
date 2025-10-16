@@ -1,16 +1,13 @@
-use crate::{errors::CalibrationError, filters::rate_pid::FeedbackHandle};
+use crate::errors::CalibrationError;
 
-use super::{
-    sens3d::{Calib3DType, SmallCalib3D},
-    MagCalib,
-};
+use super::{sens3d::Calib3D, MagCalib, FeedbackHandle};
 
 #[derive(Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum MagCalState {
     Initialized,
     Collecting(MagCalCollecting),
-    DoneSuccess(Calib3DType),
+    DoneSuccess(Calib3D),
     DoneFailed(CalibrationError),
 }
 
@@ -25,7 +22,7 @@ pub async fn calibrate_mag<'a>(
     config: MagCalib,
     sensor_id: u8,
     feedback: FeedbackHandle<'a, MagCalState>,
-) -> Result<Calib3DType, CalibrationError> {
+) -> Result<Calib3D, CalibrationError> {
     feedback.send(MagCalState::Initialized);
 
     let mut calibrator = MagCalibrator::<26>::new()
@@ -78,14 +75,14 @@ pub async fn calibrate_mag<'a>(
 
             if let Some((bias, scale)) = calibrator.perform_calibration() {
                 info!("Calibration complete, bias: {:?}, scale: {:?}", bias, scale);
-                feedback.send(MagCalState::DoneSuccess(Calib3DType::Small(SmallCalib3D {
-                    bias: Some(bias.into()),
-                    scale: Some(scale.into()),
-                })));
-                return Ok(Calib3DType::Small(SmallCalib3D {
-                    bias: Some(bias.into()),
-                    scale: Some(scale.into()),
+                feedback.send(MagCalState::DoneSuccess(Calib3D {
+                    bias: bias.into(),
+                    scale: scale.into(),
                 }));
+                return Ok(Calib3D {
+                    bias: bias.into(),
+                    scale: scale.into(),
+                });
             } else {
                 failed_calibrations += 1;
                 if failed_calibrations > 5 {

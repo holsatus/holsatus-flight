@@ -1,34 +1,34 @@
+use crate::errors::adapter::embedded_io::EmbeddedIoError;
+use crate::serial::IoStreamRaw;
 use crate::signals as s;
 use crate::types::device::HardwareInfo;
-use embassy_futures::join::join;
-use embassy_time::Timer;
+use embassy_futures::join::join3;
+use embassy_time::{with_timeout, Duration, Timer};
+use embassy_usb::class::cdc_acm::{BufferedReceiver, Sender};
 use embassy_usb::UsbDevice;
 use embassy_usb::{
     class::cdc_acm::{CdcAcmClass, State},
     driver::Driver,
     Builder, Config,
 };
+use embedded_io::ErrorKind;
+use grantable_io::GrantableIo;
 use static_cell::StaticCell;
 
-pub async fn main(driver: impl Driver<'static>, info: &'static HardwareInfo) -> ! {
-    const ID: &str = "usb_manager/main";
-    info!("{}: Starting Shell task.", ID);
+pub async fn main(driver: impl Driver<'static>, info: HardwareInfo) -> ! {
+    const ID: &str = "usb";
+    info!("{}: Starting usb manager task.", ID);
 
     const MAX_PACKET_SIZE: u8 = 64;
 
-    // Create embassy-usb Config
+    // Safety: The task never exits, and we shadow the original name
+    let info: &'static HardwareInfo = unsafe { core::mem::transmute(&info) };
+
+    // Configure USB device
     let mut config = Config::new(0xc0de, 0xcafe);
     config.manufacturer = info.make.as_ref().map(|s| s.as_str());
     config.product = info.model.as_ref().map(|s| s.as_str());
     config.serial_number = info.serial_nr.as_ref().map(|s| s.as_str());
-    config.max_packet_size_0 = MAX_PACKET_SIZE;
-
-    // Required for windows compatibility.
-    // https://developer.nordicsemi.com/nRF_Connect_SDK/doc/1.9.1/kconfig/CONFIG_CDC_ACM_IAD.html#help
-    config.device_class = 0xEF;
-    config.device_sub_class = 0x02;
-    config.device_protocol = 0x01;
-    config.composite_with_iads = true;
 
     // Create embassy-usb DeviceBuilder using the driver and config.
     // It needs some buffers for building the descriptors.
@@ -55,95 +55,168 @@ pub async fn main(driver: impl Driver<'static>, info: &'static HardwareInfo) -> 
 
     // Create classes on the builder.
     let class = CdcAcmClass::new(&mut usb_builder, state, MAX_PACKET_SIZE as u16);
-
-    // Build the builder.
     let usb = usb_builder.build();
 
-    // Join the futures, never to return
-    join(run_future(usb), shell_future(class)).await.0
+    let (usb_writer, usb_reader) = class.split();
+
+    static GRANTABLE_RX: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
+    static GRANTABLE_TX: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
+
+    let (mut dev_cons, app_prod) = GRANTABLE_RX.claim_writer();
+    let (mut dev_prod, app_cons) = GRANTABLE_TX.claim_reader();
+
+    let io_stream_raw = IoStreamRaw::new("usb", app_cons, app_prod);
+
+    static IO_STREAM_RAW: StaticCell<IoStreamRaw<'static>> = StaticCell::new();
+    let io_stream_ref = IO_STREAM_RAW.init(io_stream_raw);
+
+    crate::serial::insert(io_stream_ref).unwrap();
+
+    // Make receiver buffered to uphold embedded_io_async::Read invariants
+    static READ_BUFFER: StaticCell<[u8; MAX_PACKET_SIZE as usize]> = StaticCell::new();
+    let buffer = READ_BUFFER.init([0u8; MAX_PACKET_SIZE as usize]);
+    let usb_reader = usb_reader.into_buffered(buffer);
+    let usb_reader = UsbReader { usb_reader };
+
+    let usb_writer = UsbWriter { usb_writer };
+
+    info!("{}: Running all futures", ID);
+
+    let map_err = |error: ErrorKind| error.into();
+
+    join3(
+        dev_prod.embedded_io_connect_mapped(usb_reader, map_err),
+        dev_cons.embedded_io_connect_mapped(usb_writer, map_err),
+        connect_runner_future(usb),
+    )
+    .await
+    .2
 }
 
-pub async fn shell_future<D: Driver<'static>>(mut serial: CdcAcmClass<'static, D>) -> ! {
-    const TASK_ID: &str = "usb_manager/echo";
-
-    let mut rcv_usb_connected = s::USB_CONNECTED.receiver();
-
-    loop {
-        // Wait for USB to be connected
-        rcv_usb_connected.get_and(|connected| *connected).await;
-        serial.wait_connection().await;
-
-        if let Err(e) = crate::shell::run_cli(UsbEio { usb: &mut serial }).await {
-            let h_error: crate::errors::adapter::embedded_io::EmbeddedIoError = e.into();
-            error!("{}: Error running shell: {:?}", TASK_ID, h_error);
-        }
-    }
-}
-
-pub(super) async fn run_future<D: Driver<'static>>(mut usb: UsbDevice<'static, D>) -> ! {
-    const TASK_ID: &str = "usb_manager/run";
+pub(super) async fn connect_runner_future<D: Driver<'static>>(mut usb: UsbDevice<'static, D>) -> ! {
+    const ID: &str = "usb_manager";
     let mut snd_usb_connected = s::USB_CONNECTED.sender();
 
-    info!("{}: Task started", TASK_ID);
+    usb.disable().await;
+
+    // This is flaky as f... on stm32. Until a connection is made,
+    // it will false believe there is a USB connection
+    snd_usb_connected.send(false);
+
     loop {
-        // Wait for the USB to be connected
-        info!("{}: Waiting for USB connection", TASK_ID);
-        usb.wait_resume().await;
-
-        // Signal the USB connection status and run USB until it is suspended
-        snd_usb_connected.send(true);
-        info!("{}: USB connection resumed", TASK_ID);
-
+        info!("{}: USB connection resumed", ID);
+        Timer::after_millis(100).await;
         usb.run_until_suspend().await;
         snd_usb_connected.send(false);
 
+        info!("{}: Waiting for USB connection", ID);
         Timer::after_millis(100).await;
+        usb.wait_resume().await;
+        snd_usb_connected.send(true);
     }
 }
 
 // Implement the embedded-io-async trait on a wrapped embassy-usb device.
 
-struct UsbEio<'a, D: Driver<'static>> {
-    usb: &'a mut CdcAcmClass<'static, D>,
+struct UsbWriter<D: Driver<'static>> {
+    usb_writer: Sender<'static, D>,
 }
 
-impl<'a, D: Driver<'static>> embedded_io_async::ErrorType for UsbEio<'a, D> {
+impl<D: Driver<'static>> embedded_io_async::ErrorType for UsbWriter<D> {
     type Error = embedded_io_async::ErrorKind;
 }
 
-impl<'a, D: Driver<'static>> embedded_io_async::Read for UsbEio<'a, D> {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        self.usb.read_packet(buf).await.map_err(err_map)
-    }
-}
-
-impl<'a, D: Driver<'static>> embedded_io_async::Write for UsbEio<'a, D> {
+impl<D: Driver<'static>> embedded_io_async::Write for UsbWriter<D> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        trace!("Writing {} bytes to USB: {:?}", buf.len(), buf);
-        let mut written = 0;
-        for chunk in buf.chunks(self.usb.max_packet_size() as usize) {
-            self.usb.write_packet(chunk).await.map_err(err_map)?;
-            written += chunk.len();
+        if !self.usb_writer.dtr() {
+            Timer::after_millis(100).await;
+            return Err(embedded_io::ErrorKind::NotConnected);
         }
-        Ok(written)
+
+        let mut count = 0;
+        for chunk in buf.chunks(self.usb_writer.max_packet_size() as usize) {
+            self.usb_writer.write_packet(chunk).await.map_err(err_map)?;
+            count += chunk.len()
+        }
+
+        if buf.len() % self.usb_writer.max_packet_size() as usize == 0 {
+            self.usb_writer.write_packet(&[]).await.map_err(err_map)?;
+        }
+
+        Ok(count)
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        self.usb_writer.flush().await.map_err(err_map)
     }
 }
 
-impl<'a, D: Driver<'static>> embedded_io::Write for UsbEio<'a, D> {
+impl<D: Driver<'static>> embedded_io::Write for UsbWriter<D> {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        embassy_futures::block_on(async {
-            <Self as embedded_io_async::Write>::write(self, buf).await
-        })
+        if !self.usb_writer.dtr() {
+            return Err(embedded_io::ErrorKind::NotConnected);
+        }
+
+        // Block for at most 20 milli seconds. Be very careful only to use the sync UsbWriter
+        // in executors of lower priority than the one driving the USB device.
+        let maybe_timeout = embassy_futures::block_on(async {
+            with_timeout(
+                Duration::from_millis(20),
+                <Self as embedded_io_async::Write>::write(self, buf),
+            )
+            .await
+        });
+
+        match maybe_timeout {
+            Ok(result) => return result,
+            Err(_) => return Err(embedded_io::ErrorKind::TimedOut),
+        }
     }
 
     fn flush(&mut self) -> Result<(), Self::Error> {
-        Ok(())
+        if !self.usb_writer.dtr() {
+            return Err(embedded_io::ErrorKind::NotConnected);
+        }
+
+        // Block for at most 20 milli seconds. Be very careful only to use the sync UsbWriter
+        // in executors of lower priority than the one driving the USB device.
+        let maybe_timeout = embassy_futures::block_on(async {
+            with_timeout(
+                Duration::from_millis(20),
+                <Self as embedded_io_async::Write>::flush(self),
+            )
+            .await
+        });
+
+        match maybe_timeout {
+            Ok(result) => return result,
+            Err(_) => return Err(embedded_io::ErrorKind::TimedOut),
+        }
+    }
+}
+
+struct UsbReader<D: Driver<'static>> {
+    usb_reader: BufferedReceiver<'static, D>,
+}
+
+impl<D: Driver<'static>> embedded_io_async::ErrorType for UsbReader<D> {
+    type Error = embedded_io_async::ErrorKind;
+}
+
+impl<D: Driver<'static>> embedded_io_async::Read for UsbReader<D> {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        if !self.usb_reader.dtr() {
+            Timer::after_millis(100).await;
+            return Err(embedded_io::ErrorKind::NotConnected);
+        }
+
+        self.usb_reader.read(buf).await.map_err(err_map)
     }
 }
 
 fn err_map(e: embassy_usb::driver::EndpointError) -> embedded_io::ErrorKind {
     match e {
         embassy_usb::driver::EndpointError::BufferOverflow => embedded_io::ErrorKind::OutOfMemory,
-        embassy_usb::driver::EndpointError::Disabled => embedded_io::ErrorKind::NotConnected,
+        embassy_usb::driver::EndpointError::Disabled => embedded_io::ErrorKind::NotFound,
     }
 }

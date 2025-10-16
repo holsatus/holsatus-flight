@@ -1,11 +1,10 @@
-use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Ticker};
 
-use crate::types::blackbox::get_rate_log;
 use crate::types::blackbox::{get_angle_log, LoggableType};
+use crate::types::blackbox::{get_rate_log, LogPreset};
 
 use crate::errors::BlackboxError;
-use crate::{get_or_warn, signals as s};
+use crate::signals as s;
 
 #[embassy_executor::task]
 pub async fn main() -> ! {
@@ -13,18 +12,13 @@ pub async fn main() -> ! {
 
     info!("{}: Task started, entering main loop", ID);
 
-    let mut rcv_log_preset = s::CFG_LOG_PRESET.receiver();
-
-    let mut preset = get_or_warn!(rcv_log_preset).await;
+    let preset = LogPreset::default();
 
     let mut ticker = Ticker::every(Duration::from_hz(preset.base_log_rate as u64));
     let mut counter = 0u8;
     loop {
         // Update the log preset of wait for the next logging tick
-        if let Either::First(new_preset) = select(rcv_log_preset.changed(), ticker.next()).await {
-            preset = new_preset;
-            continue;
-        }
+        ticker.next().await;
 
         // RATE LOG
         if preset.rate_div.should_run_balanced(counter) {

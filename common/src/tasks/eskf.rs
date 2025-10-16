@@ -1,8 +1,12 @@
-use crate::{consts::GRAVITY, signals as s, sync::{channel::Channel, watch::Watch}, types::measurements::{Imu6DofData, ViconData}};
-use embassy_futures::select::{select, Either};
+use crate::{
+    consts::GRAVITY,
+    signals as s,
+    sync::{channel::Channel, watch::Watch},
+    types::measurements::{Imu6DofData, ViconData},
+};
+use embassy_executor::SendSpawner;
 use embassy_time::Instant;
-use mutex::raw_impls::cs::CriticalSectionRawMutex;
-use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector2, Vector3};
+use nalgebra::{SMatrix, UnitQuaternion};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -40,8 +44,8 @@ pub struct Cartesian(
     [f32; 3],
 );
 
-pub static ESKF_GLOBAL_POS: Watch<Position<Geodetic>, CriticalSectionRawMutex> = Watch::new();
-pub static ESKF_LOCAL_POS: Watch<Position<Cartesian>, CriticalSectionRawMutex> = Watch::new();
+pub static ESKF_GLOBAL_POS: Watch<Position<Geodetic>> = Watch::new();
+pub static ESKF_LOCAL_POS: Watch<Position<Cartesian>> = Watch::new();
 
 #[embassy_executor::task]
 pub async fn imu_buffer_helper() -> ! {
@@ -54,21 +58,50 @@ pub async fn imu_buffer_helper() -> ! {
 
 pub enum Message {
     ImuData(Imu6DofData<f32>),
-    ViconData(ViconData)
+    ViconData(ViconData),
 }
 
-static CHANNEL: Channel<Message, CriticalSectionRawMutex, 10> = Channel::new();
+static CHANNEL: Channel<Message, 10> = Channel::new();
+
+#[derive(Default)] // TODO - attitude is not valid to be zero-initialized
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct EskfEstimate {
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    pub att: [f32; 4],
+}
+
+#[embassy_executor::task]
+pub async fn imu_helper() -> ! {
+    let mut rcv_imu_data = s::CAL_MULTI_IMU_DATA[0].receiver();
+    loop {
+        let imu_data = rcv_imu_data.changed().await;
+        CHANNEL.send(Message::ImuData(imu_data)).await;
+    }
+}
+
+#[embassy_executor::task]
+pub async fn vicon_helper() -> ! {
+    let mut rcv_vicon_data = s::VICON_POSITION_ESTIMATE.receiver();
+    loop {
+        let imu_data = rcv_vicon_data.changed().await;
+        CHANNEL.send(Message::ViconData(imu_data)).await;
+    }
+}
 
 #[embassy_executor::task]
 pub async fn main() -> ! {
-    static STR_ID: &str = "local_estimator";
-    info!("{}: Task started", STR_ID);
+    info!("[eskf] Task started");
 
     let rcv_channel = CHANNEL.receiver();
 
-    let mut snd_eskf_vicon_pos = s::ESKF_VICON_POS.sender();
-    let mut snd_eskf_vicon_vel = s::ESKF_VICON_VEL.sender();
-    let mut snd_eskf_vicon_att = s::ESKF_VICON_ATT.sender();
+    let spawner = SendSpawner::for_current_executor().await;
+    spawner.spawn(imu_helper().unwrap());
+    spawner.spawn(vicon_helper().unwrap());
+
+    let mut snd_eskf_estimate = s::ESKF_ESTIMATE.sender();
+    snd_eskf_estimate.send(EskfEstimate::default());
 
     let mut filter = eskf::Builder::new()
         .gravity(GRAVITY)
@@ -80,59 +113,62 @@ pub async fn main() -> ! {
     let mut prev_pred_time = Instant::MIN;
     let mut counter = 0;
 
-    info!("{}: Entering main loop", STR_ID);
+    info!("[eskf] Entering main loop");
 
     loop {
         match rcv_channel.receive().await {
             Message::ImuData(imu_data) => {
                 counter += 1;
-                if counter < 20 { continue }
+                if counter < 10 {
+                    continue;
+                }
                 counter = 0;
+
+                // Toss some fo the IMU readings
 
                 let curr_time = Instant::now();
                 let delta_time = curr_time.duration_since(prev_pred_time);
                 let delta_time = delta_time.as_micros() as f32 / 1e6;
                 prev_pred_time = curr_time;
-                
+
+
                 // Prediction takes ~ 4500 us on stm32f405
-                filter.predict_optimized(
-                    imu_data.acc.into(),
-                    imu_data.gyr.into(),
-                    delta_time
-                );
+                filter.predict_optimized(imu_data.acc.into(), imu_data.gyr.into(), delta_time);
 
+                let estimate = EskfEstimate {
+                    pos: filter.position.into(),
+                    vel: filter.velocity.into(),
+                    att: filter.orientation.as_vector().clone().into(),
+                };
 
-                debug!("[{}] Publishing ESKF vicon estimates", STR_ID);
-                snd_eskf_vicon_pos.send(filter.position.into());
-                snd_eskf_vicon_vel.send(filter.velocity.into());
-                snd_eskf_vicon_att.send(filter.orientation.as_vector().clone().into());
-            },
+                snd_eskf_estimate.send(estimate);
+            }
             Message::ViconData(vicon_data) => {
-
-                // Skip the observation for low quality
-                if vicon_data.quality < 3 {
-                    continue;
-                }
+                // TODO Skip outliers / high variance?
 
                 let roll = vicon_data.attitude[0];
                 let pitch = vicon_data.attitude[1];
                 let yaw = vicon_data.attitude[2];
 
+                let pos_var_storage = nalgebra::ArrayStorage(vicon_data.pos_var);
+                let att_var_storage = nalgebra::ArrayStorage(vicon_data.att_var);
 
                 let result = filter.observe_position_orientation(
                     vicon_data.position.into(),
-                    Matrix3::from_diagonal_element(0.05),
+                    SMatrix::from_array_storage(pos_var_storage),
                     UnitQuaternion::from_euler_angles(roll, pitch, yaw),
-                    Matrix3::from_diagonal_element(0.05),
+                    SMatrix::from_array_storage(att_var_storage),
                 );
 
                 if result.is_err() {
-                    error!("[{}] Unable to do matrix inversion during ESKF update", STR_ID);
+                    error!("[eskf] Unable to do matrix inversion during ESKF update");
                 }
             }
         }
     }
 }
+
+/*
 
 
 #[embassy_executor::task]
@@ -318,3 +354,5 @@ pub fn lat_factor(latitude: i32) -> f32 {
     use num_traits::Float as _;
     KM_PER_DEG_OF_LAT * (latitude as f32 / 180.0).cos()
 }
+
+*/

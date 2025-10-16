@@ -1,11 +1,12 @@
 use crate::{
-    shell::{UBuffer, CLEAR_SCREEN, INTERRUPT},
+    errors::adapter::embedded_io::EmbeddedIoError,
+    shell::{CLEAR_SCREEN, INTERRUPT},
     types::status::ArmingBlocker,
+    utils::u_types::UBuffer,
 };
 use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Ticker};
 use embedded_cli::Command;
-use embedded_io::ErrorKind;
 use embedded_io_async::{Read, Write};
 use ufmt::{uWrite, uwrite};
 
@@ -26,8 +27,8 @@ pub enum ArmingCommand {
 impl super::CommandHandler for ArmingCommand {
     async fn handler(
         &self,
-        mut serial: impl Read<Error = ErrorKind> + Write<Error = ErrorKind>,
-    ) -> Result<(), ErrorKind> {
+        mut serial: impl Read<Error = EmbeddedIoError> + Write<Error = EmbeddedIoError>,
+    ) -> Result<(), EmbeddedIoError> {
         match self {
             ArmingCommand::Status => {
                 serial
@@ -75,7 +76,7 @@ impl super::CommandHandler for ArmingCommand {
                         }
 
                         // Write buffer to serial
-                        serial.write_all(&buffer.inner).await?;
+                        serial.write_all(buffer.bytes()).await?;
                     }
 
                     serial.flush().await?;

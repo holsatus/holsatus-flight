@@ -4,19 +4,19 @@
 
 use crate::signals as s;
 
-use crate::{signals::{CALIBRATOR_STATE, CMD_CALIBRATE}, sync::{procedure::Procedure, watch::Watch}, tasks::calibrator::CalibratorState};
+use crate::types::control::ControlMode;
+use crate::{
+    signals::{CALIBRATOR_STATE, CMD_CALIBRATE},
+    sync::{procedure::Procedure, watch::Watch},
+    tasks::calibrator::CalibratorState,
+};
 use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Instant, Ticker};
-use mutex::raw_impls::cs::CriticalSectionRawMutex as M;
 
 const CHANNEL_LEN: usize = 4;
 
 pub mod message;
 pub use message::{Command, Origin, Request, Response};
-use postcard_schema::Schema;
-use serde::{Deserialize, Serialize};
-
-use crate::tasks::configurator2::CONFIGURATOR;
 
 /// Channel for sending commands to the [`Commander`] task
 ///
@@ -25,17 +25,24 @@ use crate::tasks::configurator2::CONFIGURATOR;
 /// which has the [`Procedure::request`] method that waits for a response.
 /// If waiting for a response is not necessarry, like commands from an
 /// RC transmitter, just use [`Procedure::send`] instead.
-pub static PROCEDURE: Procedure<M, Request, Response, CHANNEL_LEN> = Procedure::new();
+pub static PROCEDURE: Procedure<Request, Response, CHANNEL_LEN> = Procedure::new();
 
-#[derive(Schema, Serialize, Deserialize)]
-struct CommanderConfig {
-    ticker_dur_ms: u16,
-}
+pub mod params {
+    use crate::tasks::param_storage::Table;
 
-impl Default for CommanderConfig {
-    fn default() -> Self {
-        CommanderConfig { ticker_dur_ms: 500 }
+    #[derive(mav_param::Tree, Clone)]
+    pub struct Params {
+        #[param(rename = "tick_ms")]
+        pub periodics_ms: u16,
     }
+
+    impl Params {
+        pub const fn const_default() -> Self {
+            Params { periodics_ms: 500 }
+        }
+    }
+
+    pub static TABLE: Table<Params> = Table::new("cmd", Params::const_default());
 }
 
 /// The main commander task
@@ -53,10 +60,10 @@ struct DisarmInfo {
 }
 
 impl Commander {
-    fn new(config: CommanderConfig) -> Self {
+    fn new(params: params::Params) -> Self {
         Self {
             name: "commander",
-            ticker: Ticker::every(Duration::from_millis(config.ticker_dur_ms as u64)),
+            ticker: Ticker::every(Duration::from_millis(params.periodics_ms as u64)),
             disarm_info: DisarmInfo {
                 time: Instant::MIN,
                 origin: Origin::Unspecified,
@@ -68,20 +75,22 @@ impl Commander {
 
 impl Default for Commander {
     fn default() -> Self {
-        Self::new(CommanderConfig::default())
+        Self::new(params::Params::const_default())
     }
 }
 
 #[embassy_executor::task]
-pub async fn commander_entry_task() -> ! {
+pub async fn main() -> ! {
     commander_entry().await
 }
 
 pub async fn commander_entry() -> ! {
-    let config = CONFIGURATOR.load_or_default("commander").await;
+    let params = params::TABLE.read_initialized().await;
 
-    let mut commander = Commander::new(config);
-    CMD_ARM_VEHICLE.send(false);
+    let mut commander = Commander::new(params.clone());
+    COMMAD_ARM_VEHICLE.send(false);
+
+    drop(params);
 
     commander.main_loop().await
 }
@@ -114,9 +123,9 @@ impl Commander {
                 false => self.disarm_vehicle(cmd.force, request.origin),
             },
             Command::DoCalibration(cmd) => {
-                use crate::calibration::{Calibrate, AccCalib, GyrCalib};
+                use crate::calibration::{AccCalib, Calibrate, GyrCalib};
 
-                if CMD_ARM_VEHICLE.is(&true) {
+                if COMMAD_ARM_VEHICLE.is(&true) {
                     error!("[{}] Cannot calibrate when armed", self.name);
                     return Response::Rejected;
                 }
@@ -144,7 +153,7 @@ impl Commander {
                     return Response::Rejected;
                 }
 
-                if CMD_ARM_VEHICLE.is(&false) {
+                if COMMAD_ARM_VEHICLE.is(&false) {
                     error!("[{}] Must be armed to override actuators", self.name);
                     return Response::Rejected;
                 }
@@ -179,7 +188,24 @@ impl Commander {
                 true => Response::Accepted,
                 false => Response::Rejected,
             },
-            Command::SetControlMode { .. } => Response::Unsupported,
+            Command::SetControlMode(requested_mode) => {
+                let mode = match requested_mode {
+                    message::SetControlMode::Rate => ControlMode::Rate,
+                    message::SetControlMode::Angle => ControlMode::Angle,
+                    message::SetControlMode::Velocity => {
+                        // TODO Ensure valid velocity estimate
+                        ControlMode::Velocity
+                    }
+                    message::SetControlMode::Autonomous => {
+                        // TODO Ensure valid position estimate
+                        ControlMode::Autonomous
+                    }
+                };
+
+                CMD_CONTROL_MODE.send(mode);
+
+                Response::Accepted
+            }
         }
     }
 
@@ -190,19 +216,19 @@ impl Commander {
 
     /// Run necessary checks and arm the vehicle
     fn arm_vehicle(&mut self, force: bool) -> Response {
-        if CMD_ARM_VEHICLE.is(&true) {
+        if COMMAD_ARM_VEHICLE.is(&true) {
             info!("[{}] Vehicle already armed", self.name);
             return Response::Unchanged;
         }
 
         if force {
             info!("[{}] Force arming vehicle", self.name);
-            CMD_ARM_VEHICLE.send(true);
+            COMMAD_ARM_VEHICLE.send(true);
             return Response::Accepted;
         }
 
         if self.arm_skip_condition() || self.arm_checks() {
-            CMD_ARM_VEHICLE.send(true);
+            COMMAD_ARM_VEHICLE.send(true);
             info!("[{}] Arming vehicle", self.name);
             Response::Accepted
         } else {
@@ -213,7 +239,7 @@ impl Commander {
 
     /// Run necessary checks and disarm the vehicle
     fn disarm_vehicle(&mut self, force: bool, origin: Origin) -> Response {
-        if CMD_ARM_VEHICLE.is(&false) {
+        if COMMAD_ARM_VEHICLE.is(&false) {
             info!("[{}] Vehicle already disarmed", self.name);
             return Response::Unchanged;
         }
@@ -225,13 +251,13 @@ impl Commander {
 
         if force {
             info!("[{}] Force disarming vehicle", self.name);
-            CMD_ARM_VEHICLE.send(false);
+            COMMAD_ARM_VEHICLE.send(false);
             self.disarm_info = disarm_info;
             return Response::Accepted;
         }
 
         if self.disarm_checks() {
-            CMD_ARM_VEHICLE.send(false);
+            COMMAD_ARM_VEHICLE.send(false);
             self.disarm_info = disarm_info;
             info!("[{}] Disarming vehicle", self.name);
             Response::Accepted
@@ -273,7 +299,7 @@ impl Commander {
             warn!("[{}] ArmingBlocker is not empty: {:?}", self.name, blocker);
             return false;
         }
-        
+
         info!("[{}] Preflight checks passed", self.name);
         true
     }
@@ -295,18 +321,21 @@ impl Commander {
 }
 
 /// Whether to arm the vehicle. True for arm, false for disarm.
-static CMD_ARM_VEHICLE: Watch<bool, M> = Watch::new();
+pub static COMMAD_ARM_VEHICLE: Watch<bool> = Watch::new();
 
 /// Whether the vehicle is on the ground or airborne
-static STATUS_ON_GROUND: Watch<bool, M> = Watch::new();
+pub static STATUS_ON_GROUND: Watch<bool> = Watch::new();
 
 /// Whether the vehicle is on the ground or airborne
-pub static CMD_RATE_REF: Watch<&'static Watch<[f32; 4], M>, M> = Watch::new();
-pub static IMU_PRIM_CAL: Watch<&'static Watch<[f32; 3], M>, M> = Watch::new();
+pub static CMD_RATE_REF: Watch<&'static Watch<[f32; 4]>> = Watch::new();
+pub static IMU_PRIM_CAL: Watch<&'static Watch<[f32; 3]>> = Watch::new();
+
+/// Select the currently active control mode
+pub static CMD_CONTROL_MODE: Watch<ControlMode> = Watch::new();
 
 const NUM_OUT_GROUPS: usize = 4;
-pub static CMD_ACTUATOR_OVERRIDE: [Watch<Option<[f32; 4]>, M>; NUM_OUT_GROUPS] = {
-    const REPEAT: Watch<Option<[f32; 4]>, M> = Watch::new();
+pub static CMD_ACTUATOR_OVERRIDE: [Watch<Option<[f32; 4]>>; NUM_OUT_GROUPS] = {
+    const REPEAT: Watch<Option<[f32; 4]>> = Watch::new();
     [REPEAT; NUM_OUT_GROUPS]
 };
 
@@ -318,10 +347,10 @@ mod tests {
 
     #[test]
     fn arming_accepted() {
-        let config = CommanderConfig::default();
-        let mut commander = Commander::new(config);
+        let params = params::Params::const_default();
+        let mut commander = Commander::new(params);
 
-        CMD_ARM_VEHICLE.send(false);
+        COMMAD_ARM_VEHICLE.send(false);
         STATUS_ON_GROUND.send(true);
 
         let request = (
@@ -329,8 +358,9 @@ mod tests {
                 arm: true,
                 force: false,
             },
-            Origin::RemoteControl
-        ).into();
+            Origin::RemoteControl,
+        )
+            .into();
 
         let response = commander.handle_command(request);
         assert_eq!(response, Response::Accepted);
@@ -338,10 +368,10 @@ mod tests {
 
     #[test]
     fn arming_rejected() {
-        let config = CommanderConfig::default();
-        let mut commander = Commander::new(config);
+        let params = params::Params::const_default();
+        let mut commander = Commander::new(params);
 
-        CMD_ARM_VEHICLE.send(false); // Disarmed
+        COMMAD_ARM_VEHICLE.send(false); // Disarmed
         STATUS_ON_GROUND.send(false); // In air
 
         let request = (
@@ -349,8 +379,9 @@ mod tests {
                 arm: true,
                 force: false,
             },
-            Origin::Unspecified
-        ).into();
+            Origin::Unspecified,
+        )
+            .into();
 
         let response = commander.handle_command(request);
         assert_eq!(response, Response::Rejected);
@@ -358,10 +389,10 @@ mod tests {
 
     #[test]
     fn arming_unchanged() {
-        let config = CommanderConfig::default();
-        let mut commander = Commander::new(config);
+        let params = params::Params::const_default();
+        let mut commander = Commander::new(params);
 
-        CMD_ARM_VEHICLE.send(true);
+        COMMAD_ARM_VEHICLE.send(true);
         STATUS_ON_GROUND.send(false);
 
         let request = (
@@ -369,8 +400,9 @@ mod tests {
                 arm: true,
                 force: false,
             },
-            Origin::RemoteControl
-        ).into();
+            Origin::RemoteControl,
+        )
+            .into();
 
         let response = commander.handle_command(request);
         assert_eq!(response, Response::Unchanged);

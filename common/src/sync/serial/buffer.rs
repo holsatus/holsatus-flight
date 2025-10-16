@@ -1,7 +1,7 @@
 use core::{
     cmp::min,
     marker::PhantomData,
-    mem::{forget, transmute},
+    mem::forget,
     ptr::NonNull,
     slice::{from_raw_parts, from_raw_parts_mut},
 };
@@ -231,7 +231,6 @@ impl<'a> Producer<'a> {
         Ok(GrantW {
             buf: grant_slice.into(),
             bbq: self.state,
-            to_commit: 0,
             phatom: PhantomData,
         })
     }
@@ -303,7 +302,6 @@ impl<'a> Producer<'a> {
         Ok(GrantW {
             buf: grant_slice.into(),
             bbq: self.state,
-            to_commit: 0,
             phatom: PhantomData,
         })
     }
@@ -369,7 +367,6 @@ impl<'a> Consumer<'a> {
         Ok(GrantR {
             buf: grant_slice.into(),
             bbq: self.state,
-            to_release: 0,
             phatom: PhantomData,
         })
     }
@@ -389,7 +386,6 @@ impl<'a> Consumer<'a> {
 pub struct GrantW<'a> {
     pub(crate) buf: NonNull<[u8]>,
     bbq: NonNull<BufferState>,
-    pub(crate) to_commit: usize,
     phatom: PhantomData<&'a mut [u8]>,
 }
 
@@ -411,7 +407,6 @@ unsafe impl Send for GrantW<'_> {}
 pub struct GrantR<'a> {
     pub(crate) buf: NonNull<[u8]>,
     bbq: NonNull<BufferState>,
-    pub(crate) to_release: usize,
     phatom: PhantomData<&'a mut [u8]>,
 }
 
@@ -433,29 +428,12 @@ impl GrantW<'_> {
     }
 
     /// Obtain access to the inner buffer for writing
-    pub fn buf(&mut self) -> &mut [u8] {
+    pub fn buf_mut(&mut self) -> &mut [u8] {
         unsafe { from_raw_parts_mut(self.buf.as_ptr() as *mut u8, self.buf.len()) }
     }
 
-    /// Sometimes, it's not possible for the lifetimes to check out. For example,
-    /// if you need to hand this buffer to a function that expects to receive a
-    /// `&'static mut [u8]`, it is not possible for the inner reference to outlive the
-    /// grant itself.
-    ///
-    /// # Safety
-    ///
-    /// You MUST guarantee that in no cases, the reference that is returned here outlives
-    /// the grant itself. Once the grant has been released, referencing the data contained
-    /// WILL cause undefined behavior.
-    ///
-    /// Additionally, you must ensure that a separate reference to this data is not created
-    /// to this data, e.g. using `DerefMut` or the `buf()` method of this grant.
-    pub unsafe fn as_static_mut_buf(&mut self) -> &'static mut [u8] {
-        unsafe { transmute::<&mut [u8], &'static mut [u8]>(self.buf()) }
-    }
-
     #[inline(always)]
-    pub(crate) fn commit_inner(&mut self, used: usize) {
+    fn commit_inner(&mut self, used: usize) {
         let inner = unsafe { &self.bbq.as_ref() };
 
         // If there is no grant in progress, return early. This
@@ -506,11 +484,6 @@ impl GrantW<'_> {
         // Allow subsequent grants
         inner.write_in_progress.store(false, Release);
     }
-
-    /// Configures the amount of bytes to be commited on drop.
-    pub fn to_commit(&mut self, amt: usize) {
-        self.to_commit = self.buf.len().min(amt);
-    }
 }
 
 impl GrantR<'_> {
@@ -523,9 +496,6 @@ impl GrantR<'_> {
     /// NOTE:  If the `thumbv6` feature is selected, this function takes a short critical
     /// section while releasing.
     pub fn release(mut self, used: usize) {
-        // Saturate the grant release
-        let used = min(self.buf.len(), used);
-
         self.release_inner(used);
         forget(self);
     }
@@ -543,25 +513,8 @@ impl GrantR<'_> {
         unsafe { from_raw_parts_mut(self.buf.as_ptr() as *mut u8, self.buf.len()) }
     }
 
-    /// Sometimes, it's not possible for the lifetimes to check out. For example,
-    /// if you need to hand this buffer to a function that expects to receive a
-    /// `&'static [u8]`, it is not possible for the inner reference to outlive the
-    /// grant itself.
-    ///
-    /// # Safety
-    ///
-    /// You MUST guarantee that in no cases, the reference that is returned here outlives
-    /// the grant itself. Once the grant has been released, referencing the data contained
-    /// WILL cause undefined behavior.
-    ///
-    /// Additionally, you must ensure that a separate reference to this data is not created
-    /// to this data, e.g. using `Deref` or the `buf()` method of this grant.
-    pub unsafe fn as_static_buf(&self) -> &'static [u8] {
-        unsafe { transmute::<&[u8], &'static [u8]>(self.buf()) }
-    }
-
     #[inline(always)]
-    pub(crate) fn release_inner(&mut self, used: usize) {
+    fn release_inner(&mut self, used: usize) {
         let inner = unsafe { &self.bbq.as_ref() };
 
         // If there is no grant in progress, return early. This
@@ -571,29 +524,28 @@ impl GrantR<'_> {
             return;
         }
 
+        // Saturate the grant release
+        let used = min(self.buf.len(), used);
+
         // This should always be checked by the public interfaces
         debug_assert!(used <= self.buf.len());
 
         // This should be fine, purely incrementing
         let _ = inner.read.fetch_add(used, Release);
 
+        // Allow subsequent grants
         inner.read_in_progress.store(false, Release);
-    }
-
-    /// Configures the amount of bytes to be released on drop.
-    pub fn to_release(&mut self, amt: usize) {
-        self.to_release = self.buf.len().min(amt);
     }
 }
 
 impl Drop for GrantW<'_> {
     fn drop(&mut self) {
-        self.commit_inner(self.to_commit)
+        self.commit_inner(0)
     }
 }
 
 impl Drop for GrantR<'_> {
     fn drop(&mut self) {
-        self.release_inner(self.to_release)
+        self.release_inner(0)
     }
 }

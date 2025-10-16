@@ -174,7 +174,9 @@ impl From<mavio::error::FrameError> for MavlinkError {
             mavio::error::FrameError::Signature => MavlinkError::SignatureFailure,
             mavio::error::FrameError::Incompatible(_) => MavlinkError::Incompatible,
             mavio::error::FrameError::NotInDialect(id) => MavlinkError::UnknownMessageID(id),
-            mavio::error::FrameError::FrameBufferIsTooSmall { .. } => MavlinkError::FrameBufferIsTooSmall,
+            mavio::error::FrameError::FrameBufferIsTooSmall { .. } => {
+                MavlinkError::FrameBufferIsTooSmall
+            }
             mavio::error::FrameError::InvalidHeader => MavlinkError::InvalidHeader,
         }
     }

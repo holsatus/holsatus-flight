@@ -12,9 +12,12 @@ pub enum Parser {
     Crsf(CrsfParser),
 }
 
-pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
+#[embassy_executor::task]
+pub async fn main(serial_id: &'static str) -> ! {
     const ID: &str = "rc_serial_reader";
     info!("{}: Task started", ID);
+
+    let mut serial = crate::serial::claim(serial_id).unwrap();
 
     // Output signals
     let mut snd_rc_channels = s::RC_CHANNELS_RAW.sender();
@@ -44,7 +47,7 @@ pub async fn main(mut uart_rx: impl embedded_io_async::Read) -> ! {
         }
 
         // Read serial data, but with a timeout
-        let bytes = match uart_rx.read(&mut buffer).await {
+        let bytes = match serial.reader.read(&mut buffer).await {
             Ok(bytes) => bytes,
             Err(err) => {
                 if err_debounce.elapsed() > Duration::from_millis(50) {

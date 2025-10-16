@@ -30,9 +30,7 @@ pub(crate) struct Crc8 {
 
 impl Crc8 {
     pub const fn new() -> Self {
-        Crc8 {
-            digest: 0,
-        }
+        Crc8 { digest: 0 }
     }
 
     pub fn compute(&mut self, data: &[u8]) {

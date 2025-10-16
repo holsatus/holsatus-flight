@@ -20,9 +20,7 @@ pub enum Command {
     SetActuatorOverride {
         active: bool,
     },
-    SetControlMode {
-        mode: crate::types::control::ControlMode
-    },
+    SetControlMode(SetControlMode),
     RunArmChecks,
 }
 
@@ -54,13 +52,26 @@ pub struct DoCalibration {
 
 impl_command_from!(DoCalibration);
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum SetControlMode {
+    Rate,
+    Angle,
+    Velocity,
+    Autonomous,
+}
+
+impl_command_from!(SetControlMode);
+
 /// A request to the [`Commander`](crate::commander::Commander)
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Request {
     pub command: Command,
     pub origin: Origin,
 }
 
-impl <T: Into<Command>> From<(T, Origin)> for Request {
+impl<T: Into<Command>> From<(T, Origin)> for Request {
     fn from((command, origin): (T, Origin)) -> Self {
         Request {
             command: command.into(),
@@ -122,7 +133,7 @@ pub enum Origin {
 
     /// The command was issued by an automated event
     Automatic,
-    
+
     /// The command was issued via a command line
     CommandLine,
 }

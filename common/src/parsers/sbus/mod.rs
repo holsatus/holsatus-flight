@@ -21,7 +21,7 @@ const FOOT_BYTE: u8 = 0b00000000;
 // Number of bytes in SBUS message
 const PACKET_SIZE: usize = 25;
 
-#[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct SbusPacket {
     pub channels: [u16; 16],
@@ -31,17 +31,18 @@ pub struct SbusPacket {
     pub frame_lost: bool,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum State {
     AwaitingHead,
     Reading(usize),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct SbusParser {
     buffer: [u8; PACKET_SIZE],
     state: State,
-    len: usize,
 }
 
 impl SbusParser {
@@ -49,7 +50,6 @@ impl SbusParser {
         SbusParser {
             buffer: [0; PACKET_SIZE],
             state: State::AwaitingHead,
-            len: 0,
         }
     }
 
@@ -76,15 +76,27 @@ impl SbusParser {
         None
     }
 
-    pub async fn read(&mut self, mut reader: impl super::BufReadExt + embedded_io_async::Read) -> Result<SbusPacket, ParseError> {
-
+    pub async fn read(
+        &mut self,
+        mut reader: impl super::BufReadExt + embedded_io_async::Read,
+    ) -> Result<SbusPacket, ParseError> {
         // Read until we reach a sync byte
-        let skipped = reader.skip_until(HEAD_BYTE).await.map_err(|_|ParseError::NoSyncronization)?;
+        let skipped = reader
+            .skip_until(HEAD_BYTE)
+            .await
+            .map_err(|_| ParseError::NoSyncronization)?;
+
         self.buffer[0] = HEAD_BYTE;
 
-        if skipped > 0 { warn!("Skipped {} bytes to find SBUS header", skipped) }
+        if skipped > 0 {
+            warn!("Skipped {} bytes to find SBUS header", skipped)
+        }
 
-        reader.read_exact(&mut self.buffer[1..]).await.map_err(|_|ParseError::NoSyncronization)?;
+        // TODO IO errors should perhaps not map directly to unrelated parser errors
+        reader
+            .read_exact(&mut self.buffer[1..])
+            .await
+            .map_err(|_| ParseError::NoSyncronization)?;
 
         self.try_parse()
     }

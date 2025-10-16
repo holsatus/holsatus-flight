@@ -1,95 +1,33 @@
-use nalgebra::{Matrix3, Vector3};
-use serde::{Deserialize, Serialize};
-
-/// Wrapper type for different calibration types
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Calib3DType {
-    None,
-    Small(SmallCalib3D),
-    Full(FullCalib3D),
-}
-
-#[cfg(feature = "defmt")]
-impl defmt::Format for Calib3DType {
-    fn format(&self, fmt: defmt::Formatter) {
-        match self {
-            Calib3DType::None => defmt::write!(fmt, "None"),
-            Calib3DType::Small(_) => {
-                defmt::write!(fmt, "Small calib, formatting not yet supported")
-            }
-            Calib3DType::Full(_) => defmt::write!(fmt, "Full calib, formatting not yet supported"),
-        }
-    }
-}
-
-impl Default for Calib3DType {
-    fn default() -> Self {
-        Calib3DType::Small(SmallCalib3D::default())
-    }
-}
-
-impl Calib3DType {
-    pub fn set_bias(&mut self, bias: Vector3<f32>) {
-        match self {
-            Calib3DType::None => {
-                *self = Calib3DType::Small(SmallCalib3D::default());
-                self.set_bias(bias);
-            }
-            Calib3DType::Small(cal) => cal.bias = Some(bias),
-            Calib3DType::Full(cal) => cal.bias = Some(bias),
-        }
-    }
-
-    pub fn apply(&self, data: Vector3<f32>) -> Vector3<f32> {
-        match self {
-            Calib3DType::None => data,
-            Calib3DType::Small(cal) => cal.apply(data),
-            Calib3DType::Full(cal) => cal.apply(data),
-        }
-    }
-    pub fn has_bias(&self) -> bool {
-        match self {
-            Calib3DType::None => false,
-            Calib3DType::Small(cal) => cal.bias.is_some(),
-            Calib3DType::Full(cal) => cal.bias.is_some(),
-        }
-    }
-}
+use nalgebra::Vector3;
 
 /// Calibration data for a "small" calibration, meaning it only has bias and scale.
-#[derive(Debug, Copy, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct SmallCalib3D {
-    pub bias: Option<Vector3<f32>>,
-    pub scale: Option<Vector3<f32>>,
+#[derive(Debug, Copy, Clone, PartialEq, mav_param::Tree)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Calib3D {
+    pub bias: [f32; 3],
+    #[param(rename = "scal")]
+    pub scale: [f32; 3],
 }
 
-impl SmallCalib3D {
-    fn apply(&self, mut data: Vector3<f32>) -> Vector3<f32> {
-        if let Some(bias) = self.bias {
-            data -= bias;
+impl Calib3D {
+    pub const fn const_default() -> Self {
+        Self {
+            bias: [0.; 3],
+            scale: [1.; 3],
         }
-        if let Some(scale) = self.scale {
-            data.component_mul_assign(&scale);
-        }
-        data
     }
 }
 
-/// Calibration data for a "full" calibration, meaning it has bias and warp.
-#[derive(Debug, Copy, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct FullCalib3D {
-    pub bias: Option<Vector3<f32>>,
-    pub warp: Option<Matrix3<f32>>,
-}
+impl Calib3D {
+    pub fn apply_mut(&self, data: &mut Vector3<f32>) {
+        for i in 0..3 {
+            data[i] -= self.bias[i];
+            data[i] *= self.scale[i];
+        }
+    }
 
-impl FullCalib3D {
-    fn apply(&self, mut data: Vector3<f32>) -> Vector3<f32> {
-        if let Some(bias) = self.bias {
-            data -= Vector3::from(bias);
-        }
-        if let Some(warp) = self.warp {
-            data = warp * data;
-        }
+    pub fn apply(&self, mut data: Vector3<f32>) -> Vector3<f32> {
+        self.apply_mut(&mut data);
         data
     }
 }

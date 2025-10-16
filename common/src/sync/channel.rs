@@ -1,20 +1,20 @@
 use heapless::Deque;
-use maitake_sync::WaitQueue;
+use maitake_sync::{blocking::DefaultMutex, WaitQueue};
 use mutex::{BlockingMutex, ConstInit, ScopedRawMutex};
 
-pub struct Channel<T, M: ScopedRawMutex, const N: usize> {
+pub struct Channel<T, const N: usize, M: ScopedRawMutex = DefaultMutex> {
     state: BlockingMutex<M, Deque<T, N>>,
     recv_queue: WaitQueue<M>,
     send_queue: WaitQueue<M>,
 }
 
-impl<T, M: ScopedRawMutex + ConstInit, const N: usize> Default for Channel<T, M, N> {
+impl<T, M: ScopedRawMutex + ConstInit, const N: usize> Default for Channel<T, N, M> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T, M: ScopedRawMutex, const N: usize> Channel<T, M, N> {
+impl<T, M: ScopedRawMutex, const N: usize> Channel<T, N, M> {
     pub const fn new() -> Self
     where
         M: ConstInit,
@@ -26,27 +26,16 @@ impl<T, M: ScopedRawMutex, const N: usize> Channel<T, M, N> {
         }
     }
 
-    pub const fn receiver(&self) -> Receiver<'_, T, M, N> {
+    pub const fn receiver(&self) -> Receiver<'_, T, N, M> {
         Receiver { inner: self }
     }
 
-    pub const fn sender(&self) -> Sender<'_, T, M, N> {
+    pub const fn sender(&self) -> Sender<'_, T, N, M> {
         Sender { inner: self }
     }
 
     pub fn try_send(&self, value: T) -> Result<(), T> {
-        self.try_send_lazy(|| value).map_err(|f| f())
-    }
-
-    pub fn try_send_lazy<F: FnOnce() -> T>(&self, value: F) -> Result<(), F> {
-        let res = self.state.with_lock(|deque| {
-            if deque.is_full() {
-                Err(value)
-            } else {
-                unsafe { deque.push_back_unchecked(value()) }
-                Ok(())
-            }
-        });
+        let res = self.state.with_lock(|deque| deque.push_back(value));
 
         if res.is_ok() {
             self.recv_queue.wake();
@@ -55,14 +44,10 @@ impl<T, M: ScopedRawMutex, const N: usize> Channel<T, M, N> {
         res
     }
 
-    pub async fn send(&self, value: T) {
-        self.send_lazy(|| value).await
-    }
-
-    pub async fn send_lazy<F: FnOnce() -> T>(&self, mut value: F) {
+    pub async fn send(&self, mut value: T) {
         loop {
             let wait = self.send_queue.wait();
-            match self.try_send_lazy(value) {
+            match self.try_send(value) {
                 Ok(()) => break,
                 Err(retry) => {
                     let res = wait.await;
@@ -97,11 +82,11 @@ impl<T, M: ScopedRawMutex, const N: usize> Channel<T, M, N> {
     }
 }
 
-pub struct Sender<'a, T, M: ScopedRawMutex, const N: usize> {
-    inner: &'a Channel<T, M, N>,
+pub struct Sender<'a, T, const N: usize, M: ScopedRawMutex = DefaultMutex> {
+    inner: &'a Channel<T, N, M>,
 }
 
-impl<T, M: ScopedRawMutex, const N: usize> Sender<'_, T, M, N> {
+impl<T, M: ScopedRawMutex, const N: usize> Sender<'_, T, N, M> {
     pub async fn send(&self, value: T) {
         self.inner.send(value).await
     }
@@ -111,11 +96,11 @@ impl<T, M: ScopedRawMutex, const N: usize> Sender<'_, T, M, N> {
     }
 }
 
-pub struct Receiver<'a, T, M: ScopedRawMutex, const N: usize> {
-    inner: &'a Channel<T, M, N>,
+pub struct Receiver<'a, T, const N: usize, M: ScopedRawMutex = DefaultMutex> {
+    inner: &'a Channel<T, N, M>,
 }
 
-impl<T, M: ScopedRawMutex, const N: usize> Receiver<'_, T, M, N> {
+impl<T, M: ScopedRawMutex, const N: usize> Receiver<'_, T, N, M> {
     pub async fn receive(&self) -> T {
         self.inner.receive().await
     }

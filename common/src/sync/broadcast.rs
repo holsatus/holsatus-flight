@@ -1,16 +1,16 @@
 use core::ops::SubAssign;
 
 use heapless::Deque;
-use maitake_sync::WaitQueue;
+use maitake_sync::{blocking::DefaultMutex, WaitQueue};
 use mutex::{BlockingMutex, ConstInit, ScopedRawMutex};
 
-pub struct Broadcast<T, M: ScopedRawMutex, const N: usize> {
+pub struct Broadcast<T, const N: usize, M: ScopedRawMutex = DefaultMutex> {
     state: BlockingMutex<M, State<T, N>>,
     recv_queue: WaitQueue<M>,
     send_queue: WaitQueue<M>,
 }
 
-impl<T: Clone, M: ScopedRawMutex + ConstInit, const N: usize> Default for Broadcast<T, M, N> {
+impl<T: Clone, M: ScopedRawMutex + ConstInit, const N: usize> Default for Broadcast<T, N, M> {
     fn default() -> Self {
         Self::new()
     }
@@ -27,7 +27,7 @@ struct Entry<T> {
     unread_count: usize,
 }
 
-impl<T: Clone, M: ScopedRawMutex, const N: usize> Broadcast<T, M, N> {
+impl<T: Clone, M: ScopedRawMutex, const N: usize> Broadcast<T, N, M> {
     /// Creates a new [`Broadcast`] channel with a fixed-size buffer.
     ///
     /// The channel allows multiple [`Receiver`]s to subscribe to messages sent by a [`Sender`].
@@ -98,7 +98,7 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Broadcast<T, M, N> {
     ///
     /// let receiver = BROADCAST.receiver();
     /// ```
-    pub fn receiver(&self) -> Receiver<'_, T, M, N> {
+    pub fn receiver(&self) -> Receiver<'_, T, N, M> {
         self.state.with_lock(|state| {
             state.recv_count += 1;
             Receiver {
@@ -132,7 +132,7 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Broadcast<T, M, N> {
     ///
     /// let sender = BROADCAST.sender();
     /// ```
-    pub fn sender(&self) -> Sender<'_, T, M, N> {
+    pub fn sender(&self) -> Sender<'_, T, N, M> {
         Sender { inner: self }
     }
 
@@ -266,11 +266,11 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Broadcast<T, M, N> {
     }
 }
 
-pub struct Sender<'a, T, M: ScopedRawMutex, const N: usize> {
-    inner: &'a Broadcast<T, M, N>,
+pub struct Sender<'a, T, const N: usize, M: ScopedRawMutex = DefaultMutex> {
+    inner: &'a Broadcast<T, N, M>,
 }
 
-impl<T: Clone, M: ScopedRawMutex, const N: usize> Sender<'_, T, M, N> {
+impl<T: Clone, M: ScopedRawMutex, const N: usize> Sender<'_, T, N, M> {
     /// Attempts to send a message to the broadcast channel if there is room in the channel's buffer.
     ///
     /// If the channel's buffer is full, the message will not be sent, and the original message
@@ -370,12 +370,12 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Sender<'_, T, M, N> {
     }
 }
 
-pub struct Receiver<'a, T: Clone, M: ScopedRawMutex, const N: usize> {
+pub struct Receiver<'a, T: Clone, const N: usize, M: ScopedRawMutex = DefaultMutex> {
     messade_id: usize,
-    inner: &'a Broadcast<T, M, N>,
+    inner: &'a Broadcast<T, N, M>,
 }
 
-impl<T: Clone, M: ScopedRawMutex, const N: usize> Receiver<'_, T, M, N> {
+impl<T: Clone, M: ScopedRawMutex, const N: usize> Receiver<'_, T, N, M> {
     /// Attempts to receive a message from the broadcast channel without blocking.
     ///
     /// This method checks if a message is available in the buffer and returns it immediately if found.
@@ -450,7 +450,7 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Receiver<'_, T, M, N> {
     }
 }
 
-impl<T: Clone, M: ScopedRawMutex, const N: usize> Drop for Receiver<'_, T, M, N> {
+impl<T: Clone, M: ScopedRawMutex, const N: usize> Drop for Receiver<'_, T, N, M> {
     fn drop(&mut self) {
         let mut wake_senders = 0;
         self.inner.state.with_lock(|state| {
@@ -485,18 +485,17 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Drop for Receiver<'_, T, M, N>
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "defmt")))]
 mod tests {
     use super::*;
     use futures::task::SpawnExt;
-    use mutex::raw_impls::cs::CriticalSectionRawMutex as CSR;
 
     #[test]
     fn test_basic_read_write() {
         #[derive(Clone)]
         struct Message;
 
-        static BROADCAST: Broadcast<Message, CSR, 2> = Broadcast::new();
+        static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
 
         let mut rcv = BROADCAST.receiver();
 
@@ -520,7 +519,7 @@ mod tests {
         #[derive(Clone, PartialEq, Debug)]
         struct Message;
 
-        static BROADCAST: Broadcast<Message, CSR, 2> = Broadcast::new();
+        static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
 
         let mut rcv = BROADCAST.receiver();
 
@@ -547,7 +546,7 @@ mod tests {
         #[derive(Clone, PartialEq, Debug)]
         struct Message(u8);
 
-        static BROADCAST: Broadcast<Message, CSR, 2> = Broadcast::new();
+        static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
 
         let mut rcv = BROADCAST.receiver();
 
@@ -572,7 +571,7 @@ mod tests {
         #[derive(Clone, PartialEq, Debug)]
         struct Message(u8);
 
-        static BROADCAST: Broadcast<Message, CSR, 2> = Broadcast::new();
+        static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
 
         let snd = BROADCAST.sender();
 
@@ -600,7 +599,7 @@ mod tests {
         #[derive(Clone, PartialEq, Debug)]
         struct Message(u8);
 
-        static BROADCAST: Broadcast<Message, CSR, 2> = Broadcast::new();
+        static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
 
         let snd = BROADCAST.sender();
         let mut rcv1 = BROADCAST.receiver();
@@ -634,7 +633,7 @@ mod tests {
         #[derive(Clone, PartialEq, Debug)]
         struct Message(u8);
 
-        static BROADCAST: Broadcast<Message, CSR, 2> = Broadcast::new();
+        static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
 
         let snd = BROADCAST.sender();
         let mut rcv1 = BROADCAST.receiver();
@@ -675,7 +674,7 @@ mod tests {
         #[derive(Clone, Debug, PartialEq)]
         struct Message(u8);
 
-        static BROADCAST: Broadcast<Message, CSR, 2> = Broadcast::new();
+        static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
 
         // Register subscriber to make sure first messages can be received
         let mut rcv = BROADCAST.receiver();

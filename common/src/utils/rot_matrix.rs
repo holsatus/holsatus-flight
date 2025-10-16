@@ -198,10 +198,12 @@ pub fn rot_z_any(vec: Vector3<f32>, angle: f32) -> Vector3<f32> {
     Vector3::new(c * x - s * y, s * x + c * y, z)
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, mav_param::Enum)]
+#[repr(u8)]
 pub enum Rotation {
     #[default]
-    Identity,
+    Identity = 0,
     RotX45,
     RotX90,
     RotX135,
@@ -226,40 +228,12 @@ pub enum Rotation {
     RotZ270,
     RotZ315,
     RotZAny(f32),
-    Custom(Matrix3<f32>),
+    Custom([[f32; 3]; 3]),
 }
 
-#[cfg(feature = "defmt")]
-impl defmt::Format for Rotation {
-    fn format(&self, fmt: defmt::Formatter) {
-        match self {
-            Rotation::Identity => defmt::write!(fmt, "Identity"),
-            Rotation::RotX45 => defmt::write!(fmt, "RotX45"),
-            Rotation::RotX90 => defmt::write!(fmt, "RotX90"),
-            Rotation::RotX135 => defmt::write!(fmt, "RotX135"),
-            Rotation::RotX180 => defmt::write!(fmt, "RotX180"),
-            Rotation::RotX225 => defmt::write!(fmt, "RotX225"),
-            Rotation::RotX270 => defmt::write!(fmt, "RotX270"),
-            Rotation::RotX315 => defmt::write!(fmt, "RotX315"),
-            Rotation::RotXAny(angle) => defmt::write!(fmt, "RotXAny({})", angle),
-            Rotation::RotY45 => defmt::write!(fmt, "RotY45"),
-            Rotation::RotY90 => defmt::write!(fmt, "RotY90"),
-            Rotation::RotY135 => defmt::write!(fmt, "RotY135"),
-            Rotation::RotY180 => defmt::write!(fmt, "RotY180"),
-            Rotation::RotY225 => defmt::write!(fmt, "RotY225"),
-            Rotation::RotY270 => defmt::write!(fmt, "RotY270"),
-            Rotation::RotY315 => defmt::write!(fmt, "RotY315"),
-            Rotation::RotYAny(angle) => defmt::write!(fmt, "RotYAny({})", angle),
-            Rotation::RotZ45 => defmt::write!(fmt, "RotZ45"),
-            Rotation::RotZ90 => defmt::write!(fmt, "RotZ90"),
-            Rotation::RotZ135 => defmt::write!(fmt, "RotZ135"),
-            Rotation::RotZ180 => defmt::write!(fmt, "RotZ180"),
-            Rotation::RotZ225 => defmt::write!(fmt, "RotZ225"),
-            Rotation::RotZ270 => defmt::write!(fmt, "RotZ270"),
-            Rotation::RotZ315 => defmt::write!(fmt, "RotZ315"),
-            Rotation::RotZAny(angle) => defmt::write!(fmt, "RotZAny({})", angle),
-            Rotation::Custom(m) => defmt::write!(fmt, "{}", defmt::Debug2Format(&m)),
-        }
+impl Rotation {
+    pub const fn const_default() -> Self {
+        Rotation::Identity
     }
 }
 
@@ -284,8 +258,10 @@ impl Rotation {
         // Rotation matrix around the Z-axis
         let rot_z = Matrix3::new(cos_z, -sin_z, 0.0, sin_z, cos_z, 0.0, 0.0, 0.0, 1.0);
 
+        let rotation = rot_z * rot_y * rot_x;
+
         // Combined rotation matrix
-        Rotation::Custom(rot_z * rot_y * rot_x)
+        Rotation::Custom(rotation.data.0)
     }
 }
 
@@ -320,7 +296,11 @@ impl Mul<Vector3<f32>> for &Rotation {
             R::RotZ270 => rot_z_270(rhs),
             R::RotZ315 => rot_z_315(rhs),
             R::RotZAny(x) => rot_z_any(rhs, *x),
-            R::Custom(m) => m * rhs,
+            R::Custom(m) => {
+                let storage = nalgebra::ArrayStorage(*m);
+                let matrix = nalgebra::Matrix::from_array_storage(storage);
+                matrix * rhs
+            }
         }
     }
 }

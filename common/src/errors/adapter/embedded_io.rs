@@ -45,10 +45,10 @@ pub enum EmbeddedIoError {
     UnexpectedEof,
 }
 
-impl<E: embedded_io::Error> From<E> for EmbeddedIoError {
-    fn from(value: E) -> Self {
+impl From<embedded_io::ErrorKind> for EmbeddedIoError {
+    fn from(value: embedded_io::ErrorKind) -> Self {
         use embedded_io::ErrorKind as E;
-        match value.kind() {
+        match value {
             E::Other => Self::Other,
             E::NotFound => Self::NotFound,
             E::PermissionDenied => Self::PermissionDenied,
@@ -72,32 +72,36 @@ impl<E: embedded_io::Error> From<E> for EmbeddedIoError {
     }
 }
 
-// impl<E: embedded_io::Error> From<ReadExactError<E>> for EmbeddedIoError {
-//     fn from(value: ReadExactError<E>) -> Self {
-//         use embedded_io::ErrorKind as E;
-//         match value {
-//             ReadExactError::UnexpectedEof => EmbeddedIoError::UnexpectedEof,
-//             ReadExactError::Other(inner) => match inner.kind() {
-//                 E::Other => Self::Other,
-//                 E::NotFound => Self::NotFound,
-//                 E::PermissionDenied => Self::PermissionDenied,
-//                 E::ConnectionRefused => Self::ConnectionRefused,
-//                 E::ConnectionReset => Self::ConnectionReset,
-//                 E::ConnectionAborted => Self::ConnectionAborted,
-//                 E::NotConnected => Self::NotConnected,
-//                 E::AddrInUse => Self::AddrInUse,
-//                 E::AddrNotAvailable => Self::AddrNotAvailable,
-//                 E::BrokenPipe => Self::BrokenPipe,
-//                 E::AlreadyExists => Self::AlreadyExists,
-//                 E::InvalidInput => Self::InvalidInput,
-//                 E::InvalidData => Self::InvalidData,
-//                 E::TimedOut => Self::TimedOut,
-//                 E::Interrupted => Self::Interrupted,
-//                 E::Unsupported => Self::Unsupported,
-//                 E::OutOfMemory => Self::OutOfMemory,
-//                 E::WriteZero => Self::WriteZero,
-//                 _ => Self::Other,
-//             },
-//         }
-//     }
-// }
+impl embedded_io::Error for EmbeddedIoError {
+    fn kind(&self) -> embedded_io::ErrorKind {
+        use embedded_io::ErrorKind as E;
+        match self {
+            Self::Other => E::Other,
+            Self::NotFound => E::NotFound,
+            Self::PermissionDenied => E::PermissionDenied,
+            Self::ConnectionRefused => E::ConnectionRefused,
+            Self::ConnectionReset => E::ConnectionReset,
+            Self::ConnectionAborted => E::ConnectionAborted,
+            Self::NotConnected => E::NotConnected,
+            Self::AddrInUse => E::AddrInUse,
+            Self::AddrNotAvailable => E::AddrNotAvailable,
+            Self::BrokenPipe => E::BrokenPipe,
+            Self::AlreadyExists => E::AlreadyExists,
+            Self::InvalidInput => E::InvalidInput,
+            Self::InvalidData => E::InvalidData,
+            Self::TimedOut => E::TimedOut,
+            Self::Interrupted => E::Interrupted,
+            Self::Unsupported => E::Unsupported,
+            Self::OutOfMemory => E::OutOfMemory,
+            Self::WriteZero => E::WriteZero,
+            _ => E::Other,
+        }
+    }
+}
+
+pub fn map_ree<E: embedded_io::Error>(error: embedded_io::ReadExactError<E>) -> EmbeddedIoError {
+    match error {
+        embedded_io::ReadExactError::UnexpectedEof => EmbeddedIoError::UnexpectedEof,
+        embedded_io::ReadExactError::Other(inner) => inner.kind().into(),
+    }
+}

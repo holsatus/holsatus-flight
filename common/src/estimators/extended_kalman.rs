@@ -1,9 +1,7 @@
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 
-use nalgebra::{
-    ComplexField, SMatrix, Scalar, SimdValue,
-};
+use nalgebra::{ComplexField, SMatrix, Scalar, SimdValue};
 
 struct VecMat<const N: usize, F: Scalar + SimdValue + ComplexField + Copy> {
     x: SMatrix<F, N, 1>,

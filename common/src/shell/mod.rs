@@ -4,10 +4,10 @@ use commands::CommandHandler;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::Timer;
 use embedded_cli::{cli::CliBuilder, Command};
-use embedded_io::{ErrorKind, ErrorType, Write as SyncWrite};
+use embedded_io::{ErrorType, Write as SyncWrite};
 use embedded_io_async::{Read, Write};
-use static_cell::StaticCell;
-use ufmt::uWrite;
+
+use crate::{errors::adapter::embedded_io::EmbeddedIoError, serial::IoStream};
 
 mod commands;
 
@@ -44,14 +44,29 @@ impl<'a, W: Write<Error = E>, E: embedded_io::Error> SyncWrite for SyncWriter<'a
     }
 }
 
-pub async fn run_cli<SERIAL: Read<Error = ErrorKind> + Write<Error = ErrorKind>>(
-    serial: SERIAL,
-) -> Result<(), ErrorKind> {
-    let (command_buffer, history_buffer) = {
-        static COMMAND_BUFFER: StaticCell<[u8; 32]> = StaticCell::new();
-        static HISTORY_BUFFER: StaticCell<[u8; 32]> = StaticCell::new();
-        (COMMAND_BUFFER.init([0; 32]), HISTORY_BUFFER.init([0; 32]))
-    };
+#[embassy_executor::task]
+pub async fn main(serial_id: &'static str) -> ! {
+    let mut serial = crate::serial::claim(serial_id).unwrap();
+    let mut rcv_usb_connected = crate::signals::USB_CONNECTED.receiver();
+    loop {
+        // Wait for the connection to be active, otherwise wait here
+        let con = rcv_usb_connected
+            .get_and(|&connected| connected == true)
+            .await;
+        info!("[cli] usb connection: {:?}", con);
+
+        if let Err(error) = run_cli(&mut serial).await {
+            let error = crate::errors::adapter::embedded_io::EmbeddedIoError::from(error);
+            error!("[cli] Error on serial device: {:?}", error);
+        }
+    }
+}
+
+pub async fn run_cli(serial: &mut IoStream) -> Result<(), EmbeddedIoError> {
+    info!("[cli] Starting CLI runner");
+
+    let mut command_buffer = [0u8; 32];
+    let mut history_buffer = [0u8; 32];
 
     let mutexed_serial = Mutex::new(serial);
 
@@ -83,7 +98,7 @@ pub async fn run_cli<SERIAL: Read<Error = ErrorKind> + Write<Error = ErrorKind>>
             n
         };
 
-        debug!("Read {} bytes from serial port: {:?}", n, buffer[..n]);
+        trace!("Read {} bytes from serial port: {:?}", n, &buffer[..n]);
 
         for byte in buffer.iter().take(n) {
             // Process the byte from the serial port
@@ -111,11 +126,15 @@ pub async fn run_cli<SERIAL: Read<Error = ErrorKind> + Write<Error = ErrorKind>>
                     #[cfg(feature = "mavlink")]
                     Base::Mavlink { cmd } => cmd.handler(&mut serial).await?,
                     Base::Arming { cmd } => cmd.handler(&mut serial).await?,
+                    Base::Param { cmd } => cmd.handler(&mut serial).await?,
+                    Base::Inspect { cmd } => cmd.handler(&mut serial).await?,
+
                     Base::Clear => serial.write_all(CLEAR_SCREEN).await?,
                     Base::Splash => serial.write_all(HOLSATUS_GRAPHIC).await?,
                 }
 
                 // At the end of parsed command, show the prompt
+                serial.write_all(b"\n\r").await?;
                 serial.write_all(CMD_PROMPT.as_bytes()).await?;
             }
         }
@@ -168,26 +187,16 @@ enum Base {
         #[command(subcommand)]
         cmd: commands::mavlink::MavlinkCommand,
     },
-}
 
-struct UBuffer<const N: usize> {
-    inner: heapless::Vec<u8, N>,
-}
+    /// View and modify system parameters
+    Param {
+        #[command(subcommand)]
+        cmd: commands::params::ParamCommand,
+    },
 
-impl<const N: usize> UBuffer<N> {
-    pub fn new() -> Self {
-        Self {
-            inner: heapless::Vec::new(),
-        }
-    }
-}
-
-impl<const N: usize> uWrite for UBuffer<N> {
-    type Error = embedded_io::ErrorKind;
-
-    fn write_str(&mut self, s: &str) -> Result<(), Self::Error> {
-        self.inner
-            .extend_from_slice(s.as_bytes())
-            .map_err(|_| ErrorKind::OutOfMemory)
-    }
+    /// Inspect various signals / sensors in the system
+    Inspect {
+        #[command(subcommand)]
+        cmd: commands::inspect::InspectCommand,
+    },
 }

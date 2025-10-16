@@ -1,11 +1,12 @@
 use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Ticker};
 use embedded_cli::Command;
-use embedded_io::ErrorKind;
 use embedded_io_async::{Read, Write};
 use ufmt::uwrite;
 
-use crate::shell::{UBuffer, INTERRUPT};
+use crate::{
+    errors::adapter::embedded_io::EmbeddedIoError, shell::INTERRUPT, utils::u_types::UBuffer,
+};
 
 #[derive(Command)]
 #[command(help_title = "System commands")]
@@ -24,8 +25,8 @@ pub enum SystemCommand {
 impl super::CommandHandler for SystemCommand {
     async fn handler(
         &self,
-        mut serial: impl Read<Error = ErrorKind> + Write<Error = ErrorKind>,
-    ) -> Result<(), ErrorKind> {
+        mut serial: impl Read<Error = EmbeddedIoError> + Write<Error = EmbeddedIoError>,
+    ) -> Result<(), EmbeddedIoError> {
         match self {
             SystemCommand::Reboot => {
                 serial.write_all(b"Rebooting...\n").await?;
@@ -39,7 +40,7 @@ impl super::CommandHandler for SystemCommand {
                     let millis = embassy_time::Instant::now().as_millis();
                     let mut buffer = UBuffer::<32>::new();
                     uwrite!(buffer, "Uptime: {} ms\n\r", millis)?;
-                    serial.write_all(&buffer.inner).await?;
+                    serial.write_all(buffer.bytes()).await?;
                     serial.flush().await?;
 
                     // Maybe we can isolate this functionality into a helper function

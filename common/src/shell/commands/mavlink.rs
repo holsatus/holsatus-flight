@@ -1,7 +1,8 @@
 use embedded_cli::Command;
+use embedded_io_async::{Read, Write};
 use ufmt::uwrite;
 
-use crate::shell::UBuffer;
+use crate::{errors::adapter::embedded_io::EmbeddedIoError, utils::u_types::UBuffer};
 
 #[derive(Command)]
 #[command(help_title = "MAVLink commands")]
@@ -24,9 +25,8 @@ pub enum MavlinkCommand {
 impl super::CommandHandler for MavlinkCommand {
     async fn handler(
         &self,
-        mut serial: impl embedded_io_async::Read<Error = embedded_io::ErrorKind>
-            + embedded_io_async::Write<Error = embedded_io::ErrorKind>,
-    ) -> Result<(), embedded_io::ErrorKind> {
+        mut serial: impl Read<Error = EmbeddedIoError> + Write<Error = EmbeddedIoError>,
+    ) -> Result<(), EmbeddedIoError> {
         match self {
             MavlinkCommand::Status => {
                 serial
@@ -37,18 +37,20 @@ impl super::CommandHandler for MavlinkCommand {
                 if let Some(set_sys) = set_sys {
                     let mut buffer = UBuffer::<32>::new();
                     uwrite!(buffer, "Setting system ID to {}\n\r", set_sys)?;
-                    serial.write_all(&buffer.inner).await?;
-                    crate::mavlink::MAV_REQUEST
-                        .send(crate::mavlink::Request::SetSystemId { id: *set_sys })
-                        .await;
+                    serial.write_all(buffer.bytes()).await?;
+                    warn!("Functionality temporarily disdabled");
+                    // crate::mavlink::MAV_REQUEST
+                    //     .send(crate::mavlink::Request::SetSystemId { id: *set_sys })
+                    //     .await;
                 }
                 if let Some(set_comp) = set_comp {
                     let mut buffer = UBuffer::<32>::new();
                     uwrite!(buffer, "Setting component ID to {}\n\r", set_comp)?;
-                    serial.write_all(&buffer.inner).await?;
-                    crate::mavlink::MAV_REQUEST
-                        .send(crate::mavlink::Request::SetComponentId { id: *set_comp })
-                        .await;
+                    serial.write_all(buffer.bytes()).await?;
+                    warn!("Functionality temporarily disdabled");
+                    // crate::mavlink::MAV_REQUEST
+                    //     .send(crate::mavlink::Request::SetComponentId { id: *set_comp })
+                    //     .await;
                 }
             }
         }

@@ -16,14 +16,17 @@ pub trait RcParser {
 
 #[allow(async_fn_in_trait)]
 pub trait BufReadExt: embedded_io_async::BufRead {
-    async fn skip_until(&mut self, delim: u8) -> Result<usize, embedded_io::ReadExactError<Self::Error>> {
+    async fn skip_until(
+        &mut self,
+        delim: u8,
+    ) -> Result<usize, embedded_io::ReadExactError<Self::Error>> {
         let mut read: usize = 0;
         loop {
             let (done, used) = {
                 let available = self.fill_buf().await?;
 
                 if available.is_empty() {
-                    return Err(embedded_io::ReadExactError::UnexpectedEof)
+                    return Err(embedded_io::ReadExactError::UnexpectedEof);
                 }
 
                 match available.iter().position(|p| *p == delim) {
@@ -40,4 +43,4 @@ pub trait BufReadExt: embedded_io_async::BufRead {
     }
 }
 
-impl <R: embedded_io_async::BufRead> BufReadExt for R {}
+impl<R: embedded_io_async::BufRead> BufReadExt for R {}

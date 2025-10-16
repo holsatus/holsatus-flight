@@ -1,0 +1,83 @@
+
+# Simulation configuration file
+imu_sample_rate = 1000.0
+
+[vehicle]
+
+# Linear drag coefficient of the drone body
+linear_vel_damp = 0.1
+
+# Angular drag coefficient of the drone body
+angular_vel_damp = 0.005
+
+# Mass of the drone body
+mass = 0.65
+
+# Mass moment of inertia along principal axes
+inertia = [0.0012, 0.0012, 0.0012]
+
+[[vehicle.motors]]
+name = "back-right"
+tau = 0.05
+reverse = false
+normal = [0.0, 0.0, -1.0]
+position = [-0.0825, +0.1125, 0.0]
+cmd_mapping = [10.452, 0.55]
+
+[[vehicle.motors]]
+name = "front-right"
+tau = 0.05
+reverse = true
+normal = [0.0, 0.0, -1.0]
+position = [+0.0825, +0.1125, 0.0]
+cmd_mapping = [10.452, 0.55]
+
+[[vehicle.motors]]
+name = "back-left"
+tau = 0.05
+reverse = true
+normal = [0.0, 0.0, -1.0]
+position = [-0.0825, -0.1125, 0.0]
+cmd_mapping = [10.452, 0.55]
+
+[[vehicle.motors]]
+name = "front-left"
+tau = 0.05
+reverse = false
+normal = [0.0, 0.0, -1.0]
+position = [+0.0825, -0.1125, 0.0]
+cmd_mapping = [10.452, 0.55]
+
+[accelerometer]
+
+# Noise, bias and warp/scaling of sensor values
+noise = [0.02, 0.02, 0.02]
+bias = [0.0, 0.0, 0.0]
+warp = [
+    [1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0],
+]
+
+# Cross-over frequency of the low-pass filter
+lowpass_freq = 350.0
+
+# 16 [G] * 9.81 [m/s^2/G] =>
+max_range = 157.0 
+
+[gyroscope]
+
+# Noise, bias and warp/scaling of sensor values
+noise = [0.02, 0.02, 0.02]
+bias = [0.0, 0.0, 0.0]
+warp = [
+    [1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0],
+]
+
+# Cross-over frequency of the low-pass filter
+lowpass_freq = 350.0
+
+# 2000 [deg/s] * 0.0174533 [rad/deg] =>
+max_range = 34.91
