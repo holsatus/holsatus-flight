@@ -3,7 +3,8 @@
 #[derive(mav_param::Enum)]
 #[repr(u8)]
 pub enum Rates {
-    None,
+    /// No rates are applied. The output is the input
+    Identity,
     /// Actual rates provide an "expo" response
     Actual(Actual),
     /// Affine linear rates are of the form a * x + b
@@ -11,13 +12,13 @@ pub enum Rates {
 }
 
 crate::const_default!(
-    Rates => Rates::None
+    Rates => Rates::Identity
 );
 
 impl Rates {
     pub fn apply(&self, input: f32) -> f32 {
         match self {
-            Rates::None => input,
+            Rates::Identity => input,
             Rates::Actual(actual) => actual.apply(input),
             Rates::Linear(linear) => linear.apply(input),
         }
