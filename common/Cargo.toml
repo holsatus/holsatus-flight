@@ -6,22 +6,22 @@ edition = "2021"
 [features]
 default = [
     "arch-cortex-m",
-    "mavlink",
     "defmt",
+
+    "mavlink"
 ]
+
+usb = ["dep:embassy-usb"]
+mavlink = ["dep:mavio"]
+mpc = ["dep:tinympc-rs"]
+
 
 portable-atomic-critical-section = ["portable-atomic/critical-section"]
 portable-atomic-unsafe-assume-single-core = [
     "portable-atomic/unsafe-assume-single-core",
 ]
 
-mavlink = []
-mavlink-osd = ["mavlink"]
 
-sitl-std = []
-sitl-mcu = []
-
-usb = ["dep:embassy-usb"]
 
 log = ["dep:log", "dep:env_logger"]
 defmt = [
@@ -142,11 +142,11 @@ thiserror = { version = "2.0.7", default-features = false }
 
 mav-param = { git = "https://github.com/holsatus/mav-param", features = ["defmt", "serde"]}
 
-mavio = { git = "https://gitlab.com/peterkrull/mavio/", branch = "frame-parser", default-features = false, features = ["dlct-common", "embedded-io-async"] }
+mavio = { git = "https://gitlab.com/peterkrull/mavio/", branch = "frame-parser", optional = true, default-features = false, features = ["dlct-common", "embedded-io-async"] }
 
 grantable-io = { git = "https://github.com/holsatus/grantable-io", rev = "fc297f0", features = ["embedded-io-async-061"]}
 
-tinympc-rs = { git = "https://github.com/peterkrull/tinympc-rs", rev = "e90fbc3", default-features = false }
+tinympc-rs = { git = "https://github.com/peterkrull/tinympc-rs", rev = "e90fbc3", optional = true, default-features = false }
 
 [profile.release.package.tinympc-rs]
 opt-level = 3

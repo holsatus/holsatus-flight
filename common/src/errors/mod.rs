@@ -155,7 +155,7 @@ pub enum MavlinkError {
     InvalidHeader,
 }
 
-// #[cfg(feature = "mavio")]
+#[cfg(feature = "mavlink")]
 impl From<mavio::error::Error> for MavlinkError {
     fn from(value: mavio::error::Error) -> Self {
         match value {
@@ -166,6 +166,7 @@ impl From<mavio::error::Error> for MavlinkError {
     }
 }
 
+#[cfg(feature = "mavlink")]
 impl From<mavio::error::FrameError> for MavlinkError {
     fn from(value: mavio::error::FrameError) -> Self {
         match value {
@@ -182,6 +183,7 @@ impl From<mavio::error::FrameError> for MavlinkError {
     }
 }
 
+#[cfg(feature = "mavlink")]
 impl From<mavio::error::SpecError> for MavlinkError {
     fn from(value: mavio::error::SpecError) -> Self {
         match value {
@@ -196,6 +198,7 @@ impl From<mavio::error::SpecError> for MavlinkError {
     }
 }
 
+#[cfg(feature = "mavlink")]
 impl From<mavio::error::IoError> for MavlinkError {
     fn from(value: mavio::error::IoError) -> Self {
         match value.kind() {

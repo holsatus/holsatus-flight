@@ -16,10 +16,8 @@ pub mod geo;
 pub mod health;
 pub mod hw_abstraction;
 pub mod parsers;
-// pub mod rc_mapping;
 pub mod signals;
 pub mod sync;
-// pub mod task;
 pub mod serial;
 pub mod tasks;
 pub mod types;
@@ -28,8 +26,6 @@ pub mod utils;
 pub mod shell;
 
 pub mod errors;
-
-pub mod mavlink2;
 
 #[allow(unused)]
 #[cfg(not(feature = "arch-std"))]
@@ -50,12 +46,14 @@ pub use nalgebra;
 #[cfg(feature = "usb")]
 pub use embassy_usb;
 
+#[cfg(feature = "mavlink")]
+pub mod mavlink2;
+
 const DSHOT_MIN: u16 = 48;
 const DSHOT_MAX: u16 = 2047;
 
 const NUM_IMU: usize = 2;
 const NUM_MAG: usize = 2;
-const MOTOR_TIMEOUT_MS: u8 = 100;
 
 const MAX_IO_STREAMS: usize = 6;
 
