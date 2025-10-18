@@ -18,9 +18,9 @@ use crate::{errors::adapter::sequential_storage::SequentialError, sync::procedur
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Request {
     /// Save all parameters for the `Table` with the given name
+    SaveParam(mav_param::Ident),
     SaveTable(&'static str),
     SaveAllTables,
-    SaveParam(mav_param::Ident),
 }
 
 #[derive(Debug, Clone)]
@@ -161,20 +161,24 @@ impl<const N: usize> TableSet<N> {
         Some(value)
     }
 
-    pub async fn set_param(&self, ident: [u8; 16], value: Value) -> Option<mav_param::Ident> {
+    pub async fn set_param(&self, ident: [u8; 16], value: Value, verbose: bool) -> Option<mav_param::Ident> {
         let Ok(ident) = mav_param::Ident::try_from(&ident) else {
-            error!("[configurator] Key not valid identifier: {:?}", ident);
+            if verbose {
+                error!("[configurator] Key not valid identifier: {:?}", ident);
+            }
             return None;
         };
 
         let Some((first, last)) = ident.as_str().split_once('.') else {
-            error!("[configurator] Expected '.' in ident: {}", ident.as_str());
+            if verbose {
+                error!("[configurator] Expected '.' in ident: {}", ident.as_str());
+            }
             return None;
         };
 
         let table = self.tables.with_lock(|tables| {
             let maybe_table = tables.iter().find(|table| table.name == first);
-            if maybe_table.is_none() {
+            if maybe_table.is_none() && verbose {
                 error!("[configurator] No table with the name: {}", first);
             }
             maybe_table.cloned()
@@ -182,7 +186,9 @@ impl<const N: usize> TableSet<N> {
 
         let mut writer = table.params.write().await;
         let Some(()) = mav_param::set_value(&mut *writer, last, value) else {
-            error!("[configurator] No such parameter: {}.{}", first, last);
+            if verbose {
+                error!("[configurator] No such parameter: {}.{}", first, last);
+            }
             return None;
         };
 
@@ -200,8 +206,8 @@ pub async fn param_storage(flash: impl NorFlash, range: Range<u32>) -> ! {
         Ok(mut iter) => loop {
             match iter.next::<WrappedValue>(&mut [0u8; 32]).await {
                 Ok(Some((key, WrappedValue(value)))) => {
-                    debug!("[configurator] Loaded parameter: {:?}: {:?}", key, value);
-                    TABLES.set_param(key, value).await;
+                    // Be quiet if the value does not belong to any table
+                    TABLES.set_param(key, value, false).await;
                 }
                 Ok(None) => break,
                 Err(_) => {
