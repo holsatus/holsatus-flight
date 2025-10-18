@@ -4,7 +4,6 @@ use super::{Lowpass, NthOrderLowpass, SlewRate};
 
 #[allow(unused_imports)]
 use num_traits::Float;
-use serde::{Deserialize, Serialize};
 
 /// The `RatePid` type is different from the [`super::pid::Pid`] controller
 /// since this is specifically designed for the innermost control loop of a
