@@ -177,7 +177,7 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamSet {
         };
 
         match crate::tasks::param_storage::TABLES
-            .set_param(msg.param_id, value)
+            .set_param(msg.param_id, value, true)
             .await
         {
             Some(ident) => {

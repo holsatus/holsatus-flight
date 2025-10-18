@@ -444,6 +444,26 @@ impl MavlinkServer {
                 trace!("[mavlink] Got heartbeat from {:?}", id);
             }
 
+            m::Ping::ID => {
+                let mut  msg = frame.decode_message::<m::Ping>()?;
+                
+                // If the target is non-zero, this is not a ping request
+                if msg.target_system != 0 || msg.target_component != 0 {
+                    return Ok(())
+                }
+
+                msg.target_system = frame.header().system_id();
+                msg.target_component = frame.header().component_id();
+
+                let target = PeerId {
+                    sys: frame.system_id(),
+                    com: frame.component_id(),
+                };
+
+                self.send_mav_message(&msg, target).await?;
+            },
+
+
             // Parameter-protocol related messages
             m::ParamRequestRead::ID => m::ParamRequestRead::handle(self, frame).await?,
             m::ParamRequestList::ID => m::ParamRequestList::handle(self, frame).await?,
@@ -456,6 +476,28 @@ impl MavlinkServer {
             m::CommandLong::ID => {
                 let msg = frame.decode_message::<m::CommandLong>()?;
                 enforce_mav_target!(self, msg);
+            }
+
+            m::ViconPositionEstimate::ID => {
+                let msg = frame.decode_message::<m::ViconPositionEstimate>()?;
+
+                let vicon_data = crate::types::measurements::ViconData {
+                    timestamp_us: msg.usec,
+                    position: [msg.x, msg.y, msg.z],
+                    pos_var: [
+                        [0.1, 0.0, 0.0],
+                        [0.0, 0.1, 0.0],
+                        [0.0, 0.0, 0.1],
+                    ],
+                    attitude: [msg.roll, msg.pitch, msg.yaw],
+                    att_var: [
+                        [0.1, 0.0, 0.0],
+                        [0.0, 0.1, 0.0],
+                        [0.0, 0.0, 0.1],
+                    ],
+                };
+
+                crate::signals::VICON_POSITION_ESTIMATE.send(vicon_data);
             }
 
             id => {

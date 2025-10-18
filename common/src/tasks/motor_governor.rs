@@ -7,14 +7,14 @@ use embassy_time::{with_timeout, Duration, Timer};
 use mavio::default_dialect::enums::MavModeFlag;
 
 use crate::{
-    filters::{motor_lin::MotorLin, Linear},
+    filters::{motor_lin::MotorLin, Linear, Lowpass},
     tasks::motor_governor::params::Reverse,
 };
 use crate::{
     hw_abstraction::OutputGroup,
     types::actuators::{DisarmReason, MotorsState},
 };
-use crate::{signals as s, MOTOR_TIMEOUT_MS};
+use crate::signals as s;
 
 pub mod params {
     use crate::tasks::param_storage::Table;
@@ -90,7 +90,7 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
 
     let mut dirs;
 
-    let timeout_dur = Duration::from_millis(MOTOR_TIMEOUT_MS as u64);
+    let timeout_dur = Duration::from_millis(params.timeout_ms as u64);
 
     // Linearize the non-linear command->thrust curve of the motor+propeller
     let thrust_lin = MotorLin::new(params.lin.a, params.lin.b, 0.05, 1.0);
@@ -106,6 +106,8 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
         let command = thrust_lin.force_to_command(thrust);
         dshot_map.map(command).clamp(min, max as f32) as u16
     };
+
+    let mut lowpasses = [Lowpass::new(0.0005, 0.002); 4];
 
     // Set initial state
     snd_motors_state.send(MotorsState::Disarmed(DisarmReason::Uninitialized));
@@ -176,7 +178,12 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
                     continue 'armed;
                 }
                 Second(Ok(speeds)) => {
-                    let speeds_u16 = speeds.map(dshot_map_fn);
+                    let mut speeds_u16 = speeds.map(dshot_map_fn);
+
+                    for i in 0..4 {
+                        speeds_u16[i] = lowpasses[i].update(speeds_u16[i] as f32) as u16;
+                    }
+
                     motors.set_motor_speeds(speeds_u16).await;
                     snd_motors_state.send(MotorsState::Armed(speeds_u16));
                     continue 'armed;

@@ -91,7 +91,6 @@ pub static RC_AXES_SP: Watch<[f32; 3], M> = Watch::new();
 
 // Data received from an RC controller
 pub static RC_CHANNELS_RAW: Watch<Option<[u16; 16]>, M> = Watch::new();
-pub static RC_ANALOG_RATE: Watch<RcAnalog, M> = Watch::new();
 pub static RC_ANALOG_UNIT: Watch<RcAnalog, M> = Watch::new();
 pub static RC_STATUS: Watch<RcStatus, M> = Watch::new();
 

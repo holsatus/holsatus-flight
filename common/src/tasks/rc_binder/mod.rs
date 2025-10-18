@@ -72,6 +72,7 @@ pub mod params {
                 digital_binds(&[ // Switch B
                     (POS_1, DigitalEvent::SetModeRate),
                     (POS_2, DigitalEvent::SetModeAngle),
+                    (POS_3, DigitalEvent::SetModeAutonomous),
                 ]),
                 digital_binds(&[ // Switch C
                     (POS_1, DigitalEvent::DisarmVehicle),
@@ -196,6 +197,7 @@ pub mod params {
 
         SetModeRate = 300,
         SetModeAngle,
+        SetModeAutonomous,
     }
 
     /// The parameter table for the angular rate controller
@@ -245,6 +247,7 @@ pub mod params {
                 .into(),
                 DigitalEvent::SetModeRate => SetControlMode::Rate.into(),
                 DigitalEvent::SetModeAngle => SetControlMode::Angle.into(),
+                DigitalEvent::SetModeAutonomous => SetControlMode::Autonomous.into(),
             };
 
             Ok(command)
@@ -359,10 +362,10 @@ pub async fn main() -> ! {
                     }
 
                     // Scale raw channel to unit-sized value
-                    let unit = analog.map(rc_value);
+                    let unit_value = analog.map(rc_value);
 
                     // Update the result
-                    rc_analog.0[analog.axis as u8 as usize] = unit;
+                    rc_analog.0[analog.axis as u8 as usize] = unit_value;
                 }
                 params::Binding::Digital(digital) => {
                     // If value is same as previous, skip to avoid spamming

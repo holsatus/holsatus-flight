@@ -60,7 +60,7 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     {
         // Note: We run the peripheral at a higher priority because the shell
         // parser operates on a blocking Write implementation. This way the
-        // code will enver truly block, since the shell results in an interrupt.
+        // code will nenver truly block, since the write results in an interrupt.
         level_1_spawner.spawn(resources::usb::runner(r.usb, config::hwinfo()).unwrap());
         level_t_spawner.spawn(common::shell::main("usb").unwrap());
     }
@@ -96,16 +96,13 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     level_t_spawner.spawn(common::tasks::calibrator::main().unwrap());
     level_t_spawner.spawn(common::tasks::arm_blocker::main().unwrap());
     level_t_spawner.spawn(common::tasks::eskf::main().unwrap());
-    level_t_spawner.spawn(common::tasks::controller_mpc::main().unwrap());
 
-    // Bogus schmogus
-    common::signals::VICON_POSITION_ESTIMATE.send(common::types::measurements::ViconData {
-        timestamp_us: 100,
-        position: [0.0; 3],
-        pos_var: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-        attitude: [0.0; 3],
-        att_var: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-    });
+    #[cfg(feature = "mpc")] {
+        defmt::warn!("[stmf405] STARTING MPC TASK; BEWARE!");
+        level_t_spawner.spawn(common::tasks::controller_mpc::main().unwrap());
+    }
+
+    level_t_spawner.spawn(common::tasks::in_flight_estimator::main().unwrap());
 
     // -------------------------- fin ---------------------------
     common::embassy_time::Timer::after_secs(1).await;
@@ -115,3 +112,4 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
         common::embassy_time::Timer::after_secs(10).await;
     }
 }
+

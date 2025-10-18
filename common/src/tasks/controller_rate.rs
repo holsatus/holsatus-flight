@@ -61,12 +61,12 @@ pub mod params {
         const fn const_default() -> Self {
             AxisParameters {
                 kp: 0.05,
-                ki: 0.03,
+                ki: 0.5,
                 kd: 0.03,
                 cfg: AxisFlags(0),
                 dtau: 0.001,
                 pred: 0.04,
-                comp: 0.01,
+                comp: 0.005,
             }
         }
     }
@@ -99,45 +99,45 @@ pub async fn main() {
     let mixer = DEV_QUAD_MOTOR_SETUP.into_mixing_matrix().unwrap();
 
     // Sampling time
-    let ts: f32 = 1.0 / get_ctrl_freq!() as f32;
+    let dt: f32 = 1.0 / get_ctrl_freq!() as f32;
 
     // Load parameters
     let params = params::TABLE.read_initialized().await;
 
     // Define PID controllers
     let mut pid = [
-        RatePid::new(params.x.kp, params.x.ki, params.x.kd, params.x.dtau, ts),
-        RatePid::new(params.y.kp, params.y.ki, params.y.kd, params.y.dtau, ts),
-        RatePid::new(params.z.kp, params.z.ki, params.z.kd, params.z.dtau, ts),
+        RatePid::new(params.x.kp, params.x.ki, params.x.kd, params.x.dtau, dt),
+        RatePid::new(params.y.kp, params.y.ki, params.y.kd, params.y.dtau, dt),
+        RatePid::new(params.z.kp, params.z.ki, params.z.kd, params.z.dtau, dt),
     ];
 
     // Slew-rate limiter for the reference signal
     let mut sp_slew_filt = [
-        SlewRate::new(params.ref_slew, ts),
-        SlewRate::new(params.ref_slew, ts),
-        SlewRate::new(params.ref_slew, ts),
+        SlewRate::new(params.ref_slew, dt),
+        SlewRate::new(params.ref_slew, dt),
+        SlewRate::new(params.ref_slew, dt),
     ];
 
     // Lowpass limiter for the slew-limited reference signal
     let mut sp_lp_filt = [
-        NthOrderLowpass::<_, 2>::new(params.ref_lp, ts),
-        NthOrderLowpass::<_, 2>::new(params.ref_lp, ts),
-        NthOrderLowpass::<_, 2>::new(params.ref_lp, ts),
+        NthOrderLowpass::<_, 2>::new(params.ref_lp, dt),
+        NthOrderLowpass::<_, 2>::new(params.ref_lp, dt),
+        NthOrderLowpass::<_, 2>::new(params.ref_lp, dt),
     ];
 
     // Lowpass filters will act as feed-forward prediction.
     // We designed the closed loop system to have a bandwidth of 25Hz
     let mut pred_model = [
-        Lowpass::new(params.x.pred, ts),
-        Lowpass::new(params.y.pred, ts),
-        Lowpass::new(params.z.pred, ts),
+        Lowpass::new(params.x.pred, dt),
+        Lowpass::new(params.y.pred, dt),
+        Lowpass::new(params.z.pred, dt),
     ];
 
     // Complementary filter used to smoothen gyro data
     let mut comp = [
-        Complementary::new(params.x.comp, ts),
-        Complementary::new(params.y.comp, ts),
-        Complementary::new(params.z.comp, ts),
+        Complementary::new(params.x.comp, dt),
+        Complementary::new(params.y.comp, dt),
+        Complementary::new(params.z.comp, dt),
     ];
 
     // No longer needed

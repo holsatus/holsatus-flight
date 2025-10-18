@@ -8,6 +8,3 @@ pub mod flight_mode;
 pub mod gcs_comm;
 pub mod measurements;
 pub mod status;
-
-#[cfg(feature = "sitl-std")]
-pub mod sitl_std;

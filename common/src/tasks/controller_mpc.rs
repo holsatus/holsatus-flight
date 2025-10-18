@@ -248,4 +248,4 @@ pub static MPC_REFERENCE: Watch<SMatrix<f32, NX, HX>> = Watch::new();
 pub static MPC_POS_PRED: Watch<SMatrix<f32, 3, HX>> = Watch::new();
 
 /// This should be a parameterized configurable
-const VEHICLE_MASS: f32 = 0.65;
+const VEHICLE_MASS: f32 = 0.566;

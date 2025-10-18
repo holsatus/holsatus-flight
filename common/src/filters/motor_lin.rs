@@ -32,8 +32,8 @@ impl<T: Float> MotorLin<T> {
         self.a * x * x / (T::one() + self.b * x * x)
     }
 
-    pub fn force_to_command(&self, thrust: T) -> T {
-        let x = thrust.clamp(self.f_min, self.f_max);
+    pub fn force_to_command(&self, force: T) -> T {
+        let x = force.clamp(self.f_min, self.f_max);
         (x / (self.a - x * self.b)).sqrt()
     }
 

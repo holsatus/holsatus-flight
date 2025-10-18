@@ -1,8 +1,7 @@
-use core::{f32::consts::PI, sync::atomic::Ordering};
+use core::f32::consts::PI;
 
 use crate::{
-    filters::{angle_pid::Pid},
-    get_or_warn, signals as sig,
+    filters::angle_pid::Pid, get_ctrl_freq, get_or_warn, signals as sig
 };
 
 #[embassy_executor::task]
@@ -18,13 +17,13 @@ pub async fn main() -> ! {
     // Task outputs
     let mut snd_rate_sp = sig::ANGLE_TO_RATE_SP.sender();
 
-    let ts = 1.0 / crate::signals::CONTROL_FREQUENCY.load(Ordering::Relaxed) as f32;
+    let ts = 1.0 / get_ctrl_freq!() as f32;
 
     let mut pid = [
-        Pid::new(55., 0.0, 0.04, true, ts)
+        Pid::new(25., 0.0, 0.04, true, ts)
             .set_lp_filter(0.001)
             .set_wrapping(-PI, PI),
-        Pid::new(55., 0.0, 0.04, true, ts)
+        Pid::new(25., 0.0, 0.04, true, ts)
             .set_lp_filter(0.001)
             .set_wrapping(-PI, PI),
         Pid::new(10., 0.0, 0.01, true, ts)

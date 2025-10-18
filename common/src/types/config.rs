@@ -69,23 +69,6 @@ pub struct MagIntrinsics {
     pub mag_cal: Calib3D,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Vehicle {
-    pub motor_dirs: [bool; 4],
-    pub motor_tau_ms: u16,
-    pub mass: f32,
-}
-
-impl Default for Vehicle {
-    fn default() -> Self {
-        Vehicle {
-            motor_dirs: [true, false, false, true],
-            motor_tau_ms: 50,
-            mass: 0.65,
-        }
-    }
-}
-
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum DshotConfig {
     Dshot150 = 150,

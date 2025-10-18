@@ -1,6 +1,6 @@
 use nalgebra::{Point3, SMatrix, Vector3, Vector4};
 
-pub const DEV_QUAD_MOTOR_SETUP: MotorSetup<4> = MotorSetup::quad_x_basic(0.165, 0.225, 0.02, false);
+pub const DEV_QUAD_MOTOR_SETUP: MotorSetup<4> = MotorSetup::quad_x_basic(0.165, 0.225, 0.1, false);
 
 struct Motor {
     /// The position of this motor relative to the vehicle center of mass.
@@ -22,7 +22,7 @@ impl MotorSetup<4> {
     pub const fn quad_x_basic(
         x_dist: f32,
         y_dist: f32,
-        milli_react: f32,
+        reaction: f32,
         outspin: bool,
     ) -> MotorSetup<4> {
         let x_half_dist = x_dist / 2.0;
@@ -34,25 +34,25 @@ impl MotorSetup<4> {
                     // back right
                     position: Point3::new(-x_half_dist, y_half_dist, 0.0),
                     direction: Vector3::new(0.0, 0.0, -1.0),
-                    reaction: milli_react * dir, // + (CW)
+                    reaction: reaction * dir, // + (CW)
                 },
                 Motor {
                     // front right
                     position: Point3::new(x_half_dist, y_half_dist, 0.0),
                     direction: Vector3::new(0.0, 0.0, -1.0),
-                    reaction: -milli_react * dir, // - (CW)
+                    reaction: -reaction * dir, // - (CW)
                 },
                 Motor {
                     // back left
                     position: Point3::new(-x_half_dist, -y_half_dist, 0.0),
                     direction: Vector3::new(0.0, 0.0, -1.0),
-                    reaction: -milli_react * dir, // - (CW)
+                    reaction: -reaction * dir, // - (CW)
                 },
                 Motor {
                     // front left
                     position: Point3::new(x_half_dist, -y_half_dist, 0.0),
                     direction: Vector3::new(0.0, 0.0, -1.0),
-                    reaction: milli_react * dir, // + (CW)
+                    reaction: reaction * dir, // + (CW)
                 },
             ],
         }

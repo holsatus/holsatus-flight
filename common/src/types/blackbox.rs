@@ -1,7 +1,7 @@
 use embassy_time::Instant;
 use serde::{Deserialize, Serialize};
 
-use crate::{filters::rate_pid::RatePidCfg3D, signals::BLACKBOX_QUEUE};
+use crate::{signals::BLACKBOX_QUEUE};
 
 use super::status::PidTerms;
 use crate::errors::HolsatusError;
@@ -150,7 +150,6 @@ pub fn get_rate_log() -> Option<RateLog> {
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct RateMetaLog {
-    meta: RatePidCfg3D,
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]

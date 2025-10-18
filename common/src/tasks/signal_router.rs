@@ -41,7 +41,10 @@ pub async fn main() -> ! {
     let mut rcv_rc_controls = s::RC_ANALOG_UNIT.receiver();
     let mut rcv_angle_to_rate_sp = s::ANGLE_TO_RATE_SP.receiver();
     let mut rcv_vel_to_angle_sp = s::VEL_TO_ANGLE_SP.receiver();
+
+    #[cfg(feature = "mpc")]
     let mut rcv_mpc_angle_sp = crate::tasks::controller_mpc::MPC_TARGET_ATT.receiver();
+    #[cfg(feature = "mpc")]
     let mut rcv_mpc_force_sp = crate::tasks::controller_mpc::MPC_TARGET_FRC.receiver();
 
     // Get outputs
@@ -127,19 +130,19 @@ pub async fn main() -> ! {
                 }
             },
 
-            // Route MPC-generated attitude into angle controller
-            mpc_angle_sp = rcv_mpc_angle_sp.changed().fuse() => {
-                if control_mode == ControlMode::Autonomous {
-                    snd_angle_sp.send(mpc_angle_sp);
-                }
-            }
+            // // Route MPC-generated attitude into angle controller
+            // mpc_angle_sp = rcv_mpc_angle_sp.changed().fuse() => {
+            //     if control_mode == ControlMode::Autonomous {
+            //         snd_angle_sp.send(mpc_angle_sp);
+            //     }
+            // }
 
-            // Route MPC-generated total thrust force
-            mpc_force_sp = rcv_mpc_force_sp.changed().fuse() => {
-                if control_mode == ControlMode::Autonomous {
-                    snd_z_thrust_sp.send(mpc_force_sp);
-                }
-            }
+            // // Route MPC-generated total thrust force
+            // mpc_force_sp = rcv_mpc_force_sp.changed().fuse() => {
+            //     if control_mode == ControlMode::Autonomous {
+            //         snd_z_thrust_sp.send(mpc_force_sp);
+            //     }
+            // }
         };
     }
 }
