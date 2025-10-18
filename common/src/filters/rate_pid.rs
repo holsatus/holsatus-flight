@@ -24,94 +24,33 @@ pub struct RatePid {
     terms: PidTerms,
 
     // Configuration
-    ts: f32,
+    dt: f32,
     integral_en: bool,
     lowpass: Lowpass<f32>,
     d_lowpass: NthOrderLowpass<f32, 2>,
     d_slew: Option<SlewRate<f32>>,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RatePidCfg {
-    pub kp: f32,
-    pub ki: f32,
-    pub kd: f32,
-    pub tau: f32,
-    pub slew: Option<f32>,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RatePidCfg3D {
-    pub x: RatePidCfg,
-    pub y: RatePidCfg,
-    pub z: RatePidCfg,
-}
-
-impl Default for RatePidCfg3D {
-    fn default() -> Self {
-        Self {
-            x: RatePidCfg {
-                kp: 0.02,
-                ki: 10.,
-                kd: 0.05,
-                tau: 0.002,
-                slew: Some(400.),
-            },
-            y: RatePidCfg {
-                kp: 0.02,
-                ki: 10.,
-                kd: 0.05,
-                tau: 0.002,
-                slew: Some(400.),
-            },
-            z: RatePidCfg {
-                kp: 0.01,
-                ki: 10.,
-                kd: 0.1,
-                tau: 0.002,
-                slew: Some(400.),
-            },
-        }
-    }
-}
-
 impl RatePid {
-    pub fn new(kp: f32, ki: f32, kd: f32, tau: f32, ts: f32) -> Self {
+    pub fn new(kp: f32, ki: f32, kd: f32, tau: f32, dt: f32) -> Self {
         Self {
             kp,
-            ki: ki * kp,
+            ki: ki,
             kd: kd * kp,
             integral: 0.0,
             prev_meas: 0.0,
             prev_ref: 0.0,
             terms: PidTerms::default(),
             integral_en: true,
-            ts,
-            lowpass: Lowpass::new(tau * 5., ts),
-            d_lowpass: NthOrderLowpass::new(tau, ts),
+            dt,
+            lowpass: Lowpass::new(tau * 10., dt),
+            d_lowpass: NthOrderLowpass::new(tau, dt),
             d_slew: None,
         }
     }
 
-    pub fn new_from_cfg(cfg: RatePidCfg, ts: f32) -> Self {
-        let mut pid = Self::new(cfg.kp, cfg.ki, cfg.kd, cfg.tau, ts);
-        if let Some(slew) = cfg.slew {
-            pid = pid.slew(slew);
-        }
-        pid
-    }
-
-    pub fn set_config(&mut self, cfg: RatePidCfg) {
-        self.kp = cfg.kp;
-        self.ki = cfg.ki * cfg.kp;
-        self.kd = cfg.kd * cfg.kp;
-        self.lowpass = Lowpass::new(cfg.tau * 5., self.ts);
-        self.d_lowpass = NthOrderLowpass::new(cfg.tau, self.ts);
-        self.d_slew = cfg.slew.map(|x| SlewRate::new(x, self.ts));
-    }
-
     pub fn set_ts(&mut self, ts: f32) {
-        self.ts = ts;
+        self.dt = ts;
         self.d_lowpass.set_dt(ts);
         if let Some(slew) = &mut self.d_slew {
             slew.set_dt(ts);
@@ -119,7 +58,7 @@ impl RatePid {
     }
 
     pub fn slew(mut self, slew: f32) -> Self {
-        self.d_slew = Some(SlewRate::new(slew, self.ts));
+        self.d_slew = Some(SlewRate::new(slew, self.dt));
         self
     }
 
@@ -133,7 +72,7 @@ impl RatePid {
 
         // Take derivatives of measurement (negative because d(ref - meas)/dt)
         let measurement_lp = self.d_lowpass.update(measurement);
-        let meas_derivative = -self.kd * (measurement_lp - self.prev_meas) / self.ts;
+        let meas_derivative = -self.kd * (measurement_lp - self.prev_meas) / self.dt;
         self.prev_meas = measurement_lp;
 
         // Calculate error integral (if reference is small) This ensures we do
@@ -141,7 +80,7 @@ impl RatePid {
         // (velocities) where air resistance and other strange dynamics likely
         // played a larger role than at a low reference.
         if prediction.abs() < 1.0 && self.integral_en {
-            self.integral += self.ki * (prediction - measurement) * self.ts
+            self.integral += self.ki * (prediction - measurement) * self.dt
                 / (1.0 + self.lowpass.update(meas_derivative).abs());
         }
 
@@ -153,7 +92,7 @@ impl RatePid {
             .map_or(reference, |slew| slew.update(reference));
 
         // Calculate derivative
-        let ref_derivative = self.kd * (reference - self.prev_ref) / self.ts;
+        let ref_derivative = self.kd * (reference - self.prev_ref) / self.dt;
         self.prev_ref = reference;
 
         // Sum all terms together. The meas_derivative_lp is subtracted because
