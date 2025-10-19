@@ -34,7 +34,7 @@ pub async fn main() -> ! {
     const ID: &str = "signal_router";
     info!("{}: Task started", ID);
 
-    let params = param::TABLE.read_initialized().await.clone();
+    let params = param::TABLE.read().await.clone();
 
     // Get inputs
     let mut rcv_control_mode = CMD_CONTROL_MODE.receiver();

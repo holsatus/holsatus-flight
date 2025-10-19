@@ -102,7 +102,7 @@ pub async fn main() {
     let dt: f32 = 1.0 / get_ctrl_freq!() as f32;
 
     // Load parameters
-    let params = params::TABLE.read_initialized().await;
+    let params = params::TABLE.read().await;
 
     // Define PID controllers
     let mut pid = [

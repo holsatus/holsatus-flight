@@ -8,7 +8,7 @@ use mavio::{
     Frame,
 };
 
-use crate::mavlink2::{params::PeerId, MavlinkServer};
+use crate::mavlink2::{params::Identity, MavlinkServer};
 
 pub fn value_from_mav_bytewise(param_value: f32, param_type: MavParamType) -> Option<Value> {
     use mav_param::{value::from_bytewise, Value};
@@ -60,10 +60,10 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamRequestRead {
         };
 
         match crate::tasks::param_storage::TABLES
-            .get_param(msg.param_id)
+            .get_param(&msg.param_id)
             .await
         {
-            Some(value) => {
+            Ok(value) => {
                 debug!(
                     "[mavlink] Read out the parameter {} as {:?}",
                     ident.as_str(),
@@ -81,18 +81,15 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamRequestRead {
                     param_index: u16::MAX,
                 };
 
-                let target = PeerId {
+                let target = Identity {
                     sys: frame.header().system_id(),
                     com: frame.header().component_id(),
                 };
 
                 server.send_mav_message(&message, target).await?;
             }
-            None => {
-                error!(
-                    "[mavlink] Could not read the parameter with id: {:?}",
-                    msg.param_id
-                )
+            Err(error) => {
+                error!("[mavlink] Could not get the parameter: {:?}", error,)
             }
         }
 
@@ -143,7 +140,7 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamRequestList {
 
                         param_index += 1;
 
-                        let target = PeerId {
+                        let target = Identity {
                             sys: frame.header().system_id(),
                             com: frame.header().component_id(),
                         };
@@ -177,21 +174,18 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamSet {
         };
 
         match crate::tasks::param_storage::TABLES
-            .set_param(msg.param_id, value, true)
+            .set_param(&msg.param_id, value)
             .await
         {
-            Some(ident) => {
+            Ok(ident) => {
                 debug!(
                     "[mavlink] Set the parameter {:?} to {:?}",
                     ident.as_str(),
                     value
                 )
             }
-            None => {
-                error!(
-                    "[mavlink] Could not set the parameter with id: {:?}",
-                    msg.param_id
-                )
+            Err(error) => {
+                error!("[mavlink] Could not set the parameter: {:?}", error,)
             }
         }
 

@@ -6,6 +6,7 @@ use embassy_time::{with_timeout, Duration, Timer};
 #[cfg(feature = "mavlink")]
 use mavio::default_dialect::enums::MavModeFlag;
 
+use crate::signals as s;
 use crate::{
     filters::{motor_lin::MotorLin, Linear, Lowpass},
     tasks::motor_governor::params::Reverse,
@@ -14,7 +15,6 @@ use crate::{
     hw_abstraction::OutputGroup,
     types::actuators::{DisarmReason, MotorsState},
 };
-use crate::signals as s;
 
 pub mod params {
     use crate::tasks::param_storage::Table;
@@ -85,7 +85,7 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
     // Output signals
     let mut snd_motors_state = s::MOTORS_STATE.sender();
 
-    let params = params::TABLE.read_initialized().await;
+    let params = params::TABLE.read().await;
     debug!("[{}] Received initial parameters", ID);
 
     let mut dirs;
@@ -120,7 +120,7 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
         snd_motors_state.send(MotorsState::Arming);
 
         // Ensure we have latest configuration
-        let params = params::TABLE.read_initialized().await;
+        let params = params::TABLE.read().await;
 
         dirs = [
             params.rev.contains(Reverse::MOTOR_0),

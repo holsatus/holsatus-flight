@@ -13,7 +13,12 @@ pub async fn main() -> ! {
         debug!("CAL_IMU_DATA: {:?}", s::CAL_IMU_DATA.try_get());
         debug!("CONTROL_MODE: {:?}", CMD_CONTROL_MODE.try_get());
         debug!("CTROL_MOTORS: {:?}", s::CTRL_MOTORS.try_get());
-        debug!("ANGLE_SP: {:?}", s::VEL_TO_ANGLE_SP.try_get().map(|q|q.as_vector().clone_owned().data.0));
+        debug!(
+            "ANGLE_SP: {:?}",
+            s::VEL_TO_ANGLE_SP
+                .try_get()
+                .map(|q| q.as_vector().clone_owned().data.0)
+        );
         debug!("RATE_SP: {:?}", s::ANGLE_TO_RATE_SP.try_get());
         debug!("RC_CONTROLS: {:?}", s::RC_ANALOG_UNIT.try_get());
     }

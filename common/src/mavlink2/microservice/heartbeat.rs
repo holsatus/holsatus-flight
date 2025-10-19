@@ -4,7 +4,7 @@ use embassy_time::{Duration, Ticker};
 
 #[embassy_executor::task]
 pub async fn service_heartbeat() -> ! {
-    let dur_ms = TABLE.read_initialized().await.hb_dur_ms;
+    let dur_ms = TABLE.read().await.hb_dur_ms;
     let mut ticker = Ticker::every(Duration::from_millis(dur_ms as u64));
 
     loop {

@@ -52,7 +52,6 @@ pub struct MagCalib {
     pub max_dropped: usize,
 }
 
-
 pub struct Feedback<T> {
     sig: Signal<NoopRawMutex, Option<T>>,
 }

@@ -1,13 +1,13 @@
 use embassy_futures::select::{select, Either};
 
 use crate::{
+    calibration::Feedback,
     calibration::{
         acc_routine::calibrate_acc,
         gyr_routine::calibrate_gyr_bias,
         mag_routine::{calibrate_mag, MagCalState},
         Calibrate,
     },
-    calibration::Feedback,
     signals::{self as s, register_error},
     tasks::param_storage,
 };

@@ -1,12 +1,13 @@
 use core::num::Wrapping;
 
 use embassy_executor::SendSpawner;
+use maitake_sync::WaitMap;
 
-use crate::errors::adapter::embedded_io::EmbeddedIoError;
 use crate::mavlink2::handler::Handler;
 use crate::sync::channel::Channel;
-use embassy_futures::select::{select3, select_array, Either3};
-use embassy_time::{Instant, Timer};
+use crate::{errors::adapter::embedded_io::EmbeddedIoError, mavlink2::messages::Generator};
+use embassy_futures::select::{select, select3, select_array, Either, Either3};
+use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::{Read, Write};
 use heapless::Vec;
 use mavio::{
@@ -15,7 +16,7 @@ use mavio::{
     Frame,
 };
 
-use params::{Parameters, PeerId};
+use params::{Identity, Parameters};
 
 use crate::serial::{IoStream, StreamId};
 
@@ -27,14 +28,17 @@ mod microservice;
 pub mod params;
 
 /// Maximum number of ports/IO this MAVLink instance may use
-const MAX_NUM_PORTS: usize = 2;
+const MAX_NUM_INTERFACES: usize = 2;
 
 /// Maximum number of peers each port may remember.
 const MAX_NUM_PEERS: usize = 4;
 
+/// Maximum number of data streamers that can be active
+const MAX_NUM_STREAMS: usize = 8;
+
 macro_rules! enforce_mav_target {
     ($self:ident, $msg:ident) => {
-        let target_id = PeerId {
+        let target_id = Identity {
             sys: $msg.target_system,
             com: $msg.target_component,
         };
@@ -48,12 +52,12 @@ macro_rules! enforce_mav_target {
 // The tasks state and saved parameters
 struct MavlinkServer {
     param: Parameters,
-    ports: Ports,
+    interfaces: MultiInterface,
     next_peer_timeout: Option<Instant>,
 }
 
 #[derive(Debug)]
-struct Port {
+struct Interface {
     stream: IoStream,
     stream_id: StreamId,
     parser: FrameParser<V2>,
@@ -61,18 +65,61 @@ struct Port {
     peers: Vec<Peer, MAX_NUM_PEERS>,
 }
 
-struct Ports([Option<Port>; MAX_NUM_PORTS]);
+static STREAM_MAP: WaitMap<u8, Option<params::Stream>> = WaitMap::new();
 
-impl Ports {
+#[embassy_executor::task(pool_size = MAX_NUM_STREAMS)]
+async fn stream_runner(id: u8) {
+    let mut opt_stream = None;
+    loop {
+        match select(STREAM_MAP.wait(id), async {
+            match opt_stream {
+                // Send the generator for broadcast and wait the duration.
+                // Waiting the duration is not as precise timing-wise
+                // as using a ticker, but it does degrade more gracefully
+                // during high throughput.
+                Some((generator, duration)) => loop {
+                    CHANNEL
+                        .send(Message::SendGenerator {
+                            generator,
+                            target: Target::Broadcast,
+                        })
+                        .await;
+                    Timer::after(duration).await;
+                },
+                // We are not configured  to do anything, pend forever
+                None => core::future::pending::<()>().await,
+            }
+        })
+        .await
+        {
+            Either::First(Ok(new_stream)) => {
+                // Map the message into something more useful
+                opt_stream = new_stream.and_then(|stream| {
+                    Some((
+                        Generator::from_id(stream.message_id)?,
+                        Duration::from_millis(stream.interval_ms as u64),
+                    ))
+                });
+            }
+            // The second future never returns by itself, the the WaitMap
+            // is never closed, so we never get to this point in reality.
+            _ => (),
+        }
+    }
+}
+
+struct MultiInterface([Option<Interface>; MAX_NUM_INTERFACES]);
+
+impl MultiInterface {
     pub fn new() -> Self {
-        Self([const { None }; MAX_NUM_PORTS])
+        Self([const { None }; MAX_NUM_INTERFACES])
     }
 
     pub fn _is_full(&self) -> bool {
         self.0.iter().all(|elem| elem.is_some())
     }
 
-    pub fn push(&mut self, port: Port) -> Result<(), Port> {
+    pub fn push(&mut self, port: Interface) -> Result<(), Interface> {
         let mut index = 0;
         loop {
             match self.0.get_mut(index) {
@@ -91,20 +138,20 @@ impl Ports {
     }
 
     /// Remove peers with the `peer_id` from all ports
-    fn _remove_peer_all(&mut self, peer_id: PeerId) {
+    fn _remove_peer_all(&mut self, identity: Identity) {
         for port in self.iter_mut() {
-            port.peers.retain(|peer| peer.peer_id != peer_id);
+            port.peers.retain(|peer| peer.identity != identity);
         }
     }
 
     /// Remove a peer from the specified port. This may be used when a peer
     /// has timed out or is no longer reachable on the specified port.
-    fn _remove_peer(&mut self, stream_id: StreamId, peer_id: PeerId) {
+    fn _remove_peer(&mut self, stream_id: StreamId, peer_id: Identity) {
         if let Some(port) = self
             .iter_mut()
             .find(|port| port.stream.name().id() == stream_id)
         {
-            port.peers.retain(|peer| peer.peer_id != peer_id);
+            port.peers.retain(|peer| peer.identity != peer_id);
         }
     }
 
@@ -112,12 +159,12 @@ impl Ports {
     ///
     /// This is used to determine when the server should check for
     /// inactive peers and remove them.
-    fn next_peer_timeout(&mut self) -> Option<Instant> {
+    fn find_next_peer_timeout(&mut self) -> Option<Instant> {
         let mut soonest_timeout = Instant::MAX;
         for port in self.iter() {
-            if let Some(peer) = port.peers.iter().min_by_key(|p| p.seen) {
-                if peer.seen < soonest_timeout {
-                    soonest_timeout = peer.seen;
+            if let Some(peer) = port.peers.iter().min_by_key(|p| p.last_seen) {
+                if peer.last_seen < soonest_timeout {
+                    soonest_timeout = peer.last_seen;
                 }
             }
         }
@@ -159,16 +206,16 @@ impl Ports {
         )
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Port> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Interface> {
         self.0.iter_mut().flatten()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Port> {
+    pub fn iter(&self) -> impl Iterator<Item = &Interface> {
         self.0.iter().flatten()
     }
 }
 
-impl Port {
+impl Interface {
     fn new(stream: IoStream) -> Self {
         Self {
             stream_id: stream.name().id(),
@@ -179,8 +226,8 @@ impl Port {
         }
     }
 
-    pub fn has_peer(&self, peer_id: &PeerId) -> bool {
-        self.peers.iter().any(|p| p.peer_id == *peer_id)
+    pub fn has_peer(&self, peer_id: &Identity) -> bool {
+        self.peers.iter().any(|p| p.identity == *peer_id)
     }
 
     pub async fn send_frame(
@@ -214,9 +261,9 @@ impl Port {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Peer {
     /// The Mavlink ID of the peer
-    peer_id: PeerId,
+    identity: Identity,
     /// The last time a message was seen from this peer
-    seen: Instant,
+    last_seen: Instant,
     /// Number of messages received from this peer
     num_received: usize,
 }
@@ -228,7 +275,7 @@ pub enum Error {
     UnsupportedMsg { id: u32 },
     #[error("Maximum number of peers ({max}) reached for {stream_id:?}")]
     MaxNumberPeers { max: u8, stream_id: StreamId },
-    #[error("Maximum number of ports reached, max of {MAX_NUM_PORTS}")]
+    #[error("Maximum number of ports reached, max of {MAX_NUM_INTERFACES}")]
     MaxNumberPorts,
     #[error("Error on interface {err:?}: {stream_id:?}")]
     Io {
@@ -241,8 +288,6 @@ pub enum Error {
     SpecError(mavio::error::SpecError),
     #[error("Mavio frame error: {0:?}")]
     FrameError(mavio::error::FrameError),
-    #[error("Mavio general error: {0:?}")]
-    MavioError(mavio::error::Error),
 }
 
 impl From<mavio::error::FrameError> for Error {
@@ -259,7 +304,11 @@ impl From<mavio::error::SpecError> for Error {
 
 impl From<mavio::error::Error> for Error {
     fn from(error: mavio::error::Error) -> Self {
-        Error::MavioError(error)
+        match error {
+            mavio::Error::Io(_) => unreachable!("We do not use mavio Io"),
+            mavio::Error::Frame(frame_error) => Error::FrameError(frame_error),
+            mavio::Error::Spec(spec_error) => Error::SpecError(spec_error),
+        }
     }
 }
 
@@ -271,13 +320,13 @@ pub enum Target {
     /// Send the message on all ports
     /// that are connected to the given peers
     /// (identified by their MavlinkId)
-    Peers(Vec<PeerId, MAX_NUM_PEERS>),
+    Peers(Vec<Identity, MAX_NUM_PEERS>),
     /// Send the message on the given ports
-    Ports(Vec<StreamId, MAX_NUM_PORTS>),
+    Ports(Vec<StreamId, MAX_NUM_INTERFACES>),
 }
 
-impl From<PeerId> for Target {
-    fn from(value: PeerId) -> Self {
+impl From<Identity> for Target {
+    fn from(value: Identity) -> Self {
         Target::Peers(Vec::from_slice(&[value]).unwrap())
     }
 }
@@ -312,27 +361,42 @@ pub async fn main(stream_id: &'static str) -> ! {
 
 impl MavlinkServer {
     async fn new(stream_id: &'static str) -> Self {
-        let param = params::TABLE.read_initialized().await.clone();
-
         let spawner = SendSpawner::for_current_executor().await;
 
+        // Spawn all streamer runners and yield once so they are guaranteed
+        // to be ready ready once the parameters are loaded.
+        for id in 0..MAX_NUM_STREAMS as u8 {
+            spawner.spawn(stream_runner(id as u8).unwrap());
+            embassy_futures::yield_now().await;
+        }
+
+        // The hearbeat microservice makes basic info available to others
         spawner.spawn(microservice::heartbeat::service_heartbeat().unwrap());
+
+        // For debugging, spawn the task streaming certain messages
+        spawner.spawn(messages::stream_position_set().unwrap());
+
+        // Request and wait for the parameter table to be loaded
+        let param = params::TABLE.read().await.clone();
+
+        // Propagate all stream configurations to the streamer tasks
+        for (id, stream) in param.stream.iter().enumerate() {
+            STREAM_MAP.wake(&(id as u8), *stream);
+        }
 
         // Claim a serial port to be used
         let io_stream = crate::serial::claim(stream_id).unwrap();
-        let mut ports = Ports::new();
-        ports.push(Port::new(io_stream)).unwrap();
+        let mut ports = MultiInterface::new();
+        ports.push(Interface::new(io_stream)).unwrap();
 
         Self {
             param,
-            ports,
+            interfaces: ports,
             next_peer_timeout: None,
         }
     }
 
     async fn run(&mut self) -> ! {
-        // Wait for an initial io-stream to be available
-
         loop {
             if let Err(_error) = self.run_inner().await {
                 error!("[mavlink] Error logged");
@@ -357,7 +421,7 @@ impl MavlinkServer {
         match select3(
             CHANNEL.receive(),
             self.peer_timeout(),
-            self.ports.recv_frame(),
+            self.interfaces.recv_frame(),
         )
         .await
         {
@@ -405,13 +469,13 @@ impl MavlinkServer {
         // TODO: Reduce repetition here.
         match send_target {
             Target::Broadcast => {
-                for port in self.ports.iter_mut() {
+                for port in self.interfaces.iter_mut() {
                     port.send_frame(message, &self.param).await?;
                 }
             }
             Target::Peers(peer_ids) => {
                 for peer_id in peer_ids.iter() {
-                    for port in self.ports.iter_mut().filter(|l| l.has_peer(peer_id)) {
+                    for port in self.interfaces.iter_mut().filter(|l| l.has_peer(peer_id)) {
                         port.send_frame(message, &self.param).await?;
                     }
                 }
@@ -419,7 +483,7 @@ impl MavlinkServer {
             Target::Ports(link_ids) => {
                 for stream_id in link_ids.iter() {
                     if let Some(port) = self
-                        .ports
+                        .interfaces
                         .iter_mut()
                         .find(|l| l.stream.name().id() == *stream_id)
                     {
@@ -440,29 +504,28 @@ impl MavlinkServer {
         match frame.message_id() {
             m::Heartbeat::ID => {
                 let _msg = frame.decode_message::<m::Heartbeat>()?;
-                let id = PeerId::from(&frame);
+                let id = Identity::from(&frame);
                 trace!("[mavlink] Got heartbeat from {:?}", id);
             }
 
             m::Ping::ID => {
-                let mut  msg = frame.decode_message::<m::Ping>()?;
-                
+                let mut msg = frame.decode_message::<m::Ping>()?;
+
                 // If the target is non-zero, this is not a ping request
                 if msg.target_system != 0 || msg.target_component != 0 {
-                    return Ok(())
+                    return Ok(());
                 }
 
                 msg.target_system = frame.header().system_id();
                 msg.target_component = frame.header().component_id();
 
-                let target = PeerId {
+                let target = Identity {
                     sys: frame.system_id(),
                     com: frame.component_id(),
                 };
 
                 self.send_mav_message(&msg, target).await?;
-            },
-
+            }
 
             // Parameter-protocol related messages
             m::ParamRequestRead::ID => m::ParamRequestRead::handle(self, frame).await?,
@@ -472,29 +535,31 @@ impl MavlinkServer {
             m::CommandInt::ID => {
                 let msg = frame.decode_message::<m::CommandInt>()?;
                 enforce_mav_target!(self, msg);
+                error!("[mavlink] TODO: Support CommandInt messages");
+                return Err(Error::UnsupportedMsg {
+                    id: m::CommandInt::ID,
+                });
             }
             m::CommandLong::ID => {
                 let msg = frame.decode_message::<m::CommandLong>()?;
                 enforce_mav_target!(self, msg);
+                error!("[mavlink] TODO: Support CommandLong messages");
+                return Err(Error::UnsupportedMsg {
+                    id: m::CommandLong::ID,
+                });
             }
 
             m::ViconPositionEstimate::ID => {
                 let msg = frame.decode_message::<m::ViconPositionEstimate>()?;
 
+                // The covariance matrices are bogus since they do not
+                // seem to exist for the vicon tracker my Uni uses..
                 let vicon_data = crate::types::measurements::ViconData {
                     timestamp_us: msg.usec,
                     position: [msg.x, msg.y, msg.z],
-                    pos_var: [
-                        [0.1, 0.0, 0.0],
-                        [0.0, 0.1, 0.0],
-                        [0.0, 0.0, 0.1],
-                    ],
+                    pos_var: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]],
                     attitude: [msg.roll, msg.pitch, msg.yaw],
-                    att_var: [
-                        [0.1, 0.0, 0.0],
-                        [0.0, 0.1, 0.0],
-                        [0.0, 0.0, 0.1],
-                    ],
+                    att_var: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]],
                 };
 
                 crate::signals::VICON_POSITION_ESTIMATE.send(vicon_data);
@@ -510,23 +575,32 @@ impl MavlinkServer {
     }
 
     fn register_frame(&mut self, frame: &Frame<V2>, stream_id: StreamId) -> Result<(), Error> {
-        let seen = Instant::now();
-        let peer_id = PeerId::from(frame);
+        let frame_seen = Instant::now();
+        let frame_identity = Identity::from(frame);
 
         // TODO: Maybe spacial behavior for heartbeats?
         // let is_heartbeat = frame.message_id() == Heartbeat::ID;
 
-        if let Some(port) = self.ports.iter_mut().find(|l| l.stream_id == stream_id) {
-            match port.peers.iter_mut().find(|p| p.peer_id == peer_id) {
+        if let Some(interface) = self
+            .interfaces
+            .iter_mut()
+            .find(|i| i.stream_id == stream_id)
+        {
+            match interface
+                .peers
+                .iter_mut()
+                .find(|peer| peer.identity == frame_identity)
+            {
                 Some(existing_peer) => {
-                    existing_peer.seen = seen;
+                    existing_peer.last_seen = frame_seen;
                     existing_peer.num_received += 1;
                 }
                 None => {
-                    port.peers
+                    interface
+                        .peers
                         .push(Peer {
-                            peer_id,
-                            seen,
+                            identity: frame_identity,
+                            last_seen: frame_seen,
                             num_received: 0,
                         })
                         .map_err(|_| {
@@ -546,7 +620,7 @@ impl MavlinkServer {
         }
 
         if self.next_peer_timeout.is_none() {
-            self.next_peer_timeout = Some(seen + self.param.timeout());
+            self.next_peer_timeout = Some(frame_seen + self.param.timeout());
         }
 
         Ok(())
@@ -562,13 +636,13 @@ impl MavlinkServer {
     /// Peers will only be removed from the links they timed out on.
     fn retain_active_peers(&mut self) {
         let now = Instant::now();
-        for port in self.ports.iter_mut() {
-            port.peers.retain(|peer| {
-                let retain = peer.seen + self.param.timeout() > now;
+        for interface in self.interfaces.iter_mut() {
+            interface.peers.retain(|peer| {
+                let retain = peer.last_seen + self.param.timeout() > now;
                 if !retain {
                     debug!(
                         "[mavlink] Peer {:?} timed out on stream {:?}",
-                        peer.peer_id, port.stream_id
+                        peer.identity, interface.stream_id
                     );
                 }
                 retain
@@ -582,8 +656,8 @@ impl MavlinkServer {
     /// inactive peers and remove them.
     fn update_next_peer_timeout(&mut self) {
         self.next_peer_timeout = self
-            .ports
-            .next_peer_timeout()
+            .interfaces
+            .find_next_peer_timeout()
             .map(|instant| instant + self.param.timeout())
     }
 }

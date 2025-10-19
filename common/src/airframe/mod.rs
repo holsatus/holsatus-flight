@@ -98,9 +98,12 @@ impl MotorSetup<4> {
     }
 }
 
-impl <const N: usize> MotorSetup<N> {
-        pub fn into_mixing_matrix(&self) -> Option<SMatrix<f32, N, 4>> {
-        assert!(N >= 4, "Motor mixing matrix calculation not supported for fewer than 4 rotors");
+impl<const N: usize> MotorSetup<N> {
+    pub fn into_mixing_matrix(&self) -> Option<SMatrix<f32, N, 4>> {
+        assert!(
+            N >= 4,
+            "Motor mixing matrix calculation not supported for fewer than 4 rotors"
+        );
 
         // Build the effectiveness matrix
         let mut matrix = SMatrix::<f32, 4, N>::zeros();

@@ -18,6 +18,31 @@ mod time {
     }
 }
 
+const TARGET_HZ: usize = 20;
+const POSITION_SET: &'static [Generator] = &[
+    Generator::AttitudeQuaternion,
+    Generator::LocalPositionNed,
+    Generator::ServoOutputRaw,
+    Generator::ScaledImu,
+];
+
+#[embassy_executor::task]
+pub(crate) async fn stream_position_set() -> ! {
+    let duration_micros = 1e6 / (POSITION_SET.len() * TARGET_HZ) as f32;
+    let duration = embassy_time::Duration::from_micros(duration_micros as u64);
+    loop {
+        for generator in POSITION_SET {
+            embassy_time::Timer::after(duration).await;
+            super::CHANNEL
+                .send(super::Message::SendGenerator {
+                    generator: *generator,
+                    target: super::Target::Broadcast,
+                })
+                .await;
+        }
+    }
+}
+
 macro_rules! define_message_set {
     (
         $(#[$meta:meta])*
@@ -29,7 +54,7 @@ macro_rules! define_message_set {
         }
     ) => {
         #[repr(u32)]
-        #[derive(Debug, Clone, mav_param::Enum, Default)]
+        #[derive(Debug, Clone, Copy, mav_param::Enum, Default)]
         #[cfg_attr(feature = "defmt", derive(defmt::Format))]
         $(#[$meta])*
         pub enum $generator_name {
@@ -53,6 +78,16 @@ macro_rules! define_message_set {
                         $generator_name::$variant => Ok($message_name::$variant(<::mavio::dialects::common::messages::$variant>::generate()?))
                     ),*
                 }
+            }
+
+            pub fn from_id(id: u32) -> Option<Self> {
+                let generator = match id {
+                    $(
+                        <::mavio::dialects::common::messages::$variant>::ID => Self::$variant,
+                    )*
+                    _ => return None
+                };
+                return Some(generator);
             }
         }
 
@@ -110,6 +145,7 @@ define_message_set! {
         RcChannelsRaw,
         RcChannelsScaled,
         AutopilotVersion,
+        LocalPositionNed
     }
 }
 
@@ -278,6 +314,25 @@ impl Generate for AutopilotVersion {
     fn generate() -> Result<Self, Error> {
         // TODO fill this in correctly
         Ok(Self::default())
+    }
+}
+
+impl Generate for LocalPositionNed {
+    fn generate() -> Result<Self, Error> {
+        let mut msg = LocalPositionNed::default();
+
+        if let Some(eskf_estimate) = crate::signals::ESKF_ESTIMATE.try_get() {
+            msg.time_boot_ms = time::ms_u32();
+
+            msg.x = eskf_estimate.pos[0];
+            msg.y = eskf_estimate.pos[1];
+            msg.z = eskf_estimate.pos[2];
+            msg.vx = eskf_estimate.vel[0];
+            msg.vy = eskf_estimate.vel[1];
+            msg.vz = eskf_estimate.vel[2];
+        }
+
+        Ok(msg)
     }
 }
 

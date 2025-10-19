@@ -131,7 +131,6 @@ pub async fn main() -> ! {
                 let delta_time = delta_time.as_micros() as f32 / 1e6;
                 prev_pred_time = curr_time;
 
-
                 // Prediction takes ~ 4500 us on stm32f405
                 filter.predict_optimized(imu_data.acc.into(), imu_data.gyr.into(), delta_time);
 

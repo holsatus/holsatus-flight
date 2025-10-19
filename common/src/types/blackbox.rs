@@ -1,7 +1,7 @@
 use embassy_time::Instant;
 use serde::{Deserialize, Serialize};
 
-use crate::{signals::BLACKBOX_QUEUE};
+use crate::signals::BLACKBOX_QUEUE;
 
 use super::status::PidTerms;
 use crate::errors::HolsatusError;
@@ -141,7 +141,11 @@ pub fn get_rate_log() -> Option<RateLog> {
     use crate::signals as s;
     Some(RateLog {
         timestamp_us: Instant::now().as_micros(),
-        setpoint: s::TRUE_ATTITUDE_Q_SP.try_get()?.as_vector().clone_owned().into(),
+        setpoint: s::TRUE_ATTITUDE_Q_SP
+            .try_get()?
+            .as_vector()
+            .clone_owned()
+            .into(),
         measurement: s::CAL_IMU_DATA.try_get()?.gyr,
         pid_int: s::RATE_PID_TERMS.try_get()?,
         motors: s::MOTORS_STATE.try_get()?.as_speeds(),
@@ -149,8 +153,7 @@ pub fn get_rate_log() -> Option<RateLog> {
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub struct RateMetaLog {
-}
+pub struct RateMetaLog {}
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct AngleLog {
@@ -165,7 +168,11 @@ pub fn get_angle_log() -> Option<AngleLog> {
     use crate::signals as s;
     Some(AngleLog {
         timestamp_us: Instant::now().as_micros(),
-        setpoint: s::TRUE_ATTITUDE_Q_SP.try_get()?.as_vector().clone_owned().into(),
+        setpoint: s::TRUE_ATTITUDE_Q_SP
+            .try_get()?
+            .as_vector()
+            .clone_owned()
+            .into(),
         att_estimate: s::AHRS_ATTITUDE.try_get()?,
         accelerometer: s::CAL_IMU_DATA.try_get()?.acc,
         pid_int: s::ANGLE_PID_TERMS.try_get()?,

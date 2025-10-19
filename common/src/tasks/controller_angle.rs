@@ -1,8 +1,6 @@
 use core::f32::consts::PI;
 
-use crate::{
-    filters::angle_pid::Pid, get_ctrl_freq, get_or_warn, signals as sig
-};
+use crate::{filters::angle_pid::Pid, get_ctrl_freq, get_or_warn, signals as sig};
 
 #[embassy_executor::task]
 pub async fn main() -> ! {

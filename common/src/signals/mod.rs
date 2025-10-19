@@ -7,12 +7,11 @@ use crate::{
     calibration::Calibrate,
     errors::HolsatusError,
     health::redundancy::Mode,
-    sync::{broadcast::Broadcast, channel::Channel, once_lock::OnceLock},
+    sync::{broadcast::Broadcast, channel::Channel},
     tasks::{calibrator::CalibratorState, eskf::EskfEstimate},
     types::{
         actuators::MotorsState,
         blackbox::LoggableType,
-        config::BootConfig,
         control::RcAnalog,
         measurements::{GnssData, Imu6DofData, Imu9DofData, ViconData},
         status::{ArmingBlocker, PidTerms, RcStatus},
@@ -121,9 +120,6 @@ pub static CALIBRATOR_STATE: Watch<CalibratorState, M> = Watch::new();
 // Commander signals
 pub static CMD_ARM_MOTORS: Watch<(bool, bool), M> = Watch::new();
 pub static CMD_CALIBRATE: Watch<Calibrate, M> = Watch::new();
-
-/// The boot configuration is only read once at startup
-pub static BOOT_CONFIG: OnceLock<BootConfig> = OnceLock::new();
 
 // The event bus is mainly meant for aggerating system events
 pub static BLACKBOX_QUEUE: Channel<LoggableType, 10, M> = Channel::new();

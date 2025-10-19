@@ -4,7 +4,7 @@
 )]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum SequentialError {
-    #[error("Error in storage {0}")]
+    #[error("Error in storage: {0}")]
     Storage(#[from] super::embedded_storage::StorageError),
     #[error("The item cannot be stored anymore because the storage is full.")]
     FullStorage,

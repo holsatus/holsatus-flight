@@ -4,7 +4,9 @@ use nalgebra::{matrix, vector, Quaternion, SMatrix, SVector, Unit, UnitQuaternio
 use tinympc_rs::{cache::SingleCache, AntiSphere, Box, Project, ProjectExt as _, Sphere, TinyMpc};
 
 use crate::{
-    consts::GRAVITY, signals::ESKF_ESTIMATE, sync::{channel::Channel, watch::Watch}
+    consts::GRAVITY,
+    signals::ESKF_ESTIMATE,
+    sync::{channel::Channel, watch::Watch},
 };
 
 #[allow(unused)]
@@ -62,9 +64,7 @@ pub static CHANNEL: Channel<Message, 10> = Channel::new();
 
 /// Shifts all columns such that `column[i] <- column[i + 1]` with the last two being identical.
 #[inline(always)]
-pub(crate) fn shift_columns_left<const R: usize, const C: usize>(
-    matrix: &mut SMatrix<f32, R, C>,
-) {
+pub(crate) fn shift_columns_left<const R: usize, const C: usize>(matrix: &mut SMatrix<f32, R, C>) {
     if C > 1 {
         let element_count = R * (C - 1);
         let ptr = matrix.as_mut_ptr();
@@ -95,7 +95,6 @@ pub async fn main() -> ! {
 
     mpc.config.relaxation = 1.8;
     mpc.config.max_iter = 5;
-
 
     let mut rcv_eskf_estimate = ESKF_ESTIMATE.receiver();
     let mut rcv_imu_data = crate::signals::CAL_MULTI_IMU_DATA[0].receiver();
@@ -179,19 +178,18 @@ pub async fn main() -> ! {
                     }
                 }
             }
-            continue
+            continue;
         }
 
         shift_columns_left(&mut reference);
         x_projector_bundle.project(&mut reference);
         MPC_REFERENCE.send(reference.clone());
 
-
         // Calculate this conversion
         let estimate = rcv_eskf_estimate.get().await;
         let attitude = Quaternion::from_vector(estimate.att.into());
         let attitude = Unit::from_quaternion(attitude);
-        let local_accel = SVector::from(rcv_imu_data.get().await.acc) + gravity_vector; 
+        let local_accel = SVector::from(rcv_imu_data.get().await.acc) + gravity_vector;
         let world_accel = attitude.inverse_transform_vector(&local_accel);
 
         let mut x_now = SVector::zeros();
@@ -218,14 +216,16 @@ pub async fn main() -> ! {
 
         info!(
             "[controller_mpc] Elapsed time: {}, iters: {}",
-            _dur.as_micros() as f32 / 1e6, solution.iterations,
+            _dur.as_micros() as f32 / 1e6,
+            solution.iterations,
         );
 
         // By adding gravity to the "ideal" mpc solution we get the global accel target
         let global_accel_target = solution.u_now() - gravity_vector;
 
-        let att_target = UnitQuaternion::rotation_between(&-SVector::z(), &global_accel_target.normalize())
-            .unwrap_or_else(UnitQuaternion::identity);
+        let att_target =
+            UnitQuaternion::rotation_between(&-SVector::z(), &global_accel_target.normalize())
+                .unwrap_or_else(UnitQuaternion::identity);
 
         // Set desired_force as thrust target (f = m * a)
         let force_target = VEHICLE_MASS * global_accel_target.norm();

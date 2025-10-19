@@ -100,7 +100,7 @@ pub async fn main_6dof(mut imu: impl Imu6Dof) -> ! {
     let mut snd_cal_imu_data = s::CAL_MULTI_IMU_DATA[idx].sender();
 
     // Wait for initial configuration values
-    let params = params::TABLE.read_initialized().await;
+    let params = params::TABLE.read().await;
 
     let mut acc_cal = params.cal_acc;
     let mut gyr_cal = params.cal_gyr;
@@ -118,7 +118,7 @@ pub async fn main_6dof(mut imu: impl Imu6Dof) -> ! {
             embassy_futures::select::Either::First(message) => match message {
                 Message::ReloadParams => {
                     debug!("[{}] Reloading parameters", ID);
-                    let intrinsics = params::TABLE.read_initialized().await;
+                    let intrinsics = params::TABLE.read().await;
 
                     acc_cal = intrinsics.cal_acc;
                     gyr_cal = intrinsics.cal_gyr;

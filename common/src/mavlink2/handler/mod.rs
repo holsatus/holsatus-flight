@@ -20,7 +20,6 @@ pub trait Handler<V: MaybeVersioned> {
         for<'a> Self: MessageSpecStatic + TryFrom<&'a Payload, Error = SpecError>,
     {
         let msg = frame.decode_message::<Self>()?;
-        Self::handle_inner(server, msg, frame).await?;
-        Ok(())
+        Self::handle_inner(server, msg, frame).await
     }
 }

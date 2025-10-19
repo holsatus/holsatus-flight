@@ -335,7 +335,7 @@ pub async fn main() -> ! {
     // Output signals
     let mut snd_rc_controls_unit = s::RC_ANALOG_UNIT.sender();
 
-    let params = params::TABLE.read_initialized().await;
+    let params = params::TABLE.read().await;
     let rc_bindings = params.channel_binding.clone();
 
     drop(params);

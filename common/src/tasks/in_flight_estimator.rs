@@ -13,14 +13,14 @@ pub async fn main() -> ! {
     let mut rcv_motors_mixed = crate::tasks::controller_rate::RATE_MOTORS_MIXED.receiver();
 
     loop {
-        rcv_motors_state.get_and(|state|state.is_armed()).await;
+        rcv_motors_state.get_and(|state| state.is_armed()).await;
         debug!("[if_estimator] Vehicle is armed, continuing");
 
         let force_target = rcv_motors_mixed.changed().await;
         let imu_data = rcv_imu_data.get().await;
 
         let accel: f32 = imu_data.acc[2].abs();
-        let force: f32  = force_target.iter().sum();
+        let force: f32 = force_target.iter().sum();
 
         debug!("[if_estimator] Accel {}, force: {}", accel, force);
 
@@ -34,7 +34,7 @@ pub async fn main() -> ! {
         }
 
         // Once the motors go disarmed, no longer consider us to be in flight
-        rcv_motors_state.get_and(|state|state.is_disarmed()).await;
+        rcv_motors_state.get_and(|state| state.is_disarmed()).await;
         crate::signals::IN_FLIGHT.store(false, Ordering::Relaxed);
         crate::signals::ATTITUDE_INT_EN.send(false);
         debug!("[if_estimator] Vehicle no longer in flight");

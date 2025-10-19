@@ -85,7 +85,7 @@ pub async fn main() -> ! {
 }
 
 pub async fn commander_entry() -> ! {
-    let params = params::TABLE.read_initialized().await;
+    let params = params::TABLE.read().await;
 
     let mut commander = Commander::new(params.clone());
     COMMAD_ARM_VEHICLE.send(false);

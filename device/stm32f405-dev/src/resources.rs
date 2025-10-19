@@ -247,7 +247,7 @@ impl Flash {
 #[embassy_executor::task]
 pub(crate) async fn param_storage(flash: Flash, range: Range<u32>) -> ! {
     let flash = flash.setup();
-    common::tasks::param_storage::param_storage(flash, range).await
+    common::tasks::param_storage::entry(flash, range).await
 }
 
 // ----------------------------------------------------------

@@ -1,6 +1,6 @@
 use crate::errors::CalibrationError;
 
-use super::{sens3d::Calib3D, MagCalib, FeedbackHandle};
+use super::{sens3d::Calib3D, FeedbackHandle, MagCalib};
 
 #[derive(Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
