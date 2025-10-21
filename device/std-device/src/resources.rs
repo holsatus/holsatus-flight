@@ -45,7 +45,10 @@ use holsatus_sim::SimHandle;
 use holsatus_sim::SimulatedFlash;
 use holsatus_sim::SimulatedImu;
 use holsatus_sim::SimulatedMotors;
+use rand_distr::Distribution;
+use rand_distr::Normal;
 use rapier3d::na::SMatrix;
+use rapier3d::na::SVector;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 
@@ -122,17 +125,33 @@ pub async fn motor_governor(motors: SimulatedMotors) {
 
 pub fn run_simulated_vicon(handle: SimHandle) {
     crate::thread_executor::RUNTIME.spawn(async move {
+        // 10 Hz, similar to a GPS
         let mut interval = tokio::time::interval(Duration::from_millis(100));
+
         loop {
-            let state = handle.vehicle_state();
-            let angles = state.rotation.euler_angles();
-            let vicon_data = ViconData {
-                timestamp_us: handle.timestamp_us(),
-                position: state.position.into(),
-                pos_var: (SMatrix::identity() * 0.01).data.0,
-                attitude: [angles.0, angles.1, angles.2],
-                att_var: (SMatrix::identity() * 0.01).data.0,
+            let vicon_data = {
+                let mut rng = rand::rng();
+                let noise_std = 0.1f32;
+                let distr = Normal::new(0.0, 0.0).unwrap();
+
+                let state = handle.vehicle_state();
+                let angles = state.rotation.euler_angles();
+                let vicon_data = ViconData {
+                    timestamp_us: handle.timestamp_us(),
+                    position: (state.position + SVector::from_fn(|_, _| distr.sample(&mut rng)))
+                        .into(),
+                    pos_var: (SMatrix::identity() * noise_std.powi(2)).data.0,
+                    attitude: [
+                        angles.0 + distr.sample(&mut rng),
+                        angles.1 + distr.sample(&mut rng),
+                        angles.2 + distr.sample(&mut rng),
+                    ],
+                    att_var: (SMatrix::identity() * noise_std.powi(2)).data.0,
+                };
+
+                vicon_data
             };
+
             common::signals::VICON_POSITION_ESTIMATE.send(vicon_data);
             interval.tick().await;
         }
@@ -142,11 +161,7 @@ pub fn run_simulated_vicon(handle: SimHandle) {
 #[embassy_executor::task]
 pub async fn param_storage(flash: SimulatedFlash) {
     let range = flash.range_u32();
-    common::tasks::param_storage::param_storage(flash, range).await
-}
-
-pub fn make_static<T>(data: T) -> &'static mut T {
-    Box::leak(Box::new(data))
+    common::tasks::param_storage::entry(flash, range).await
 }
 
 pub(crate) fn simulation_runner(sitl: SimHandle, frequency: usize) {
@@ -161,6 +176,10 @@ pub(crate) fn simulation_runner(sitl: SimHandle, frequency: usize) {
 }
 
 pub(crate) fn new_tcp_serial_io(addr: &str, stream_id: &'static str) {
+    fn make_static<T>(data: T) -> &'static mut T {
+        Box::leak(Box::new(data))
+    }
+
     let tx_grantable = make_static(GrantableIo::<256, EmbeddedIoError>::new());
     let rx_grantable = make_static(GrantableIo::<256, EmbeddedIoError>::new());
 
@@ -174,14 +193,29 @@ pub(crate) fn new_tcp_serial_io(addr: &str, stream_id: &'static str) {
     let addr = String::from(addr);
 
     crate::thread_executor::RUNTIME.spawn(async move {
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .expect("Failed to bind to address");
-        let mut stream = listener
-            .accept()
-            .await
-            .expect("Failed to accept connection")
-            .0;
+        let Either::First(mut stream) = select(
+            async {
+                tokio::net::TcpListener::bind(addr)
+                    .await
+                    .expect("Failed to bind to address")
+                    .accept()
+                    .await
+                    .expect("Failed to accept connection")
+                    .0
+            },
+            async {
+                loop {
+                    // Drain the buffer and return an error to
+                    // prevent the writer from waiting forever.
+                    _ = device_rx.read(&mut [0u8; 32]).await;
+                    device_rx.insert_error(EmbeddedIoError::NotConnected);
+                }
+            },
+        )
+        .await
+        else {
+            unreachable!("The second branch never returns")
+        };
 
         let mut stream_buf = [0u8; 128];
         let mut device_buf = [0u8; 128];

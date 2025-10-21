@@ -8,7 +8,7 @@ default = ["rerun"]
 rerun = ["dep:rerun"]
 
 [dependencies]
-common = { path = "../../common", default-features = false, features = ["arch-std", "log"] }
+common = { path = "../../common", default-features = false, features = ["arch-std", "log", "mpc", "mavlink"] }
 holsatus-sim = { path = "../../holsatus-sim" }
 
 # embassy-net = { path = "../../embassy-holsatus/embassy-net", features = [

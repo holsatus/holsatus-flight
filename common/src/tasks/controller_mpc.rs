@@ -13,44 +13,34 @@ use crate::{
 #[cfg(not(feature = "arch-std"))]
 use num_traits::Float as _;
 
-pub const HX: usize = 20;
-const HU: usize = HX - 10;
-const NX: usize = 9;
+pub const HX: usize = 100;
+const HU: usize = HX - 5;
+const NX: usize = 6;
 const NU: usize = 3;
-const DT: f32 = 0.05; // 20 Hz, 5 second horizon
+const DT: f32 = 0.1; // 10 Hz, 10 second horizon
 const DD: f32 = 0.5 * DT * DT;
 
-// The approximate time constant for changing attitude
-const TAU: f32 = 0.1;
-const LP: f32 = TAU / (DT + TAU);
-
 const A: SMatrix<f32, NX, NX> = matrix![
-    1., 0., 0., DT, 0., 0., DD, 0., 0.;
-    0., 1., 0., 0., DT, 0., 0., DD, 0.;
-    0., 0., 1., 0., 0., DT, 0., 0., DD;
-    0., 0., 0., 1., 0., 0., DT, 0., 0.;
-    0., 0., 0., 0., 1., 0., 0., DT, 0.;
-    0., 0., 0., 0., 0., 1., 0., 0., DT;
-    0., 0., 0., 0., 0., 0., LP, 0., 0.;
-    0., 0., 0., 0., 0., 0., 0., LP, 0.;
-    0., 0., 0., 0., 0., 0., 0., 0., LP;
+    1., 0., 0., DT, 0., 0.;
+    0., 1., 0., 0., DT, 0.;
+    0., 0., 1., 0., 0., DT;
+    0., 0., 0., 1., 0., 0.;
+    0., 0., 0., 0., 1., 0.;
+    0., 0., 0., 0., 0., 1.;
 ];
 
 const B: SMatrix<f32, NX, NU> = matrix![
-    0., 0., 0.;
-    0., 0., 0.;
-    0., 0., 0.;
-    0., 0., 0.;
-    0., 0., 0.;
-    0., 0., 0.;
-    (1. - LP), 0., 0.;
-    0., (1. - LP), 0.;
-    0., 0., (1. - LP);
+    DD, 0., 0.;
+    0., DD, 0.;
+    0., 0., DD;
+    DT, 0., 0.;
+    0., DT, 0.;
+    0., 0., DT;
 ];
 
-const Q: SVector<f32, NX> = vector![9., 9., 9., 2., 2., 2., 1., 1., 1.];
-const R: SVector<f32, NU> = vector![5., 5., 5.];
-const RHO: f32 = 16.0;
+const Q: SVector<f32, NX> = vector![15., 15., 15., 1.0, 1.0, 1.0];
+const R: SVector<f32, NU> = vector![1.0, 1.0, 1.0];
+const RHO: f32 = 6.0;
 
 type Cache = SingleCache<f32, NX, NU>;
 type Mpc = TinyMpc<f32, Cache, NX, NU, HX, HU>;
@@ -93,63 +83,43 @@ pub async fn main() -> ! {
 
     let mut mpc = Mpc::new(A, B, cache);
 
-    mpc.config.relaxation = 1.8;
-    mpc.config.max_iter = 5;
+    mpc.config.relaxation = 1.5;
+    mpc.config.max_iter = 1;
 
     let mut rcv_eskf_estimate = ESKF_ESTIMATE.receiver();
     let mut rcv_imu_data = crate::signals::CAL_MULTI_IMU_DATA[0].receiver();
 
-    // Keep-out zone
-    let x_projector_asphere = AntiSphere {
-        center: vector![
-            Some(-50.0),
-            Some(0.0),
-            Some(-50.0),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None
-        ],
-        radius: 20.0,
-    };
-
-    // Absolute velocity limit of 50 m/s
-    let x_projector_sphere = Sphere {
-        center: vector![
-            None,
-            None,
-            None,
-            Some(0.0),
-            Some(0.0),
-            Some(0.0),
-            None,
-            None,
-            None
-        ],
-        radius: 50.0,
+    // Models the floor, prevents the drone from slamming into it
+    let x_projector_speed = Sphere {
+        center: vector![None, None, None, Some(0.0), Some(0.0), Some(-2.0)],
+        radius: 15.0,
     };
 
     // Models the floor, prevents the drone from slamming into it
     let x_projector_floor = Box {
-        lower: vector![None, None, None, None, None, None, None, None, None],
-        upper: vector![None, None, Some(0.0), None, None, None, None, None, None],
+        lower: vector![None, None, None, None, None, None],
+        upper: vector![None, None, Some(0.0), None, None, None],
     };
 
-    let x_projector_bundle = (x_projector_sphere, x_projector_floor, x_projector_asphere);
+    let x_projector_bundle = (x_projector_floor, x_projector_speed);
     let mut x_con = [x_projector_bundle.constraint()];
 
     // Limit the amount of acceleration in any direction. Bias downwards since gravity is helping in that case.
     let u_projector_sphere = Sphere {
         center: vector![Some(0.0), Some(0.0), Some(0.0)],
-        radius: GRAVITY * 8.0, // Allow 4g of accel
+        radius: GRAVITY * 2.0, // Allow 4g of accel
+    };
+
+    // Limit the amount of acceleration in any direction. Bias downwards since gravity is helping in that case.
+    let u_projector_box = Box {
+        upper: vector![Some(10.0), Some(10.0), None],
+        lower: vector![Some(-10.0), Some(-10.0), None],
     };
 
     // Should prevent the MPC from causing the vehicle to spin too much
     let u_projector_asphere = AntiSphere {
         center: vector![Some(0.0), Some(0.0), Some(GRAVITY)],
-        radius: GRAVITY * 0.5,
+        radius: GRAVITY * 0.2,
     };
 
     let u_projector_bundle = (u_projector_sphere, u_projector_asphere);
@@ -183,14 +153,11 @@ pub async fn main() -> ! {
 
         shift_columns_left(&mut reference);
         x_projector_bundle.project(&mut reference);
-        MPC_REFERENCE.send(reference.clone());
 
         // Calculate this conversion
         let estimate = rcv_eskf_estimate.get().await;
-        let attitude = Quaternion::from_vector(estimate.att.into());
-        let attitude = Unit::from_quaternion(attitude);
-        let local_accel = SVector::from(rcv_imu_data.get().await.acc) + gravity_vector;
-        let world_accel = attitude.inverse_transform_vector(&local_accel);
+
+        let direction = estimate.att * -SVector::z();
 
         let mut x_now = SVector::zeros();
 
@@ -200,9 +167,6 @@ pub async fn main() -> ! {
         x_now[3] = estimate.vel[0];
         x_now[4] = estimate.vel[1];
         x_now[5] = estimate.vel[2];
-        x_now[6] = world_accel[0];
-        x_now[7] = world_accel[1];
-        x_now[8] = world_accel[2];
 
         // Run solver
         let time = Instant::now();
@@ -221,14 +185,18 @@ pub async fn main() -> ! {
         );
 
         // By adding gravity to the "ideal" mpc solution we get the global accel target
-        let global_accel_target = solution.u_now() - gravity_vector;
+        // Also, we use a FUTURE actuation, to get ahead of the slower system dynamics!
+        let global_accel_target = solution.u_prediction().column(1) - gravity_vector;
 
-        let att_target =
-            UnitQuaternion::rotation_between(&-SVector::z(), &global_accel_target.normalize())
-                .unwrap_or_else(UnitQuaternion::identity);
+        let desired_thrust_dir = global_accel_target.normalize();
+
+        let alignment_factor = direction.dot(&desired_thrust_dir).max(0.0);
+
+        let att_target = UnitQuaternion::rotation_between(&-SVector::z(), &desired_thrust_dir)
+            .unwrap_or_else(UnitQuaternion::identity);
 
         // Set desired_force as thrust target (f = m * a)
-        let force_target = VEHICLE_MASS * global_accel_target.norm();
+        let force_target = VEHICLE_MASS * global_accel_target.norm() * alignment_factor;
 
         let x_prediction = solution.x_prediction();
         let pos_pred = x_prediction.fixed_view::<3, HX>(0, 0);
@@ -237,6 +205,7 @@ pub async fn main() -> ! {
         MPC_TARGET_ATT.send(att_target);
         MPC_TARGET_ACC.send(global_accel_target.into());
         MPC_TARGET_FRC.send(force_target);
+        MPC_REFERENCE.send(reference.clone());
         MPC_POS_PRED.send(pos_pred.clone_owned());
     }
 }

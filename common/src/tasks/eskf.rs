@@ -5,8 +5,8 @@ use crate::{
     types::measurements::{Imu6DofData, ViconData},
 };
 use embassy_executor::SendSpawner;
-use embassy_time::Instant;
-use nalgebra::{SMatrix, UnitQuaternion};
+use embassy_time::{Duration, Instant};
+use nalgebra::{SMatrix, UnitQuaternion, Vector3};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -67,9 +67,9 @@ static CHANNEL: Channel<Message, 10> = Channel::new();
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct EskfEstimate {
-    pub pos: [f32; 3],
-    pub vel: [f32; 3],
-    pub att: [f32; 4],
+    pub pos: Vector3<f32>,
+    pub vel: Vector3<f32>,
+    pub att: UnitQuaternion<f32>,
 }
 
 #[embassy_executor::task]
@@ -105,40 +105,33 @@ pub async fn main() -> ! {
 
     let mut filter = eskf::Builder::new()
         .gravity(GRAVITY)
-        .acceleration_variance(0.001)
-        .rotation_variance(0.001)
-        .initial_covariance(1.0)
+        .acceleration_variance(0.1)
+        .acceleration_bias(0.01)
+        .rotation_variance(0.1)
+        .rotation_bias(0.01)
+        .initial_covariance(0.5)
         .build();
 
-    let mut prev_pred_time = Instant::MIN;
-    let mut counter = 0;
+    let mut delta = Delta::new();
 
     info!("[eskf] Entering main loop");
 
     loop {
         match rcv_channel.receive().await {
             Message::ImuData(imu_data) => {
-                counter += 1;
-                if counter < 10 {
-                    continue;
-                }
-                counter = 0;
-
-                // Toss some fo the IMU readings
-
-                let curr_time = Instant::now();
-                let delta_time = curr_time.duration_since(prev_pred_time);
-                let delta_time = delta_time.as_micros() as f32 / 1e6;
-                prev_pred_time = curr_time;
+                // Calculate the delta time in f32 seconds
+                let delta_time = delta.duration().as_micros() as f32 / 1e6;
 
                 // Prediction takes ~ 4500 us on stm32f405
                 filter.predict_optimized(imu_data.acc.into(), imu_data.gyr.into(), delta_time);
 
                 let estimate = EskfEstimate {
-                    pos: filter.position.into(),
-                    vel: filter.velocity.into(),
-                    att: filter.orientation.as_vector().clone().into(),
+                    pos: filter.position.coords,
+                    vel: filter.velocity,
+                    att: filter.orientation,
                 };
+
+                // info!("Estimate: {:?}", estimate);
 
                 snd_eskf_estimate.send(estimate);
             }
@@ -152,11 +145,16 @@ pub async fn main() -> ! {
                 let pos_var_storage = nalgebra::ArrayStorage(vicon_data.pos_var);
                 let att_var_storage = nalgebra::ArrayStorage(vicon_data.att_var);
 
-                let result = filter.observe_position_orientation(
+                // let result = filter.observe_position_orientation(
+                //     vicon_data.position.into(),
+                //     SMatrix::from_array_storage(pos_var_storage),
+                //     UnitQuaternion::from_euler_angles(roll, pitch, yaw),
+                //     SMatrix::from_array_storage(att_var_storage),
+                // );
+
+                let result = filter.observe_position(
                     vicon_data.position.into(),
                     SMatrix::from_array_storage(pos_var_storage),
-                    UnitQuaternion::from_euler_angles(roll, pitch, yaw),
-                    SMatrix::from_array_storage(att_var_storage),
                 );
 
                 if result.is_err() {
@@ -164,6 +162,24 @@ pub async fn main() -> ! {
                 }
             }
         }
+    }
+}
+
+struct Delta {
+    prev: Instant,
+}
+
+impl Delta {
+    pub fn new() -> Delta {
+        Delta { prev: Instant::MIN }
+    }
+
+    /// Will return the amount of time elapsed since the last call to this function.
+    pub fn duration(&mut self) -> Duration {
+        let curr_time = Instant::now();
+        let delta_time = curr_time.duration_since(self.prev);
+        self.prev = curr_time;
+        delta_time
     }
 }
 

@@ -244,27 +244,28 @@ pub(crate) fn rerun_thread(
         }
 
         if let Some(mpc_reference) = common::tasks::controller_mpc::MPC_REFERENCE.try_get() {
-            let reference = mpc_reference.fixed_view::<3, {common::tasks::controller_mpc::HX}>(0, 0);
-            let slices = reference.column_iter().map(|col|col.clone_owned().data.0[0]);
+            let reference =
+                mpc_reference.fixed_view::<3, { common::tasks::controller_mpc::HX }>(0, 0);
+            let slices = reference
+                .column_iter()
+                .map(|col| col.clone_owned().data.0[0]);
 
             rec.log(
                 "sim/firmware/mpc_reference_dot",
-                &Points3D::new([reference.column(0).clone_owned().data.0[0]])
-                    .with_radii([0.05])
+                &Points3D::new([reference.column(0).clone_owned().data.0[0]]).with_radii([0.05]),
             )?;
 
-            rec.log(
-                "sim/firmware/mpc_reference",
-                &LineStrips3D::new([slices])
-            )?;
+            rec.log("sim/firmware/mpc_reference", &LineStrips3D::new([slices]))?;
         }
 
         if let Some(mpc_pos_pred) = common::tasks::controller_mpc::MPC_POS_PRED.try_get() {
-            let slices = mpc_pos_pred.column_iter().map(|col|col.clone_owned().data.0[0]);
+            let slices = mpc_pos_pred
+                .column_iter()
+                .map(|col| col.clone_owned().data.0[0]);
 
             rec.log(
                 "sim/firmware/mpc_position_pred",
-                &LineStrips3D::new([slices])
+                &LineStrips3D::new([slices]),
             )?;
         }
 
@@ -285,18 +286,9 @@ pub(crate) fn rerun_thread(
 
         if let Some(attitude_q_sp) = common::signals::TRUE_ATTITUDE_Q_SP.try_get() {
             let (roll, pitch, yaw) = attitude_q_sp.euler_angles();
-            rec.log(
-                "sim/firmware/angl_sp/x",
-                &Scalars::single(roll as f64),
-            )?;
-            rec.log(
-                "sim/firmware/angl_sp/y",
-                &Scalars::single(pitch as f64),
-            )?;
-            rec.log(
-                "sim/firmware/angl_sp/z",
-                &Scalars::single(yaw as f64),
-            )?;
+            rec.log("sim/firmware/angl_sp/x", &Scalars::single(roll as f64))?;
+            rec.log("sim/firmware/angl_sp/y", &Scalars::single(pitch as f64))?;
+            rec.log("sim/firmware/angl_sp/z", &Scalars::single(yaw as f64))?;
         }
 
         if let Some(rate_sp) = common::signals::SLEW_RATE_SP.try_get() {
@@ -343,25 +335,6 @@ pub(crate) fn rerun_thread(
                 &Scalars::single(rate_sp[2] as f64),
             )?;
         }
-
-        // if let Some(MotorsState::Armed(speeds)) = common::signals::MOTORS_STATE.try_get() {
-        //     rec.log(
-        //         "sim/firmware/motors_cmd/m1",
-        //         &Scalars::single(speeds[0] as f64),
-        //     )?;
-        //     rec.log(
-        //         "sim/firmware/motors_cmd/m2",
-        //         &Scalars::single(speeds[1] as f64),
-        //     )?;
-        //     rec.log(
-        //         "sim/firmware/motors_cmd/m3",
-        //         &Scalars::single(speeds[2] as f64),
-        //     )?;
-        //     rec.log(
-        //         "sim/firmware/motors_cmd/m4",
-        //         &Scalars::single(speeds[3] as f64),
-        //     )?;
-        // }
 
         if let Some([pid_x, pid_y, pid_z]) = common::signals::RATE_PID_TERMS.try_get() {
             rec.log(
@@ -432,17 +405,29 @@ pub(crate) fn rerun_thread(
         rec.log("sim/position/z", &Scalars::single(pos[2] as f64))
             .unwrap();
 
-        rec.log("sim/rotation/x", &Scalars::single(rot[0] as f64))
+        let (roll, pitch, yaw) = rot.euler_angles();
+        rec.log("sim/rotation/x", &Scalars::single(roll as f64))
             .unwrap();
-        rec.log("sim/rotation/y", &Scalars::single(rot[1] as f64))
+        rec.log("sim/rotation/y", &Scalars::single(pitch as f64))
             .unwrap();
-        rec.log("sim/rotation/z", &Scalars::single(rot[2] as f64))
+        rec.log("sim/rotation/z", &Scalars::single(yaw as f64))
             .unwrap();
+
+        // Note: do not place this in the 'drone/' path since that will also apply
+        // the drones rotation to this vector.
+        if let Some(mpc_acc_target) = common::tasks::controller_mpc::MPC_TARGET_ACC.try_get() {
+            let short_acc_target = mpc_acc_target.map(|x| x / 10.0);
+            rec.log(
+                "mpc_target_acc",
+                &Arrows3D::from_vectors([&short_acc_target])
+                    .with_radii([0.02])
+                    .with_origins([pos.data.0[0]]),
+            )?;
+        }
 
         rec.log(
             "drone",
-            &rerun::Transform3D::IDENTITY
-                .with_translation(pos.data.0[0])
+            &rerun::Transform3D::from_translation(pos.data.0[0])
                 .with_quaternion(rot.coords.data.0[0]),
         )?;
     }

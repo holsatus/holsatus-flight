@@ -130,19 +130,19 @@ pub async fn main() -> ! {
                 }
             },
 
-            // // Route MPC-generated attitude into angle controller
-            // mpc_angle_sp = rcv_mpc_angle_sp.changed().fuse() => {
-            //     if control_mode == ControlMode::Autonomous {
-            //         snd_angle_sp.send(mpc_angle_sp);
-            //     }
-            // }
+            // Route MPC-generated attitude into angle controller
+            mpc_angle_sp = rcv_mpc_angle_sp.changed().fuse() => {
+                if control_mode == ControlMode::Autonomous {
+                    snd_angle_sp.send(mpc_angle_sp);
+                }
+            }
 
-            // // Route MPC-generated total thrust force
-            // mpc_force_sp = rcv_mpc_force_sp.changed().fuse() => {
-            //     if control_mode == ControlMode::Autonomous {
-            //         snd_z_thrust_sp.send(mpc_force_sp);
-            //     }
-            // }
+            // Route MPC-generated total thrust force
+            mpc_force_sp = rcv_mpc_force_sp.changed().fuse() => {
+                if control_mode == ControlMode::Autonomous {
+                    snd_z_thrust_sp.send(mpc_force_sp);
+                }
+            }
         };
     }
 }

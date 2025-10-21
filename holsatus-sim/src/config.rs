@@ -2,7 +2,11 @@ use std::io::Read;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{distortion::Distortion, physics_sim::{Initial, MotorParams, VehicleParams}, Configuration};
+use crate::{
+    distortion::Distortion,
+    physics_sim::{Initial, MotorParams, VehicleParams},
+    Configuration,
+};
 
 pub fn load_from_file_path(path: &str) -> Result<Configuration, Box<dyn std::error::Error>> {
     let mut file = std::fs::File::open(path)?;
@@ -34,15 +38,19 @@ impl Into<Configuration> for ToplevelConfig {
                 principal_inertia: self.vehicle.principal_inertia.into(),
                 lin_damp: self.vehicle.linear_damp,
                 ang_damp: self.vehicle.angular_damp,
-                motors: self.vehicle.motors.iter().map(|motor| {
-                    MotorParams {
-                        mass_moment: motor.mass_moment.abs() * if motor.reverse { -1.0 } else { 1.0 },
+                motors: self
+                    .vehicle
+                    .motors
+                    .iter()
+                    .map(|motor| MotorParams {
+                        mass_moment: motor.mass_moment.abs()
+                            * if motor.reverse { -1.0 } else { 1.0 },
                         position: motor.position.into(),
                         normal: motor.normal.into(),
                         time_constant: motor.time_constant,
                         motor_map: motor.motor_map,
-                    }
-                }).collect(),
+                    })
+                    .collect(),
             },
             initial: Initial {
                 rotation: self.initial.rotation.into(),
@@ -63,12 +71,14 @@ pub struct SimConfig {
 
 impl Default for SimConfig {
     fn default() -> Self {
-        Self { simulation_rate: 1000.0 }
+        Self {
+            simulation_rate: 1000.0,
+        }
     }
 }
 
 /// Configuration for  initial condition of the drone within a simulation.
-/// 
+///
 /// Any fields not defined will be initialized with zero.
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct InitialConfig {

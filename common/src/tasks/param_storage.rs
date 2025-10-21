@@ -1,6 +1,4 @@
-use core::{
-    ops::Range,
-};
+use core::ops::Range;
 
 use embedded_storage_async::nor_flash::NorFlash;
 use maitake_sync::{blocking::Mutex, RwLock, RwLockReadGuard, WaitQueue};
@@ -270,8 +268,7 @@ impl<F: NorFlash> ParamStorage<F> {
             .await
             .map_err(SequentialError::from)?
         {
-
-            // Note: Even though these should be handled as errors, they 
+            // Note: Even though these should be handled as errors, they
             // should not prevent us from loading valid parameters for this
             // table. There could just be garbage in the flash, but perhaps
             // that should be more loud than just an error message?

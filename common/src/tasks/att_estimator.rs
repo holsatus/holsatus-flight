@@ -10,20 +10,18 @@ pub async fn main() {
     info!("{}: Task started", ID);
 
     // Task inputs
-    // TODO - Use estimated attitude, not just IMU data
     let mut rcv_imu_data = s::CAL_MULTI_IMU_DATA[0].receiver();
     let mut rcv_mag_data = s::CAL_MULTI_MAG_DATA[0].receiver();
-    let mut rcv_motors_state = s::MOTORS_STATE.receiver();
 
     // Task outputs
     let mut snd_ahrs_attitude_q = s::AHRS_ATTITUDE_Q.sender();
     let mut snd_ahrs_attitude = s::AHRS_ATTITUDE.sender();
 
-    let ts = 1.0 / get_ctrl_freq!() as f32;
+    let dt = 1.0 / get_ctrl_freq!() as f32;
 
-    let mut ahrs = ahrs::Madgwick::new(ts, 0.01);
+    let mut ahrs = ahrs::Madgwick::new(dt, 0.01);
 
-    info!("{}: Entering main loop at {} Hz", ID, 1. / ts);
+    info!("{}: Entering main loop at {} Hz", ID, 1. / dt);
     '_infinite: loop {
         // NOTE The madgwick filter implementation assumes a coordinate system
         // where the positive Z direction is up. This is opposite to the
@@ -46,16 +44,11 @@ pub async fn main() {
                 let gyr_data = rot_x_180(imu_data.gyr.into());
                 let acc_data = rot_x_180(imu_data.acc.into());
                 match ahrs.update_imu(&gyr_data, &acc_data) {
-                    Err(_) => *ahrs.update_gyro(&rot_x_180(gyr_data)),
+                    Err(_) => *ahrs.update_gyro(&gyr_data),
                     Ok(attitude_q) => *attitude_q,
                 }
             }
         };
-
-        // TODO
-        // We should use this (along with prev attitude + gyro)
-        // to compensate for linear accel produced by the drone
-        let _motors_state = rcv_motors_state.get().await;
 
         let attitude: [f32; 3] =
             (|(x, y, z)| rot_x_180(Vector3::new(x, y, z)))(attitude_q.euler_angles()).into();

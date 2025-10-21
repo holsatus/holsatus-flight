@@ -52,7 +52,7 @@ pub mod params {
                 y: AxisParameters::const_default(),
                 z: AxisParameters::const_default(),
                 ref_slew: 400.0,
-                ref_lp: 0.001,
+                ref_lp: 0.01,
             }
         }
     }
@@ -60,7 +60,7 @@ pub mod params {
     impl AxisParameters {
         const fn const_default() -> Self {
             AxisParameters {
-                kp: 0.05,
+                kp: 0.08,
                 ki: 0.5,
                 kd: 0.03,
                 cfg: AxisFlags(0),
@@ -124,6 +124,8 @@ pub async fn main() {
         NthOrderLowpass::<_, 2>::new(params.ref_lp, dt),
         NthOrderLowpass::<_, 2>::new(params.ref_lp, dt),
     ];
+
+    let mut thrust_lp_filt = NthOrderLowpass::<_, 2>::new(params.ref_lp, dt * 100.);
 
     // Lowpass filters will act as feed-forward prediction.
     // We designed the closed loop system to have a bandwidth of 25Hz
@@ -190,7 +192,8 @@ pub async fn main() {
             pid[axis].update(ref_filtered[axis], comp_fuse_gyr[axis], ff_pred_gyr[axis])
         });
 
-        let vec = Vector4::new(pid_torque[0], pid_torque[1], pid_torque[2], -z_thrust_sp);
+        let z_thrust_filt = thrust_lp_filt.update(-z_thrust_sp);
+        let vec = Vector4::new(pid_torque[0], pid_torque[1], pid_torque[2], z_thrust_filt);
 
         let motors_mixed = (mixer * vec).into();
 

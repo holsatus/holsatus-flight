@@ -3,6 +3,7 @@ use core::num::Wrapping;
 use embassy_executor::SendSpawner;
 use maitake_sync::WaitMap;
 
+use crate::errors::Debounce;
 use crate::mavlink2::handler::Handler;
 use crate::sync::channel::Channel;
 use crate::{errors::adapter::embedded_io::EmbeddedIoError, mavlink2::messages::Generator};
@@ -348,7 +349,7 @@ pub enum Message {
     Foo,
 }
 
-static CHANNEL: Channel<Message, 1> = Channel::new();
+static CHANNEL: Channel<Message, 5> = Channel::new();
 
 pub async fn send(message: Message) {
     CHANNEL.send(message).await
@@ -397,9 +398,12 @@ impl MavlinkServer {
     }
 
     async fn run(&mut self) -> ! {
+        let mut debounce = Debounce::new(Duration::from_secs(1));
         loop {
             if let Err(_error) = self.run_inner().await {
-                error!("[mavlink] Error logged");
+                if let Some(_) = debounce.evaluate(0u8) {
+                    error!("[mavlink] Error logged");
+                }
                 // broadcast_error(error);
             }
         }
@@ -466,7 +470,6 @@ impl MavlinkServer {
         target: impl Into<Target>,
     ) -> Result<(), Error> {
         let send_target = target.into();
-        // TODO: Reduce repetition here.
         match send_target {
             Target::Broadcast => {
                 for port in self.interfaces.iter_mut() {
