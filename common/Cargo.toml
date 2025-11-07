@@ -89,7 +89,7 @@ nalgebra = { version = "0.34.0", default-features = false, features = [
     "libm",
 ] }
 
-eskf = { path = "../../eskf-rs", default-features = false, features = [
+eskf = { git = "https://github.com/peterkrull/eskf-rs", default-features = false, features = [
     "no_std",
 ] }
 
