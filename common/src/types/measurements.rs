@@ -69,8 +69,10 @@ pub struct GnssData {
     pub vel_down: f32,
 
     pub vel_accuracy: f32,
+    pub vel_ground: f32,
 
     pub heading: f32,
+    pub heading_accuracy: f32,
     pub mag_declination: f32,
 }
 
@@ -85,6 +87,7 @@ pub enum GnssFix {
     TimeOnly,
 }
 
+#[cfg(feature = "gnss")]
 impl From<ublox::GpsFix> for GnssFix {
     fn from(fix: ublox::GpsFix) -> Self {
         match fix {

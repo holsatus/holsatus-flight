@@ -24,7 +24,9 @@ pub async fn main() -> ! {
 
         debug!("[if_estimator] Accel {}, force: {}", accel, force);
 
-        if force.abs() > VEHICLE_MASS * GRAVITY && accel > GRAVITY {
+        let low_gravity = GRAVITY * 0.8;
+
+        if force.abs() > VEHICLE_MASS * low_gravity && accel > low_gravity {
             debug!("[if_estimator] Vehicle detected as being IN FLIGHT!");
             crate::signals::IN_FLIGHT.store(true, Ordering::Relaxed);
             crate::signals::ATTITUDE_INT_EN.send(true);

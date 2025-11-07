@@ -22,12 +22,32 @@ pub mod param {
         Params => {
             rate: [const { Rates::Actual(Actual::const_default()) }; 3],
             angl: [const { Rates::Linear(Linear::const_default()) }; 3],
-            throt: Rates::Linear(Linear::const_default()),
+            throt: Rates::Linear(Linear { fact: 12.0, offs: 1.0 }),
         }
     );
 
     pub static TABLE: Table<Params> = Table::new("fn", Params::const_default());
 }
+
+/*
+ * TODO I really dislike the signal router.
+ *
+ * I think a better solution would be for each task with an input that can be muxed,
+ * simply stores a receiver to that type, and can receive a message containing a
+ * reference to a new underlying channel, which is then obtains a receiver for.
+ *
+ * The current router implementation just adds a bunch of copying and critical section
+ * overhead, and the logic is hard to read and maintain.
+ *
+ * But that leaves another question, where should the RC rates be applied?
+ * In my mind, the controller should always just receive a reference in the correct
+ * units, and should never need scaling or "rates". Then we could put the rates
+ * in the rc_receiver, but then it has to be aware of where the RC controls are headed.
+ *
+ * If the latter approach is used, we must be *very* careful to always mark any potentially
+ * stale data in a new input source as "seen" immediately upon getting a receiver, to avoid
+ * reading data that might not have been intended for us.
+ */
 
 #[embassy_executor::task]
 pub async fn main() -> ! {

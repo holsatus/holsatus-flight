@@ -59,13 +59,15 @@ pub async fn main(stream_id: &'static str) -> ! {
                             lat_raw: pvt.lat_degrees_raw(),
                             lon_raw: pvt.lon_degrees_raw(),
                             altitude: pvt.height_meters() as f32,
-                            horiz_accuracy: pvt.horiz_accuracy() as f32 / 1e2,
-                            vert_accuracy: pvt.vert_accuracy() as f32 / 1e2,
+                            horiz_accuracy: pvt.horiz_accuracy() as f32 * 1e-3,
+                            vert_accuracy: pvt.vert_accuracy() as f32 * 1e-3,
                             vel_north: pvt.vel_north() as f32,
                             vel_east: pvt.vel_east() as f32,
                             vel_down: pvt.vel_down() as f32,
                             vel_accuracy: pvt.speed_accuracy_estimate() as f32,
+                            vel_ground: pvt.ground_speed() as f32,
                             heading: pvt.heading_degrees() as f32,
+                            heading_accuracy: pvt.heading_accuracy_estimate() as f32,
                             mag_declination: pvt.magnetic_declination_degrees() as f32,
                         };
 

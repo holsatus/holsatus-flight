@@ -1,0 +1,8 @@
+path := 'target/thumb*/release/stm32f405-dev'
+
+attach:
+    probe-rs attach --chip STM32F405RGTx {{path}}
+
+flash:
+    cargo build --release
+    probe-rs run --chip STM32F405RGTx {{path}}

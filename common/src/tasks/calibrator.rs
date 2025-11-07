@@ -43,15 +43,18 @@ pub async fn main() -> ! {
                 match calibrate_acc(acc_calib, idx).await {
                     Ok(calibration) => {
                         use crate::tasks::imu_reader::{params::TABLE, Message, CHANNEL};
-
+                        
                         // TODO: This is hacky. Subsystems should not modify parameter tables directly
+                        let mut table = TABLE.params.write().await;
+                        table.cal_acc = calibration;
+                        info!("[{}] Setting acc calib: {:?}", ID, table.cal_acc);
+                        drop(table);
+
+                        param_storage::send(param_storage::Request::SaveTable(TABLE.name))
+                            .await;
+
                         if let Some(channel) = CHANNEL.get(idx as usize) {
-                            let mut table = TABLE.params.write().await;
-                            table.cal_acc = calibration;
-                            info!("[{}] Setting acc calib: {:?}", ID, table.cal_acc);
                             channel.send(Message::ReloadParams).await;
-                            param_storage::send(param_storage::Request::SaveTable(TABLE.name))
-                                .await;
                         }
                     }
                     Err(error) => {
@@ -66,21 +69,19 @@ pub async fn main() -> ! {
                 snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Gyr));
                 match calibrate_gyr_bias(gyr_calib, idx).await {
                     Ok(calibration_bias) => {
-                        use crate::calibration::sens3d::Calib3D;
                         use crate::tasks::imu_reader::{params::TABLE, Message, CHANNEL};
-
+                        
                         // TODO: This is hacky. Subsystems should not modify parameter tables directly
-                        if let Some(channel) = CHANNEL.get(idx as usize) {
-                            let mut table = TABLE.params.write().await;
-                            table.cal_gyr = Calib3D {
-                                bias: calibration_bias.into(),
-                                ..Calib3D::const_default()
-                            };
+                        let mut table = TABLE.params.write().await;
+                        table.cal_gyr.bias = calibration_bias.into();
+                        info!("[{}] Setting gyr calib: {:?}", ID, table.cal_gyr);
+                        drop(table);
 
-                            info!("[{}] Setting gyr calib: {:?}", ID, table.cal_gyr);
+                        param_storage::send(param_storage::Request::SaveTable(TABLE.name))
+                            .await;
+
+                        if let Some(channel) = CHANNEL.get(idx as usize) {
                             channel.send(Message::ReloadParams).await;
-                            param_storage::send(param_storage::Request::SaveTable(TABLE.name))
-                                .await;
                         }
                     }
                     Err(error) => {

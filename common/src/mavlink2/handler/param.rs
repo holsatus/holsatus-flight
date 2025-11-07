@@ -11,7 +11,7 @@ use mavio::{
 use crate::mavlink2::{params::Identity, MavlinkServer};
 
 pub fn value_from_mav_bytewise(param_value: f32, param_type: MavParamType) -> Option<Value> {
-    use mav_param::{value::from_bytewise, Value};
+    use mav_param::value::from_bytewise;
     let value = match param_type {
         MavParamType::Uint8 => Value::U8(from_bytewise(param_value)),
         MavParamType::Int8 => Value::I8(from_bytewise(param_value)),
@@ -27,7 +27,7 @@ pub fn value_from_mav_bytewise(param_value: f32, param_type: MavParamType) -> Op
 }
 
 pub fn value_into_mav_bytewise(value: Value) -> (f32, MavParamType) {
-    use mav_param::{value::into_bytewise, Value};
+    use mav_param::value::into_bytewise;
     match value {
         Value::U8(v) => (into_bytewise(v), MavParamType::Uint8),
         Value::I8(v) => (into_bytewise(v), MavParamType::Int8),

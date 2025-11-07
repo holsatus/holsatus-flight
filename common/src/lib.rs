@@ -80,6 +80,7 @@ macro_rules! const_default {
         }
 
         impl $type {
+            #[allow(unused)]
             pub const fn const_default() -> Self {
                 Self { $($token)+ }
             }

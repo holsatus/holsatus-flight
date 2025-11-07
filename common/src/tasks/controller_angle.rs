@@ -1,18 +1,59 @@
-use core::f32::consts::PI;
-
-use nalgebra::{Quaternion, SVector, Unit};
-
 use crate::{filters::angle_pid::Pid, get_ctrl_freq, get_or_warn, signals as sig};
+
+mod params {
+    use crate::tasks::param_storage::Table;
+
+    #[derive(Debug, Clone, mav_param::Tree)]
+    pub struct Parameters {
+        pub roll: PidAxisParameters,
+        pub pitch: PidAxisParameters,
+        pub yaw: PidAxisParameters,
+    }
+
+    #[derive(Debug, Clone, mav_param::Tree)]
+    pub struct PidAxisParameters {
+        pub kp: f32,
+        pub ki: f32,
+        pub kd: f32,
+        pub tau: f32,
+    }
+
+    crate::const_default!(
+        Parameters => {
+            roll: PidAxisParameters {
+                kp: 10.,
+                ki: 0.,
+                kd: 0.,
+                tau: 0.001,
+            },
+            pitch: PidAxisParameters {
+                kp: 10.,
+                ki: 0.,
+                kd: 0.,
+                tau: 0.001,
+            },
+            yaw: PidAxisParameters {
+                kp: 15.,
+                ki: 0.,
+                kd: 0.05,
+                tau: 0.001,
+            }
+        }
+    );
+
+    pub static TABLE: Table<Parameters> = Table::default("angl");
+}
 
 #[embassy_executor::task]
 pub async fn main() -> ! {
     const ID: &str = "angle_loop";
     info!("{}: Task started", ID);
 
+    let params = params::TABLE.read().await;
+
     // Task inputs
     // TODO - Use estimated attitude, not just IMU data
     let mut rcv_estimate = sig::ESKF_ESTIMATE.receiver();
-    let mut rcv_attitude = sig::AHRS_ATTITUDE_Q.receiver();
     let mut rcv_attitude_sp = sig::TRUE_ATTITUDE_Q_SP.receiver();
 
     // Task outputs
@@ -21,18 +62,16 @@ pub async fn main() -> ! {
     let dt = 1.0 / get_ctrl_freq!() as f32;
 
     let mut pid = [
-        Pid::new(15., 0.0, 0.05, true, dt)
-            .set_lp_filter(0.001)
-            .set_wrapping(-PI, PI),
-        Pid::new(15., 0.0, 0.05, true, dt)
-            .set_lp_filter(0.001)
-            .set_wrapping(-PI, PI),
-        Pid::new(15., 0.0, 0.02, true, dt)
-            .set_lp_filter(0.001)
-            .set_wrapping(-PI, PI),
+        Pid::new(params.roll.kp, params.roll.ki, params.roll.kd, true, dt)
+            .set_lp_filter(params.roll.tau),
+        Pid::new(params.pitch.kp, params.pitch.ki, params.pitch.kd, true, dt)
+            .set_lp_filter(params.pitch.tau),
+        Pid::new(params.yaw.kp, params.yaw.ki, params.yaw.kd, true, dt)
+            .set_lp_filter(params.yaw.tau),
     ];
 
-    get_or_warn!(rcv_attitude).await;
+    drop(params);
+
     get_or_warn!(rcv_attitude_sp).await;
 
     info!("{}: Entering main loop", ID);

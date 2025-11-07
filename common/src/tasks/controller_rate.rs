@@ -1,14 +1,13 @@
 use core::array::from_fn;
-use core::sync::atomic::Ordering;
-
-use nalgebra::Vector4;
+use nalgebra::{Vector3, Vector4};
 
 use crate::airframe::DEV_QUAD_MOTOR_SETUP;
 use crate::filters::rate_pid::RatePid;
 use crate::filters::{Complementary, Lowpass, NthOrderLowpass, SlewRate};
 use crate::sync::watch::Watch;
+use crate::types::measurements::Imu6DofData;
 use crate::types::status::PidTerms;
-use crate::{get_ctrl_freq, get_or_warn, multi_receiver, signals as sig, NUM_IMU};
+use crate::{get_ctrl_freq, get_or_warn, signals as sig};
 
 pub mod params {
     use crate::tasks::param_storage::Table;
@@ -51,7 +50,7 @@ pub mod params {
                 x: AxisParameters::const_default(),
                 y: AxisParameters::const_default(),
                 z: AxisParameters::const_default(),
-                ref_slew: 400.0,
+                ref_slew: 500.0,
                 ref_lp: 0.01,
             }
         }
@@ -85,16 +84,29 @@ pub mod params {
     pub static TABLE: Table<Params> = Table::new("rate", Params::const_default());
 }
 
+struct Health(u32);
+
+bitflags::bitflags! {
+    impl Health: u32 {
+        const PARAMETERS_LOADED = 1 << 0;
+        const IMU_SOURCE_PROVIDED = 1 << 1;
+        const REF_SOURCE_PROVIDED = 1 << 2;
+        const INTEGRAL_ENABLED = 1 << 3;
+        const EXTREME_BIAS_EST = 1 << 4;
+    }
+}
+
 #[embassy_executor::task]
 pub async fn main() {
     const ID: &str = "rate_loop";
     info!("{}: Task started", ID);
 
     // Task inputs
-    let mut rcv_imu_data = multi_receiver!(sig::CAL_MULTI_IMU_DATA, NUM_IMU);
+    let mut rcv_imu_data = sig::CAL_MULTI_IMU_DATA[0].receiver();
     let mut rcv_z_thrust_sp = sig::TRUE_Z_THRUST_SP.receiver();
     let mut rcv_rate_sp = sig::TRUE_RATE_SP.receiver();
     let mut rcv_rate_int_en = sig::ATTITUDE_INT_EN.receiver();
+    let mut rcv_eksf_estimate = sig::ESKF_ESTIMATE.receiver();
 
     let mixer = DEV_QUAD_MOTOR_SETUP.into_mixing_matrix().unwrap();
 
@@ -158,10 +170,14 @@ pub async fn main() {
 
     info!("{}: Entering main loop", ID);
     loop {
-        // Ensure we are reading from the correct IMU
-        let active = sig::ACTIVE_IMU.load(Ordering::Relaxed);
-
-        let imu_data = rcv_imu_data[active].changed().await;
+        let imu_data = rcv_imu_data.changed().await;
+        
+        let estimate = rcv_eksf_estimate.get().await;
+        let imu_data = Imu6DofData {
+            gyr: (Vector3::from(imu_data.gyr) - estimate.gyr_bias).into(),
+            acc: (Vector3::from(imu_data.acc) - estimate.acc_bias).into(),
+            timestamp_us: imu_data.timestamp_us,
+        };
 
         // Try to update rate and throttle setpoints
         rate_sp = rcv_rate_sp.try_get().unwrap_or(rate_sp);

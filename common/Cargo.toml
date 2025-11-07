@@ -8,20 +8,19 @@ default = [
     "arch-cortex-m",
     "defmt",
     "mpc",
-    "mavlink"
+    "mavlink",
+    "gnss",
 ]
 
 usb = ["dep:embassy-usb"]
 mavlink = ["dep:mavio"]
 mpc = ["dep:tinympc-rs"]
-
+gnss = ["dep:ublox"]
 
 portable-atomic-critical-section = ["portable-atomic/critical-section"]
 portable-atomic-unsafe-assume-single-core = [
     "portable-atomic/unsafe-assume-single-core",
 ]
-
-
 
 log = ["dep:log", "dep:env_logger"]
 defmt = [
@@ -85,11 +84,12 @@ heapless = { version = "0.8.0", features = [
 
 nalgebra = { version = "0.34.0", default-features = false, features = [
     "serde-serialize-no-std",
+    "macros",
     "defmt",
     "libm",
 ] }
 
-eskf = { git = "https://github.com/peterkrull/eskf-rs", default-features = false, features = [
+eskf = { path = "../../eskf-rs", default-features = false, features = [
     "no_std",
 ] }
 
@@ -136,7 +136,7 @@ ufmt = "0.2.0"
 postcard = { version = "1.0.10" }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 
-ublox = { version = "0.4.5", default-features = false }
+ublox = { version = "0.4.5", optional = true, default-features = false }
 portable-atomic = "1.9"
 approx = "0.5"
 thiserror = { version = "2.0.7", default-features = false }

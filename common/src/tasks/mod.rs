@@ -8,7 +8,6 @@ pub mod controller_angle;
 pub mod controller_rate;
 pub mod eskf;
 pub mod ez_logger;
-pub mod gnss_reader;
 pub mod imu_manager;
 pub mod imu_reader;
 pub mod motor_governor;
@@ -27,4 +26,5 @@ pub mod usb_manager;
 #[cfg(feature = "mpc")]
 pub mod controller_mpc;
 
-// Some more advanced task modules are hidden behind feature flags.
+#[cfg(feature = "gnss")]
+pub mod gnss_reader;

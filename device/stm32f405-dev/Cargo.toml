@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = []
+default = ["mpc", "mavlink", "usb", "gnss"]
 
 mpc = ["common/mpc"]
 
 # Enable the on-board sdmmc controller for SD card support.
 # Useful for high frequency data logging and post-accident analysis.
 sdmmc = []
+gnss = ["common/gnss"]
 
 # Enable the onboard USB header to be used for wired configuration
 # HITL and shell-like functionality.
@@ -26,7 +27,7 @@ embedded-hal-async = "1.0.0"
 
 defmt = "1.0.1"
 defmt-rtt = "1.0.0"
-panic-probe = { version = "1.0.0", features = ["print-defmt"]}
+panic-probe = { version = "1.0.0" }
 
 dshot-encoder = { git = "https://github.com/peterkrull/dshot-encoder" }
 
@@ -57,7 +58,6 @@ rev = "4d67633"
 features = [
     "time-driver-tim2",
     "stm32f405rg",
-    "memory-x",
     "defmt",
     "exti",
 ]
@@ -70,7 +70,7 @@ debug = true
 debug-assertions = false
 incremental = false
 lto = 'fat'
-opt-level = 's' # Extremely agressive optimizations
+opt-level = 3 # Extremely agressive optimizations
 overflow-checks = false
 
 # cargo build/run (debug)

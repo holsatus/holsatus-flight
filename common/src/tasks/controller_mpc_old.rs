@@ -1,7 +1,7 @@
 use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Instant, Ticker, Timer};
-use nalgebra::{SMatrix, SVector, SVectorView, SVectorViewMut, UnitQuaternion, matrix, vector};
-use tinympc_rs::{cache::SingleCache, Box, Project, ProjectExt as _, Sphere, TinyMpc};
+use nalgebra::{matrix, vector, SMatrix, SVector, UnitQuaternion};
+use tinympc_rs::{cache::SingleCache, AntiSphere, Box, Project, ProjectExt as _, Sphere, TinyMpc};
 
 use crate::{
     consts::GRAVITY,
@@ -15,21 +15,18 @@ use num_traits::Float as _;
 
 pub const HX: usize = 100;
 const HU: usize = HX - 5;
-const NX: usize = 9;
+const NX: usize = 6;
 const NU: usize = 3;
-const DT: f32 = 0.1; // 10 Hz, 10 second horizon
+const DT: f32 = 0.05; // 10 Hz, 10 second horizon
 const DD: f32 = 0.5 * DT * DT;
 
 const A: SMatrix<f32, NX, NX> = matrix![
-    1., 0., 0., DT, 0., 0., DD, 0., 0.;
-    0., 1., 0., 0., DT, 0., 0., DD, 0.;
-    0., 0., 1., 0., 0., DT, 0., 0., DD;
-    0., 0., 0., 1., 0., 0., DT, 0., 0.;
-    0., 0., 0., 0., 1., 0., 0., DT, 0.;
-    0., 0., 0., 0., 0., 1., 0., 0., DT;
-    0., 0., 0., 0., 0., 0., 1., 0., 0.;
-    0., 0., 0., 0., 0., 0., 0., 1., 0.;
-    0., 0., 0., 0., 0., 0., 0., 0., 1.;
+    1., 0., 0., DT, 0., 0.;
+    0., 1., 0., 0., DT, 0.;
+    0., 0., 1., 0., 0., DT;
+    0., 0., 0., 1., 0., 0.;
+    0., 0., 0., 0., 1., 0.;
+    0., 0., 0., 0., 0., 1.;
 ];
 
 const B: SMatrix<f32, NX, NU> = matrix![
@@ -39,23 +36,7 @@ const B: SMatrix<f32, NX, NU> = matrix![
     DT, 0., 0.;
     0., DT, 0.;
     0., 0., DT;
-    1., 0., 0.;
-    0., 1., 0.;
-    0., 0., 1.;
 ];
-
-fn system(mut xnext: SVectorViewMut<f32, NX>, x: SVectorView<f32, NX>, u: SVectorView<f32, NU>, ) {
-    xnext.copy_from(&x); // Handles the identity-diagonal
-    xnext[0] += DT * x[3] + DD * (x[6] + u[0]);
-    xnext[1] += DT * x[4] + DD * (x[7] + u[1]);
-    xnext[2] += DT * x[5] + DD * (x[8] + u[2]);
-    xnext[3] += DT * (x[6] + u[0]);
-    xnext[4] += DT * (x[7] + u[1]);
-    xnext[5] += DT * (x[8] + u[2]);
-    xnext[6] += u[0];
-    xnext[7] += u[1];
-    xnext[8] += u[2];
-}
 
 type Cache = SingleCache<f32, NX, NU>;
 type Mpc = TinyMpc<f32, Cache, NX, NU, HX, HU>;
@@ -76,7 +57,6 @@ mod params {
         pub cost_pos: Vec3,
         pub cost_vel: Vec3,
         pub cost_act: Vec3,
-        pub cost_dact: Vec3,
     }
 
     #[derive(Debug, Clone, mav_param::Tree)]
@@ -88,18 +68,15 @@ mod params {
 
     crate::const_default!(
         Parameters => {
-            rho: 2.0,
+            rho: 4.0,
             cost_pos: Vec3 {
-                x: 4.0, y: 4.0, z: 4.0,
+                x: 20.0, y: 20.0, z: 20.0,
             },
             cost_vel: Vec3 {
-                x: 2.0, y: 2.0, z: 2.0,
+                x: 1.0, y: 1.0, z: 1.0,
             },
             cost_act: Vec3 {
-                x: 0.0, y: 0.0, z: 0.0,
-            },
-            cost_dact: Vec3 {
-                x: 1.5, y: 1.5, z: 1.5,
+                x: 0.1, y: 0.1, z: 0.1,
             }
         }
     );
@@ -133,13 +110,10 @@ pub async fn main() -> ! {
         params.cost_pos.z,
         params.cost_vel.x,
         params.cost_vel.y,
-        params.cost_vel.z,
-        params.cost_act.x,
-        params.cost_act.y,
-        params.cost_act.z,
+        params.cost_vel.z
     ];
 
-    let r: SVector<f32, NU> = vector![params.cost_dact.x, params.cost_dact.y, params.cost_dact.z];
+    let r: SVector<f32, NU> = vector![params.cost_act.x, params.cost_act.y, params.cost_act.z];
 
     let cache = Cache::new(
         params.rho,
@@ -152,40 +126,41 @@ pub async fn main() -> ! {
     )
     .unwrap();
 
-    let mut mpc = Mpc::new(A, B, cache).with_sys(system);
+    let mut mpc = Mpc::new(A, B, cache);
 
     mpc.config.relaxation = 1.5;
-    mpc.config.max_iter = 1;
+    mpc.config.max_iter = 5;
 
     let mut rcv_eskf_estimate = ESKF_ESTIMATE.receiver();
 
     // Models the floor, prevents the drone from slamming into it
     let x_projector_speed = Sphere {
-        center: vector![None, None, None, Some(0.0), Some(0.0), Some(0.0), None, None, None],
-        radius: 2.0,
-    };
-
-    // Models the floor, prevents the drone from slamming into it
-    let x_projector_accel = Sphere {
-        center: vector![None, None, None, None, None, None, Some(0.0), Some(0.0), Some(-0.0)],
-        radius: 6.0,
+        center: vector![None, None, None, Some(0.0), Some(0.0), Some(0.0)],
+        radius: 20.0,
     };
 
     // Models the floor, prevents the drone from slamming into it
     let x_projector_floor = Box {
-        lower: vector![None, None, None, None, None, None, None, None, None],
-        upper: vector![None, None, Some(0.0), None, None, None, None, None, None],
+        lower: vector![None, None, None, None, None, None],
+        upper: vector![None, None, Some(0.0), None, None, None],
     };
 
-    let x_projector_bundle = (x_projector_speed, x_projector_accel, x_projector_floor);
+    let x_projector_bundle = (x_projector_floor, x_projector_speed);
     let mut x_con = [x_projector_bundle.constraint()];
 
+    // Limit the amount of acceleration in any direction. Bias downwards since gravity is helping in that case.
     let u_projector_sphere = Sphere {
         center: vector![Some(0.0), Some(0.0), Some(0.0)],
+        radius: GRAVITY * 4.0, // Allow 0.5 g of accel
+    };
+
+    // Should prevent the MPC from causing the vehicle to spin too much
+    let u_projector_asphere = AntiSphere {
+        center: vector![Some(0.0), Some(0.0), Some(GRAVITY)],
         radius: GRAVITY * 0.2,
     };
 
-    let u_projector_bundle = (u_projector_sphere,);
+    let u_projector_bundle = (u_projector_sphere, u_projector_asphere);
     let mut u_con = [u_projector_bundle.constraint()];
 
     let gravity_vector = SVector::z() * GRAVITY;
@@ -193,8 +168,6 @@ pub async fn main() -> ! {
     Timer::after_millis(2500).await;
 
     info!("[mpc] Entering main loop");
-
-    let mut control_sig = SVector::<f32, NU>::zeros();
 
     loop {
         if let Either::First(message) = select(CHANNEL.receive(), ticker.next()).await {
@@ -230,30 +203,33 @@ pub async fn main() -> ! {
         x_now[3] = estimate.vel[0];
         x_now[4] = estimate.vel[1];
         x_now[5] = estimate.vel[2];
-        x_now[6] = control_sig[0];
-        x_now[7] = control_sig[1];
-        x_now[8] = control_sig[2];
 
         // Run solver
+        let time = Instant::now();
         let solution = mpc
             .initial_condition(x_now)
             .x_reference(&reference)
             .x_constraints(&mut x_con)
             .u_constraints(&mut u_con)
             .solve();
-        
+        let _dur = time.elapsed();
+
+        info!(
+            "[controller_mpc] Elapsed time: {}, iters: {}",
+            _dur.as_micros() as f32 / 1e6,
+            solution.iterations,
+        );
+
         // By adding gravity to the "ideal" mpc solution we get the global accel target
         // Also, we use a FUTURE actuation, to get ahead of the slower system dynamics!
-        control_sig += solution.u_prediction().column(0);
-        let global_accel_target = control_sig - gravity_vector + solution.u_prediction().column(1);
+        let global_accel_target = solution.u_prediction().column(2) - gravity_vector;
 
         let desired_thrust_dir = global_accel_target.normalize();
 
         // Determine the alignment between the desired -z direction and the current one.
         // Use that to scale down the force target while ill-aligned
         let direction = estimate.att * -SVector::z();
-        let alignment_factor = direction.dot(&desired_thrust_dir).clamp(0.0, 1.0);
-        // let alignment_factor = 1.0 - (alignment_factor - 1.0).powi(2);
+        let alignment_factor = direction.dot(&desired_thrust_dir).max(0.0);
         let force_target = VEHICLE_MASS * global_accel_target.norm() * alignment_factor;
 
         let att_target = UnitQuaternion::rotation_between(&-SVector::z(), &desired_thrust_dir)

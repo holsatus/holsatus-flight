@@ -403,8 +403,8 @@ impl MavlinkServer {
             if let Err(_error) = self.run_inner().await {
                 if let Some(_) = debounce.evaluate(0u8) {
                     error!("[mavlink] Error logged");
+                    // broadcast_error(error);
                 }
-                // broadcast_error(error);
             }
         }
     }
@@ -556,13 +556,16 @@ impl MavlinkServer {
                 let msg = frame.decode_message::<m::ViconPositionEstimate>()?;
 
                 // The covariance matrices are bogus since they do not
-                // seem to exist for the vicon tracker my Uni uses..
+                // seem to exist for the Vicon tracker my Uni uses..
+                // Also, DO NOT use UnitQUaternion::from_euler_angles(..)
+                // with the attitude provided here, since it uses a different
+                // rotation order.
                 let vicon_data = crate::types::measurements::ViconData {
                     timestamp_us: msg.usec,
                     position: [msg.x, msg.y, msg.z],
-                    pos_var: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]],
+                    pos_var: [[0.001, 0.0, 0.0], [0.0, 0.001, 0.0], [0.0, 0.0, 0.001]],
                     attitude: [msg.roll, msg.pitch, msg.yaw],
-                    att_var: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]],
+                    att_var: [[0.01, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]],
                 };
 
                 crate::signals::VICON_POSITION_ESTIMATE.send(vicon_data);

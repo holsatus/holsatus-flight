@@ -40,7 +40,7 @@ pub async fn main() -> ! {
     info!("{}: Task started", ID);
 
     // Input channels
-    let mut rcv_attitude_euler = s::AHRS_ATTITUDE.receiver();
+    let mut rcv_eskf_estimate = s::ESKF_ESTIMATE.receiver();
     let mut rcv_rc_status = s::RC_STATUS.receiver();
     let mut rcv_calibrator_state = s::CALIBRATOR_STATE.receiver();
     let mut rcv_rc_analog = s::RC_ANALOG_UNIT.receiver();
@@ -68,8 +68,9 @@ pub async fn main() -> ! {
         ticker.next().await;
 
         // Check if the drone is in a high attitude ~ atan(sqrt(tan(pitch)^2 + tan(roll)^2))
-        if let Some(attitude) = rcv_attitude_euler.try_changed() {
-            let high_attitude = Vector3::from(attitude).xy().norm() > config.max_attitude;
+        if let Some(estimate) = rcv_eskf_estimate.try_changed() {
+            let (roll, pitch, _) = estimate.att.euler_angles();
+            let high_attitude = roll.abs() + pitch.abs() > config.max_attitude;
             local_arm_blocker_flag.set(ArmingBlocker::HIGH_ATTITUDE, high_attitude);
         }
 

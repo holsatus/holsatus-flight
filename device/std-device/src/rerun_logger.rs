@@ -132,7 +132,7 @@ pub(crate) fn rerun_thread(
 
     rec.log_static("/", &rerun::ViewCoordinates::FRD())?;
 
-    const LOG_FREQ: usize = 250;
+    const LOG_FREQ: usize = 60;
     let mut log_ticker =
         crate::ticker::Ticker::every(Duration::from_secs_f32(1. / LOG_FREQ as f32));
 
@@ -204,42 +204,29 @@ pub(crate) fn rerun_thread(
 
         if let Some(estimate) = common::signals::ESKF_ESTIMATE.try_get() {
             rec.log(
-                "sim/firmware/est_pos/x",
-                &Scalars::single(estimate.pos[0] as f64),
-            )?;
-            rec.log(
-                "sim/firmware/est_pos/y",
-                &Scalars::single(estimate.pos[1] as f64),
-            )?;
-            rec.log(
-                "sim/firmware/est_pos/z",
-                &Scalars::single(estimate.pos[2] as f64),
+                "sim/firmware/eskf/pos",
+                &Scalars::new(estimate.pos.map(|x|x as f64).iter().cloned()),
             )?;
 
             rec.log(
-                "sim/firmware/est_vel/x",
-                &Scalars::single(estimate.vel[0] as f64),
+                "sim/firmware/eskf/vel",
+                &Scalars::new(estimate.vel.map(|x|x as f64).iter().cloned()),
             )?;
+
+            let (roll, pitch, yaw) = estimate.att.euler_angles();
             rec.log(
-                "sim/firmware/est_vel/y",
-                &Scalars::single(estimate.vel[1] as f64),
-            )?;
-            rec.log(
-                "sim/firmware/est_vel/z",
-                &Scalars::single(estimate.vel[2] as f64),
+                "sim/firmware/eskf/att",
+                &Scalars::new([roll as f64, pitch as f64, yaw as f64]),
             )?;
 
             rec.log(
-                "sim/firmware/est_att/x",
-                &Scalars::single(estimate.att[0] as f64),
+                "sim/firmware/eskf/gyr_bias",
+                &Scalars::new(estimate.gyr_bias.map(|x|x as f64).iter().cloned()),
             )?;
+
             rec.log(
-                "sim/firmware/est_att/y",
-                &Scalars::single(estimate.att[1] as f64),
-            )?;
-            rec.log(
-                "sim/firmware/est_att/z",
-                &Scalars::single(estimate.att[2] as f64),
+                "sim/firmware/eskf/acc_bias",
+                &Scalars::new(estimate.acc_bias.map(|x|x as f64).iter().cloned()),
             )?;
         }
 

@@ -27,7 +27,7 @@ pub(crate) fn imu() -> ImuConfig {
         gyr_range: GyrRange::Dps2000,
         acc_unit: AccUnit::Mpss,
         gyr_unit: GyrUnit::Rps,
-        acc_dlp: AccDlp::Hz246,
+        acc_dlp: AccDlp::Hz111,
         gyr_dlp: GyrDlp::Hz361,
         acc_odr: 0,
         gyr_odr: 0,
@@ -66,7 +66,7 @@ pub(crate) fn sdmmc() -> common::types::config::SdmmcConfig {
 }
 
 pub(crate) fn flash() -> core::ops::Range<u32> {
-    0x80000..0x100000
+    0xC0000..0x100000
 }
 
 /// Define the clock configuration for the board.

@@ -30,7 +30,7 @@ pub mod params {
 
     crate::const_default!(
         Params => {
-            rev: Reverse::empty(),
+            rev: Reverse::const_default(),
             timeout_ms: 100,
             lin: Linearizer::const_default(),
             out_min: crate::DSHOT_MIN as f32,
@@ -55,7 +55,7 @@ pub mod params {
     }
 
     crate::const_default!(
-        Reverse => Reverse::MOTOR_1.union(Reverse::MOTOR_2)
+        Reverse => Reverse::MOTOR_0.union(Reverse::MOTOR_3)
     );
 
     #[derive(mav_param::Tree, Clone, Debug)]

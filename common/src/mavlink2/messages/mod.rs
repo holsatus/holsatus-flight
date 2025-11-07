@@ -18,10 +18,11 @@ mod time {
     }
 }
 
-const TARGET_HZ: usize = 20;
+const TARGET_HZ: usize = 30;
 const POSITION_SET: &'static [Generator] = &[
     Generator::AttitudeQuaternion,
     Generator::LocalPositionNed,
+    Generator::LocalPositionNedSystemGlobalOffset,
     Generator::ServoOutputRaw,
     Generator::ScaledImu,
 ];
@@ -145,7 +146,9 @@ define_message_set! {
         RcChannelsRaw,
         RcChannelsScaled,
         AutopilotVersion,
-        LocalPositionNed
+        LocalPositionNed,
+        LocalPositionNedSystemGlobalOffset,
+        LinkNodeStatus,
     }
 }
 
@@ -209,6 +212,16 @@ impl Generate for ScaledImu {
     fn generate() -> Result<Self, Error> {
         let mut message = ScaledImu::default();
         message.time_boot_ms = time::ms_u32();
+
+        if let Some(imu) = crate::signals::CAL_MULTI_IMU_DATA[0].try_get() {
+            message.xacc = (imu.acc[0] * 1e3) as i16;
+            message.yacc = (imu.acc[1] * 1e3) as i16;
+            message.zacc = (imu.acc[2] * 1e3) as i16;
+            message.xgyro = (imu.gyr[0] * 1e3) as i16;
+            message.ygyro = (imu.gyr[1] * 1e3) as i16;
+            message.zgyro = (imu.gyr[2] * 1e3) as i16;
+        }
+
         Ok(message)
     }
 }
@@ -218,11 +231,11 @@ impl Generate for AttitudeQuaternion {
         let mut message = AttitudeQuaternion::default();
         message.time_boot_ms = time::ms_u32();
 
-        if let Some(att) = crate::signals::AHRS_ATTITUDE_Q.try_get() {
-            message.q1 = att[3];
-            message.q2 = att[0];
-            message.q3 = att[1];
-            message.q4 = att[2];
+        if let Some(est) = crate::signals::ESKF_ESTIMATE.try_get() {
+            message.q1 = est.att[3];
+            message.q2 = est.att[0];
+            message.q3 = est.att[1];
+            message.q4 = est.att[2];
         }
 
         if let Some(imu) = crate::signals::CAL_MULTI_IMU_DATA[0].try_get() {
@@ -331,6 +344,34 @@ impl Generate for LocalPositionNed {
             msg.vy = eskf_estimate.vel[1];
             msg.vz = eskf_estimate.vel[2];
         }
+
+        Ok(msg)
+    }
+}
+
+
+impl Generate for LocalPositionNedSystemGlobalOffset {
+    fn generate() -> Result<Self, Error> {
+        let mut msg = LocalPositionNedSystemGlobalOffset::default();
+
+        if let Some(eskf_estimate) = crate::signals::ESKF_ESTIMATE.try_get() {
+            msg.time_boot_ms = time::ms_u32();
+
+            msg.x = eskf_estimate.acc_bias[0];
+            msg.y = eskf_estimate.acc_bias[1];
+            msg.z = eskf_estimate.acc_bias[2];
+            msg.roll = eskf_estimate.gyr_bias[0];
+            msg.pitch = eskf_estimate.gyr_bias[1];
+            msg.yaw = eskf_estimate.gyr_bias[2];
+        }
+
+        Ok(msg)
+    }
+}
+
+impl Generate for LinkNodeStatus {
+    fn generate() -> Result<Self, Error> {
+        let msg = LinkNodeStatus::default();
 
         Ok(msg)
     }

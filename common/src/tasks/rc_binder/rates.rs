@@ -68,8 +68,8 @@ impl Actual {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(mav_param::Tree)]
 pub struct Linear {
-    fact: f32,
-    offs: f32,
+    pub fact: f32,
+    pub offs: f32,
 }
 
 crate::const_default!(

@@ -56,7 +56,6 @@ pub async fn main(serial_id: &'static str) -> ! {
         info!("[cli] usb connection: {:?}", con);
 
         if let Err(error) = run_cli(&mut serial).await {
-            let error = crate::errors::adapter::embedded_io::EmbeddedIoError::from(error);
             error!("[cli] Error on serial device: {:?}", error);
         }
     }

@@ -177,7 +177,7 @@ impl<D: Driver<'static>> embedded_io::Write for UsbWriter<D> {
         if !self.usb_writer.dtr() {
             return Err(embedded_io::ErrorKind::NotConnected);
         }
-
+        
         // Block for at most 20 milli seconds. Be very careful only to use the sync UsbWriter
         // in executors of lower priority than the one driving the USB device.
         let maybe_timeout = embassy_futures::block_on(async {

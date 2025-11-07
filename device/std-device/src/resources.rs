@@ -126,13 +126,13 @@ pub async fn motor_governor(motors: SimulatedMotors) {
 pub fn run_simulated_vicon(handle: SimHandle) {
     crate::thread_executor::RUNTIME.spawn(async move {
         // 10 Hz, similar to a GPS
-        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        let mut interval = tokio::time::interval(Duration::from_millis(10));
 
         loop {
             let vicon_data = {
                 let mut rng = rand::rng();
-                let noise_std = 0.1f32;
-                let distr = Normal::new(0.0, 0.0).unwrap();
+                let noise_std = 0.005f32;
+                let distr = Normal::new(0.0, noise_std).unwrap();
 
                 let state = handle.vehicle_state();
                 let angles = state.rotation.euler_angles();

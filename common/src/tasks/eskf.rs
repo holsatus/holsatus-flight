@@ -2,11 +2,13 @@ use crate::{
     consts::GRAVITY,
     signals as s,
     sync::{channel::Channel, watch::Watch},
-    types::measurements::{Imu6DofData, ViconData},
 };
 use embassy_executor::SendSpawner;
 use embassy_time::{Duration, Instant};
 use nalgebra::{SMatrix, UnitQuaternion, Vector3};
+
+#[allow(unused_imports)]
+use num_traits::Float as _;
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -57,19 +59,24 @@ pub async fn imu_buffer_helper() -> ! {
 }
 
 pub enum Message {
-    ImuData(Imu6DofData<f32>),
-    ViconData(ViconData),
+    ImuData(crate::types::measurements::Imu6DofData<f32>),
+    ViconData(crate::types::measurements::ViconData),
+
+    #[cfg(feature = "gnss")]
+    GnssData(crate::types::measurements::GnssData),
 }
 
-static CHANNEL: Channel<Message, 10> = Channel::new();
+// Do not queue up sensor readings.
+static CHANNEL: Channel<Message, 1> = Channel::new();
 
-#[derive(Default)] // TODO - attitude is not valid to be zero-initialized
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct EskfEstimate {
     pub pos: Vector3<f32>,
     pub vel: Vector3<f32>,
     pub att: UnitQuaternion<f32>,
+    pub gyr_bias: Vector3<f32>,
+    pub acc_bias: Vector3<f32>,
 }
 
 #[embassy_executor::task]
@@ -77,7 +84,7 @@ pub async fn imu_helper() -> ! {
     let mut rcv_imu_data = s::CAL_MULTI_IMU_DATA[0].receiver();
     loop {
         let imu_data = rcv_imu_data.changed().await;
-        CHANNEL.send(Message::ImuData(imu_data)).await;
+        _ = CHANNEL.try_send(Message::ImuData(imu_data));
     }
 }
 
@@ -90,9 +97,80 @@ pub async fn vicon_helper() -> ! {
     }
 }
 
+#[cfg(feature = "gnss")]
+#[embassy_executor::task]
+pub async fn gnss_helper() -> ! {
+    let mut rcv_gnss_data = s::RAW_GNSS_DATA.receiver();
+    loop {
+        let gnss_data = rcv_gnss_data.changed().await;
+        CHANNEL.send(Message::GnssData(gnss_data)).await;
+    }
+}
+
+mod params {
+    use crate::tasks::param_storage::Table;
+
+    #[derive(Debug, Clone, mav_param::Tree)]
+    pub struct Parameters {
+        #[param(rename = "acc_noise")]
+        pub acc_noise_std: f32,
+        #[param(rename = "gyr_noise")]
+        pub gyr_noise_std: f32,
+        #[param(rename = "acc_drift")]
+        pub acc_drift_std: f32,
+        #[param(rename = "gyr_drift")]
+        pub gyr_drift_std: f32,
+        #[param(rename = "cov_init")]
+        pub covariance_init: f32,
+    }
+
+    crate::const_default!(
+        Parameters => {
+            acc_noise_std: 0.1,
+            gyr_noise_std: 0.01,
+            acc_drift_std: 0.0001,
+            gyr_drift_std: 0.0001,
+            covariance_init: 0.1,
+        }
+    );
+
+    pub(crate) static TABLE: Table<Parameters> = Table::default("eskf");
+}
+
+#[cfg(feature = "gnss")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GnssPoint {
+    lat_raw: i32,
+    lon_raw: i32,
+    altitude: f32,
+}
+
+#[cfg(feature = "gnss")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GnssDelta {
+    lat_delta: f32,
+    lon_delta: f32,
+    alt_delta: f32,
+}
+
+#[cfg(feature = "gnss")]
+impl core::ops::Sub for GnssPoint {
+    type Output = GnssDelta;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        GnssDelta {
+            lat_delta: (self.lat_raw - rhs.lat_raw) as f32 * 1e-7,
+            lon_delta: (self.lon_raw - rhs.lon_raw) as f32 * 1e-7,
+            alt_delta: self.altitude - rhs.altitude,
+        }
+    }
+}
+
 #[embassy_executor::task]
 pub async fn main() -> ! {
     info!("[eskf] Task started");
+
+    let params = params::TABLE.read().await;
 
     let rcv_channel = CHANNEL.receiver();
 
@@ -100,260 +178,192 @@ pub async fn main() -> ! {
     spawner.spawn(imu_helper().unwrap());
     spawner.spawn(vicon_helper().unwrap());
 
+    #[cfg(feature = "gnss")]
+    spawner.spawn(gnss_helper().unwrap());
+
     let mut snd_eskf_estimate = s::ESKF_ESTIMATE.sender();
-    snd_eskf_estimate.send(EskfEstimate::default());
 
-    let mut filter = eskf::Builder::new()
-        .gravity(GRAVITY)
-        .acceleration_variance(0.1)
-        .acceleration_bias(0.01)
-        .rotation_variance(0.1)
-        .rotation_bias(0.01)
-        .initial_covariance(0.5)
-        .build();
+    let mut filter = eskf::ESKF::new().with_mut(|filt| {
+        filt.acc_noise_std(params.acc_noise_std);
+        filt.acc_bias_std(params.acc_drift_std);
+        filt.gyr_noise_std(params.gyr_noise_std);
+        filt.gyr_bias_std(params.gyr_drift_std);
+        filt.covariance_diag(params.covariance_init);
+        filt.with_gravity(Vector3::z() * GRAVITY);
+    });
 
-    let mut delta = Delta::new();
+    drop(params);
+
+    let mut last_imu_time = Instant::MIN;
+    let mut last_vicon_time = Instant::MIN;
+    let dt = 1.0 / crate::get_ctrl_freq!() as f32;
+
+    #[cfg(feature = "gnss")]
+    let mut gnss_origin: Option<GnssPoint> = None;
+    
+    // For smoothing the position estimate using the velocity estimate
+    let mut comps = [
+        crate::filters::IntegratingComplementary::new(0.5, dt),
+        crate::filters::IntegratingComplementary::new(0.5, dt),
+        crate::filters::IntegratingComplementary::new(0.5, dt),
+    ];
 
     info!("[eskf] Entering main loop");
-
     loop {
         match rcv_channel.receive().await {
             Message::ImuData(imu_data) => {
-                // Calculate the delta time in f32 seconds
-                let delta_time = delta.duration().as_micros() as f32 / 1e6;
+                // Calculate the delta time in f32 seconds (prevent delta from going to zero)
+                let timestamp = Instant::from_micros(imu_data.timestamp_us);
+                let delta_dur = timestamp.duration_since(last_imu_time);
+                let delta_time = delta_dur.as_micros() as f32 * 1e-6;
+                last_imu_time = timestamp;
 
                 // Prediction takes ~ 4500 us on stm32f405
                 filter.predict_optimized(imu_data.acc.into(), imu_data.gyr.into(), delta_time);
 
-                let estimate = EskfEstimate {
-                    pos: filter.position.coords,
-                    vel: filter.velocity,
-                    att: filter.orientation,
-                };
+                // Using the latest delta time
+                comps.iter_mut().for_each(|c| c.set_dt(delta_time));
 
-                // info!("Estimate: {:?}", estimate);
+                // Complementary filter for smoothing out corrections
+                let smooth_position = [
+                    comps[0].update(filter.position[0], filter.velocity[0]),
+                    comps[1].update(filter.position[1], filter.velocity[1]),
+                    comps[2].update(filter.position[2], filter.velocity[2]),
+                ];
+
+                let estimate = EskfEstimate {
+                    pos: smooth_position.into(),
+                    vel: filter.velocity,
+                    att: filter.rotation,
+                    gyr_bias: filter.gyr_bias,
+                    acc_bias: filter.acc_bias,
+                };
 
                 snd_eskf_estimate.send(estimate);
             }
             Message::ViconData(vicon_data) => {
                 // TODO Skip outliers / high variance?
 
+                // We do not need to process these too rapidly, 10 hz like the average GPS
+                let time_now = Instant::now();
+                if time_now.duration_since(last_vicon_time) < Duration::from_millis(100) {
+                    continue;
+                }
+
+                last_vicon_time = time_now;
+
+                let position = vicon_data.position.into();
+
                 let roll = vicon_data.attitude[0];
                 let pitch = vicon_data.attitude[1];
                 let yaw = vicon_data.attitude[2];
 
-                let pos_var_storage = nalgebra::ArrayStorage(vicon_data.pos_var);
-                let att_var_storage = nalgebra::ArrayStorage(vicon_data.att_var);
+                // For simulations, since it uses more common euler angle order
+                let rotation = UnitQuaternion::from_euler_angles(roll, pitch, yaw);
 
-                // let result = filter.observe_position_orientation(
-                //     vicon_data.position.into(),
-                //     SMatrix::from_array_storage(pos_var_storage),
-                //     UnitQuaternion::from_euler_angles(roll, pitch, yaw),
-                //     SMatrix::from_array_storage(att_var_storage),
-                // );
+                // Convert the variance data into matrices
+                let position_var =
+                    SMatrix::from_array_storage(nalgebra::ArrayStorage(vicon_data.pos_var));
+                let rotation_var =
+                    SMatrix::from_array_storage(nalgebra::ArrayStorage(vicon_data.att_var));
 
-                let result = filter.observe_position(
-                    vicon_data.position.into(),
-                    SMatrix::from_array_storage(pos_var_storage),
+                let result = filter.observe_position_rotation(
+                    position,
+                    position_var,
+                    rotation,
+                    rotation_var,
                 );
+
+                if result.is_err() {
+                    error!("[eskf] Unable to do matrix inversion during ESKF update");
+                }
+            },
+            #[cfg(feature = "gnss")]
+            Message::GnssData(gnss_data) => {
+                // TODO Skip outliers / high variance?
+
+                let lat_raw = gnss_data.lat_raw;
+                let lon_raw = gnss_data.lon_raw;
+                let altitude = gnss_data.altitude;
+
+                // Get the current origin point, initializing if necesary     
+                let point = GnssPoint { lat_raw, lon_raw, altitude };           
+                let origin = gnss_origin.get_or_insert_with(||point);
+                
+                let delta = point - *origin;
+
+                // Convert coordinates into equivalent meters
+                let lat_delta_meters = KM_PER_DEG_OF_LAT * delta.lat_delta * 1e3;
+                let lon_delta_meters = lat_factor(lat_raw) * delta.lon_delta * 1e3;
+                let alt_delta_meters = -delta.alt_delta;
+
+                // Which is our current position, relative to origin
+                let position = nalgebra::Point3::new(
+                    lat_delta_meters,
+                    lon_delta_meters,
+                    alt_delta_meters
+                );
+
+                // Already in NED coordinates!
+                let velocity = Vector3::new(
+                    gnss_data.vel_north,
+                    gnss_data.vel_east,
+                    gnss_data.vel_down,
+                );
+
+                // Interpret position accuracy as standard deviation
+                let pos_variance = Vector3::new(
+                    gnss_data.horiz_accuracy.powi(2),
+                    gnss_data.horiz_accuracy.powi(2),
+                    gnss_data.vert_accuracy.powi(2),
+                );
+
+                // The full 3D position variance matrix
+                let position_var = SMatrix::from_diagonal(&pos_variance);
+
+                // For the velocity variance we first need to convert 
+                // the accuracy estimates from the default polar coordinates
+                // consisting of heading and velocity estimates, into seperate
+                // cartesian accuracies. This also gives off-axis covariances.
+
+                // The jacobian allows us to transform the polar coordinates
+                let heading = gnss_data.heading.to_radians();
+                let (heading_sin,heading_cos) = heading.sin_cos();
+                let jacobian = nalgebra::Matrix2::new(
+                    heading_cos, -gnss_data.vel_ground * heading_sin,
+                    heading_sin, gnss_data.vel_ground * heading_cos,
+                );
+
+                // Variance in polar coordinates
+                let vel_polar_var = nalgebra::Matrix2::new(
+                    gnss_data.vel_accuracy.powi(2), 0.0,
+                    0.0, gnss_data.heading_accuracy.to_radians().powi(2)
+                );
+
+                // Variance in cartesian coordinates
+                let vel_cartesian_var = jacobian * vel_polar_var * jacobian.transpose();
+
+                // The full 3D velocity variance matrix
+                let velocity_var = nalgebra::stack![
+                    vel_cartesian_var, 0;
+                    0, nalgebra::matrix![gnss_data.vel_accuracy.powi(2)]
+                ];
+
+                let result = filter.observe_position_velocity(
+                    position,
+                    position_var,
+                    velocity,
+                    velocity_var
+                );
+
+                info!("pos_est: {:?}", filter.position.coords.as_slice());
+                info!("vel_est: {:?}", filter.velocity.as_slice());
 
                 if result.is_err() {
                     error!("[eskf] Unable to do matrix inversion during ESKF update");
                 }
             }
         }
-    }
-}
-
-struct Delta {
-    prev: Instant,
-}
-
-impl Delta {
-    pub fn new() -> Delta {
-        Delta { prev: Instant::MIN }
-    }
-
-    /// Will return the amount of time elapsed since the last call to this function.
-    pub fn duration(&mut self) -> Duration {
-        let curr_time = Instant::now();
-        let delta_time = curr_time.duration_since(self.prev);
-        self.prev = curr_time;
-        delta_time
-    }
-}
-
-/*
-
-
-#[embassy_executor::task]
-pub async fn main_old() -> ! {
-    static STR_ID: &str = "position_estimator";
-    info!("{}: Task started", STR_ID);
-
-    let mut rcv_imu_data = s::CAL_MULTI_IMU_DATA[0].receiver();
-    let mut rcv_gnss_data = s::RAW_GNSS_DATA.receiver();
-
-    let mut snd_estimated_pos = s::ESKF_VICON_POS.sender();
-    let mut snd_estimated_vel = s::ESKF_VICON_VEL.sender();
-
-    let mut filter = eskf::Builder::new()
-        .gravity(GRAVITY)
-        .acceleration_variance(0.0001)
-        .rotation_variance(0.0001)
-        .initial_covariance(1.0)
-        .build();
-
-    let mut prev_gnss_pos = None;
-    let mut curr_gnss_data = None;
-
-    let mut prev_imu_time = Instant::MIN;
-
-    let mut counter = 0;
-
-    info!("{}: Entering main loop", STR_ID);
-
-    let mut acc_accumulator = Vector3::zeros();
-    let mut gyr_accumulator = Vector3::zeros();
-
-    loop {
-        match select(rcv_imu_data.changed(), rcv_gnss_data.changed()).await {
-            // IMU update
-            Either::First(imu_data) => {
-                curr_gnss_data = None;
-                let curr_time = Instant::now();
-                let delta_time = curr_time.duration_since(prev_imu_time);
-                prev_imu_time = curr_time;
-
-                counter += 1;
-                acc_accumulator += Vector3::from(imu_data.acc);
-                gyr_accumulator += Vector3::from(imu_data.gyr);
-
-                // Divide the loop
-                if counter < 20 {
-                    continue;
-                }
-
-                // Unscale accumulated values
-                acc_accumulator /= counter as f32;
-                gyr_accumulator /= counter as f32;
-
-                info!("imu_data: {:?}", imu_data);
-
-                if prev_gnss_pos.is_some() {
-                    // Prediction takes ~ 4500 us on stm32f405
-                    filter.predict(
-                        acc_accumulator.unscale(counter as f32),
-                        acc_accumulator.unscale(counter as f32),
-                        delta_time.as_micros() as f32 / 1e6,
-                    );
-                }
-
-                counter = 0;
-                acc_accumulator = Vector3::zeros();
-                gyr_accumulator = Vector3::zeros();
-
-                continue;
-            }
-
-            // GNSS update
-            Either::Second(gnss_data) => {
-                let gnss_data = curr_gnss_data.insert(gnss_data);
-
-                // The gnss_data signal is updated even when there
-                // is no lock or low number of sats. Skip if that
-                // is the case.
-                if gnss_data.satellites < 3 {
-                    prev_gnss_pos = None;
-                    continue;
-                }
-
-                if prev_gnss_pos.is_none() {
-                    filter = eskf::Builder::new()
-                        .gravity(GRAVITY)
-                        .acceleration_variance(0.0001)
-                        .rotation_variance(0.0001)
-                        .initial_covariance(1.0)
-                        .build();
-                }
-
-                let prev_gnss_pos = prev_gnss_pos.get_or_insert_with(|| {
-                    filter.position.z = gnss_data.altitude;
-                    Vector2::new(gnss_data.lat_raw, gnss_data.lon_raw)
-                });
-
-                let position = Point3::new(
-                    ((gnss_data.lat_raw - prev_gnss_pos.x) as f32 / 1e7) * KM_PER_DEG_OF_LAT * 1e3,
-                    ((gnss_data.lon_raw - prev_gnss_pos.y) as f32 / 1e7)
-                        * lat_factor(gnss_data.lat_raw)
-                        * 1e3,
-                    gnss_data.altitude,
-                );
-
-                prev_gnss_pos.x = gnss_data.lat_raw;
-                prev_gnss_pos.y = gnss_data.lon_raw;
-
-                let position_var = Vector3::new(
-                    gnss_data.horiz_accuracy,
-                    gnss_data.horiz_accuracy,
-                    gnss_data.vert_accuracy,
-                );
-
-                let velocity =
-                    Vector3::new(gnss_data.vel_north, gnss_data.vel_east, gnss_data.vel_down);
-
-                // info!("Raw \"local\" position x = {}, y = {}", position.x, position.y);
-
-                if filter
-                    .observe_position_velocity(
-                        position,
-                        Matrix3::from_diagonal(&position_var),
-                        velocity,
-                        Matrix3::from_diagonal_element(gnss_data.vel_accuracy),
-                    )
-                    .is_err()
-                {
-                    error!("Unable to do matrix inversion during ESKF update");
-                    continue;
-                }
-            }
-        };
-
-        let _pos: [f32; 3] = filter.position.into();
-        // info!("Estimated \"local\" position: [{}]", pos);
-
-        // Bring estimated filter position back into a global frame
-        if let Some(origin) = prev_gnss_pos {
-            // Add the origin back in to the estimate
-            let longitude =
-                (filter.position.x / (KM_PER_DEG_OF_LAT * 1e3)) as f64 + (origin.x as f64 / 1e7);
-            let latitude =
-                (filter.position.y / (lat_factor(origin.x) * 1e3)) as f64 + (origin.x as f64 / 1e7);
-            let altitude = filter.position.z;
-
-            let global_pos = Position {
-                timestamp: Instant::now().as_micros(),
-                position: Geodetic {
-                    latitude,
-                    longitude,
-                    altitude,
-                },
-                velocity: filter.velocity.into(),
-                attitude_q: filter.orientation.coords.into(),
-            };
-
-            // info!("Global position estimate: {:#?}\neuler: {:?}", global_pos, filter.orientation.euler_angles());
-
-            ESKF_GLOBAL_POS.sender().send(global_pos);
-
-            if curr_gnss_data.is_some() {
-                filter.position.x = 0.0;
-                filter.position.y = 0.0;
-            }
-        }
-
-        snd_estimated_pos.send(filter.position.into());
-        snd_estimated_vel.send(filter.velocity.into());
     }
 }
 
@@ -364,10 +374,7 @@ const EARTH_CIRCUM_KM: f32 = 40075.0;
 const KM_PER_DEG_OF_LAT: f32 = EARTH_CIRCUM_KM / 360.0;
 
 /// Calculates kilometers per degree of longitude for a given latitude
-pub fn lat_factor(latitude: i32) -> f32 {
-    #[allow(unused_imports)]
-    use num_traits::Float as _;
-    KM_PER_DEG_OF_LAT * (latitude as f32 / 180.0).cos()
+pub fn lat_factor(latitude_raw: i32) -> f32 {
+    let latitude_deg = (latitude_raw as f32) * 1e-7;
+    KM_PER_DEG_OF_LAT * latitude_deg.to_radians().cos()
 }
-
-*/

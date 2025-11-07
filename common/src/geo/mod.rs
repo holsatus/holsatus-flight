@@ -14,11 +14,11 @@ pub struct Waypoint3D {
     pub alt: f32,
 }
 
-impl Into<Waypoint> for Waypoint3D {
-    fn into(self) -> Waypoint {
+impl From<Waypoint3D> for Waypoint {
+    fn from(value: Waypoint3D) -> Waypoint {
         Waypoint {
-            lat: self.lat,
-            lon: self.lon,
+            lat: value.lat,
+            lon: value.lon,
         }
     }
 }

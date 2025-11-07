@@ -49,6 +49,9 @@ bitflags::bitflags! {
 
         /// **Bit 12** - The flight controller has established a USB connection.
         const USB_CONNECTED = 1 << 12;
+
+        /// **Bit 13** - The ESKF estimator is not producing reliable values.
+        const ESKF_BAD_ESTIMATE = 1 << 12;
     }
 }
 

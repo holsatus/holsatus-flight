@@ -241,6 +241,90 @@ impl<T: Float> Complementary<T> {
 
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct IntegratingHighpass<T: Float> {
+    tau: T,
+    dt: T,
+    alpha: T,
+    y_prev: T,
+}
+
+impl<T: Float> IntegratingHighpass<T> {
+    pub fn new(tau: T, dt: T) -> Self {
+        let alpha = dt / (tau + dt);
+        Self {
+            tau,
+            dt,
+            alpha,
+            y_prev: T::zero(),
+        }
+    }
+
+    pub fn update(&mut self, x: T) -> T {
+        self.y_prev = (x * self.dt + self.y_prev) * self.alpha;
+        self.y_prev
+    }
+
+    /// Set the cross-over frequency of the filter with a time-constant `tau`
+    pub fn set_dt(&mut self, dt: T) {
+        self.alpha = dt / (self.tau + dt);
+    }
+
+    /// Set the cross-over frequency of the filter with a time-constant `tau`
+    pub fn set_tau(&mut self, tau: T) {
+        self.alpha = self.dt / (tau + self.dt);
+    }
+}
+
+/// Basic complementary filter implementation. This filter takes in two signals,
+/// one with a low frequency component which we want to preserve, and one with
+/// a high frequency component.
+#[derive(Debug, Copy, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct IntegratingComplementary<T: Float> {
+    tau: T,
+    dt: T,
+    alpha: T,
+    y_prev: T,
+}
+
+impl<T: Float> IntegratingComplementary<T> {
+    /// Create a new `Complementary` filter with the cross-over frequency `tau`
+    pub fn new(tau: T, dt: T) -> Self {
+        let alpha = dt / (tau + dt);
+        Self {
+            tau,
+            dt,
+            alpha,
+            y_prev: T::zero(),
+        }
+    }
+
+    /// Update the filter with new signal vales. The `low_frequency` argument is the
+    /// signal with a low-frequency component we want to preserve. This could for
+    /// example be a noisy sensor, with no bias or drift. The `high_frequency` argument
+    /// is the complementary signal. This could be a signal which has short term
+    /// "high frequency" behevior which is desireable, but not necessarily good long-term
+    /// "low-freqnency" characteristics. This could be an integrated signal or a
+    /// feed-forward estimated value. The output combines the best of both signals.
+    pub fn update(&mut self, low_frequency: T, high_frequency: T) -> T {
+        self.y_prev = low_frequency * self.alpha
+            + (high_frequency * self.dt + self.y_prev) * (T::one() - self.alpha);
+        self.y_prev
+    }
+
+    /// Set the cross-over frequency of the filter with a time-constant `tau`
+    pub fn set_dt(&mut self, dt: T) {
+        self.alpha = dt / (self.tau + dt);
+    }
+
+    /// Set the cross-over frequency of the filter with a time-constant `tau`
+    pub fn set_tau(&mut self, tau: T) {
+        self.alpha = self.dt / (tau + self.dt);
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum RatesType {
     Actual,
     Kiss,
