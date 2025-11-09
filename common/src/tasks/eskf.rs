@@ -261,7 +261,9 @@ pub async fn main() -> ! {
                     filter.velocity = [0.0; 3].into();
                     filter.acc_bias = [0.0; 3].into();
                     filter.gyr_bias = [0.0; 3].into();
-                    gnss_origin = None;
+                    #[cfg(feature = "gnss")] {
+                        gnss_origin = None;
+                    }
                 }
 
                 let estimate = EskfEstimate {
