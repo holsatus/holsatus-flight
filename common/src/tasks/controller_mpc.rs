@@ -1,6 +1,6 @@
 use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Instant, Ticker, Timer};
-use nalgebra::{SMatrix, SVector, SVectorView, SVectorViewMut, UnitQuaternion, matrix, vector};
+use nalgebra::{matrix, vector, SMatrix, SVector, SVectorView, SVectorViewMut, UnitQuaternion};
 use tinympc_rs::{cache::SingleCache, Box, Project, ProjectExt as _, Sphere, TinyMpc};
 
 use crate::{
@@ -44,7 +44,7 @@ const B: SMatrix<f32, NX, NU> = matrix![
     0., 0., 1.;
 ];
 
-fn system(mut xnext: SVectorViewMut<f32, NX>, x: SVectorView<f32, NX>, u: SVectorView<f32, NU>, ) {
+fn system(mut xnext: SVectorViewMut<f32, NX>, x: SVectorView<f32, NX>, u: SVectorView<f32, NU>) {
     xnext.copy_from(&x); // Handles the identity-diagonal
     xnext[0] += DT * x[3] + DD * (x[6] + u[0]);
     xnext[1] += DT * x[4] + DD * (x[7] + u[1]);
@@ -161,13 +161,33 @@ pub async fn main() -> ! {
 
     // Models the floor, prevents the drone from slamming into it
     let x_projector_speed = Sphere {
-        center: vector![None, None, None, Some(0.0), Some(0.0), Some(0.0), None, None, None],
-        radius: 2.0,
+        center: vector![
+            None,
+            None,
+            None,
+            Some(0.0),
+            Some(0.0),
+            Some(0.0),
+            None,
+            None,
+            None
+        ],
+        radius: 8.0,
     };
 
     // Models the floor, prevents the drone from slamming into it
     let x_projector_accel = Sphere {
-        center: vector![None, None, None, None, None, None, Some(0.0), Some(0.0), Some(-0.0)],
+        center: vector![
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(0.0),
+            Some(0.0),
+            Some(0.0)
+        ],
         radius: 6.0,
     };
 
@@ -221,7 +241,6 @@ pub async fn main() -> ! {
 
         let estimate = rcv_eskf_estimate.get().await;
 
-
         let mut x_now = SVector::zeros();
 
         x_now[0] = estimate.pos[0];
@@ -241,7 +260,7 @@ pub async fn main() -> ! {
             .x_constraints(&mut x_con)
             .u_constraints(&mut u_con)
             .solve();
-        
+
         // By adding gravity to the "ideal" mpc solution we get the global accel target
         // Also, we use a FUTURE actuation, to get ahead of the slower system dynamics!
         control_sig += solution.u_prediction().column(0);

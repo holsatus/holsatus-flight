@@ -92,7 +92,8 @@ where
     loop {
         let item = BLACKBOX_QUEUE.receive().await;
 
-        let mut serde_slice = to_slice(&item, &mut serde_buf).map_err(Into::<PostcardError>::into)?;
+        let mut serde_slice =
+            to_slice(&item, &mut serde_buf).map_err(Into::<PostcardError>::into)?;
 
         // Ensure we get entirety of packet data
         while serde_slice.len() > 0 {

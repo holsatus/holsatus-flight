@@ -42,7 +42,8 @@ pub enum Message {
     ReloadParams,
 }
 
-pub static CHANNEL: [Channel<Message, 1, CriticalSectionRawMutex>; NUM_IMU] = [const{Channel::new()}; NUM_IMU];
+pub static CHANNEL: [Channel<Message, 1, CriticalSectionRawMutex>; NUM_IMU] =
+    [const { Channel::new() }; NUM_IMU];
 
 pub async fn main_6dof_i2c(mut i2c: impl I2c, config: ImuConfig, addr: Option<u8>) -> ! {
     const ID: &str = "imu_setup_6dof_i2c";
