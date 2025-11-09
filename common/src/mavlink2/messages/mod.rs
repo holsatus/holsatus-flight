@@ -349,7 +349,6 @@ impl Generate for LocalPositionNed {
     }
 }
 
-
 impl Generate for LocalPositionNedSystemGlobalOffset {
     fn generate() -> Result<Self, Error> {
         let mut msg = LocalPositionNedSystemGlobalOffset::default();
@@ -379,42 +378,42 @@ impl Generate for LinkNodeStatus {
 
 impl Generate for GpsRawInt {
     fn generate() -> Result<Self, Error> {
-        // use crate::types::measurements::GnssFix;
-        // use nalgebra::Vector3;
-        // #[cfg(not(feature = "arch-std"))]
-        // use num_traits::Float;
+        use crate::types::measurements::GnssFix;
+        use mavio::default_dialect::enums::GpsFixType;
+        use nalgebra::Vector3;
 
-        // let message = if let Some(gnss) = crate::signals::RAW_GNSS_DATA.try_get() {
-        //     let fix_type = match gnss.fix {
-        //         GnssFix::NoFix => GpsFixType::NoFix,
-        //         GnssFix::Fix2D => GpsFixType::_2dFix,
-        //         GnssFix::Fix3D => GpsFixType::_3dFix,
-        //         GnssFix::TimeOnly => GpsFixType::NoFix,
-        //     };
+        let message = if let Some(gnss) = crate::signals::RAW_GNSS_DATA.try_get() {
+            let fix_type = match gnss.fix {
+                GnssFix::NoFix => GpsFixType::NoFix,
+                GnssFix::Fix2D => GpsFixType::_2dFix,
+                GnssFix::Fix3D => GpsFixType::_3dFix,
+                GnssFix::TimeOnly => GpsFixType::NoFix,
+            };
 
-        //     GpsRawInt {
-        //         time_usec: Instant::now().as_micros(),
-        //         lat: gnss.lat_raw,
-        //         lon: gnss.lon_raw,
-        //         alt: (gnss.altitude * 1e3) as i32,
-        //         eph: (gnss.horiz_accuracy * 1000.) as u16,
-        //         epv: (gnss.vert_accuracy * 1000.) as u16,
-        //         vel: (Vector3::new(gnss.vel_east, gnss.vel_north, gnss.vel_down).norm() * 100.)
-        //             as u16,
-        //         cog: (gnss.vel_east.atan2(gnss.vel_north).to_degrees() * 100.) as u16,
-        //         fix_type,
-        //         satellites_visible: gnss.satellites,
-        //         ..Default::default()
-        //     }
-        // } else {
-        //     GpsRawInt {
-        //         time_usec: Instant::now().as_micros(),
-        //         fix_type: GpsFixType::NoGps,
-        //         satellites_visible: 0,
-        //         ..Default::default()
-        //     }
-        // };
+            GpsRawInt {
+                time_usec: gnss.timestamp_us,
+                lat: gnss.latitude_raw,
+                lon: gnss.longitude_raw,
+                alt: (gnss.height_above_msl * 1e3) as i32,
+                eph: (gnss.horizontal_accuracy * 1000.) as u16,
+                epv: (gnss.vertical_accuracy * 1000.) as u16,
+                vel: (Vector3::new(gnss.velocity_north, gnss.velocity_east, gnss.velocity_down)
+                    .norm()
+                    * 100.) as u16,
+                cog: (gnss.heading_motion.to_degrees() * 100.0) as u16,
+                fix_type,
+                satellites_visible: gnss.num_satellites,
+                ..Default::default()
+            }
+        } else {
+            GpsRawInt {
+                time_usec: embassy_time::Instant::now().as_micros(),
+                fix_type: GpsFixType::NoGps,
+                satellites_visible: 0,
+                ..Default::default()
+            }
+        };
 
-        Ok(Default::default())
+        Ok(message)
     }
 }
