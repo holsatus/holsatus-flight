@@ -50,15 +50,12 @@ assign_resources! {
         tx_dma: DMA2_CH6,
     }
     motors: MotorDriver {
+        up_dma: DMA1_CH2,
         timer: TIM3,
         pin_1: PA6,
         pin_2: PA7,
         pin_3: PB0,
         pin_4: PB1,
-        dma_1: DMA1_CH4,
-        dma_2: DMA1_CH5,
-        dma_3: DMA1_CH7,
-        dma_4: DMA1_CH2,
     }
     sdcard: Sdcard {
         periph: SDIO,
@@ -256,16 +253,14 @@ pub(crate) async fn param_storage(flash: Flash, range: Range<u32>) -> ! {
 
 impl MotorDriver {
     pub fn setup(&mut self, dshot: DshotConfig) -> impl OutputGroup + '_ {
-        crate::dshot_pwm::DshotPwm::new(
+        use crate::dshot_pwm::{DshotDriver, UpDmaWaveform};
+        DshotDriver::new(
             self.timer.reborrow(),
             self.pin_1.reborrow(),
             self.pin_2.reborrow(),
             self.pin_3.reborrow(),
             self.pin_4.reborrow(),
-            self.dma_1.reborrow(),
-            self.dma_2.reborrow(),
-            self.dma_3.reborrow(),
-            self.dma_4.reborrow(),
+            UpDmaWaveform::new(self.up_dma.reborrow()),
             dshot as u32,
         )
     }

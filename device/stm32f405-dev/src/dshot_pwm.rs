@@ -1,41 +1,63 @@
+use core::marker::PhantomData;
+
 ///! Dshot driver for the stm32f405 using a timer-backed PWM
 use dshot_encoder;
+
+#[rustfmt::skip]
 use embassy_stm32::{
+    Peri,
     gpio::OutputType,
     time::Hertz,
     timer::{
+        Ch1,
+        Ch2,
+        Ch3,
+        Ch4, 
+        Channel, 
+        Dma, 
+        GeneralInstance4Channel, 
+        TimerPin, 
+        UpDma, 
         low_level::CountingMode,
-        simple_pwm::{PwmPin, SimplePwm},
-        Ch1, Ch2, Ch3, Ch4, Dma, GeneralInstance4Channel, TimerPin,
-    },
-    Peri,
+        simple_pwm::{
+            PwmPin,
+            SimplePwm
+        },
+    }
 };
 
 use common::hw_abstraction::OutputGroup;
 
-pub struct DshotPwm<'d, T, DMA1, DMA2, DMA3, DMA4>
+const TRANSMIT_SIZE: usize = 24;
+
+fn construct_command(bit: (u16, u16), mut cmd: u16) -> [u16; TRANSMIT_SIZE] {
+    let mut dshot_pwm = [0; _];
+
+    for i in (0..16).rev() {
+        dshot_pwm[i] = match cmd & 0x1 {
+            0 => bit.0,
+            _ => bit.1,
+        };
+        cmd >>= 1;
+    }
+
+    dshot_pwm
+}
+
+pub struct DshotDriver<'d, T, WAV>
 where
     T: GeneralInstance4Channel,
-    DMA1: Dma<T, Ch1>,
-    DMA2: Dma<T, Ch2>,
-    DMA3: Dma<T, Ch3>,
-    DMA4: Dma<T, Ch4>,
+    WAV: WaveformGenerator<Timer = T>,
 {
     pwm: SimplePwm<'d, T>,
-    dma1: Peri<'d, DMA1>,
-    dma2: Peri<'d, DMA2>,
-    dma3: Peri<'d, DMA3>,
-    dma4: Peri<'d, DMA4>,
+    wav: WAV,
     bit: (u16, u16),
 }
 
-impl<'d, T, DMA1, DMA2, DMA3, DMA4> DshotPwm<'d, T, DMA1, DMA2, DMA3, DMA4>
+impl<'d, T, WAV> DshotDriver<'d, T, WAV>
 where
     T: GeneralInstance4Channel,
-    DMA1: Dma<T, Ch1>,
-    DMA2: Dma<T, Ch2>,
-    DMA3: Dma<T, Ch3>,
-    DMA4: Dma<T, Ch4>,
+    WAV: WaveformGenerator<Timer = T>,
 {
     pub fn new(
         timer: Peri<'d, T>,
@@ -43,10 +65,7 @@ where
         pin2: Peri<'d, impl TimerPin<T, Ch2>>,
         pin3: Peri<'d, impl TimerPin<T, Ch3>>,
         pin4: Peri<'d, impl TimerPin<T, Ch4>>,
-        dma1: Peri<'d, DMA1>,
-        dma2: Peri<'d, DMA2>,
-        dma3: Peri<'d, DMA3>,
-        dma4: Peri<'d, DMA4>,
+        wav: WAV,
         khz: u32,
     ) -> Self {
         let mut pwm = SimplePwm::new(
@@ -75,53 +94,96 @@ where
 
         Self {
             pwm,
-            dma1,
-            dma2,
-            dma3,
-            dma4,
+            wav,
             bit: (b0, b1),
         }
     }
 
-    async fn transmit(&mut self, commands: (u16, u16, u16, u16)) {
-        let command0 = self.construct_command(commands.0);
-        let command1 = self.construct_command(commands.1);
-        let command2 = self.construct_command(commands.2);
-        let command3 = self.construct_command(commands.3);
-
-        // Cannot use join(f,f,f,f) here since the pwm/timer type is borrowed mutably
-        self.pwm
-            .waveform(self.dma1.reborrow(), command0.as_slice())
-            .await;
-        self.pwm
-            .waveform(self.dma2.reborrow(), command1.as_slice())
-            .await;
-        self.pwm
-            .waveform(self.dma3.reborrow(), command2.as_slice())
-            .await;
-        self.pwm
-            .waveform(self.dma4.reborrow(), command3.as_slice())
-            .await;
-    }
-
-    fn construct_command(&self, cmd: u16) -> [u16; 17] {
-        // The extra bit ensures the channel is kept low (0 duty cycle) after transmission
-        let mut dshot_pwm = [0; 17];
-
-        dshot_pwm
-            .iter_mut()
-            .take(16) // Leave 1 bit low at the end
-            .rev()
-            .enumerate()
-            .for_each(|(i, v)| match (cmd >> i) & 0x1 {
-                0 => *v = self.bit.0,
-                _ => *v = self.bit.1,
-            });
-        dshot_pwm
+    async fn transmit(&mut self, commands: [u16; 4]) {
+        let commands = commands.map(|cmd| construct_command(self.bit, cmd));
+        self.wav.run_waveform(&mut self.pwm, commands).await
     }
 }
 
-impl<'d, T, DMA1, DMA2, DMA3, DMA4> OutputGroup for DshotPwm<'d, T, DMA1, DMA2, DMA3, DMA4>
+impl<'d, T, WAV> OutputGroup for DshotDriver<'d, T, WAV>
+where
+    T: GeneralInstance4Channel,
+    WAV: WaveformGenerator<Timer = T>,
+{
+    async fn set_motor_speeds(&mut self, speed: [u16; 4]) {
+        self.transmit(speed.map(|s| dshot_encoder::throttle_clamp(s, false)))
+            .await
+    }
+
+    async fn set_reverse_dir(&mut self, direction: [bool; 4]) {
+        self.transmit(direction.map(dshot_encoder::reverse)).await
+    }
+
+    async fn set_motor_speeds_min(&mut self) {
+        self.transmit([dshot_encoder::throttle_minimum(false); 4])
+            .await
+    }
+
+    async fn make_beep(&mut self) {}
+}
+
+pub trait WaveformGenerator {
+    type Timer: GeneralInstance4Channel;
+    async fn run_waveform(
+        &mut self,
+        pwm: &mut SimplePwm<'_, Self::Timer>,
+        cmd: [[u16; TRANSMIT_SIZE]; 4],
+    );
+}
+
+pub struct UpDmaWaveform<'d, T, DMA>
+where
+    T: GeneralInstance4Channel,
+    DMA: UpDma<T>,
+{
+    dma: Peri<'d, DMA>,
+    _p: PhantomData<T>,
+}
+
+impl<'d, T, DMA> UpDmaWaveform<'d, T, DMA>
+where
+    T: GeneralInstance4Channel,
+    DMA: UpDma<T>,
+{
+    pub fn new(dma: Peri<'d, DMA>) -> Self {
+        Self {
+            dma,
+            _p: PhantomData,
+        }
+    }
+}
+
+impl<'d, T, DMA> WaveformGenerator for UpDmaWaveform<'d, T, DMA>
+where
+    T: GeneralInstance4Channel,
+    DMA: UpDma<T>,
+{
+    type Timer = T;
+    async fn run_waveform(&mut self, pwm: &mut SimplePwm<'_, T>, cmd: [[u16; TRANSMIT_SIZE]; 4]) {
+        let mut interleaved = [0u16; TRANSMIT_SIZE * 4];
+        for i in 0..TRANSMIT_SIZE {
+            interleaved[i * 4 + 0] = cmd[0][i];
+            interleaved[i * 4 + 1] = cmd[1][i];
+            interleaved[i * 4 + 2] = cmd[2][i];
+            interleaved[i * 4 + 3] = cmd[3][i];
+        }
+
+        pwm.waveform_up_multi_channel(
+            self.dma.reborrow(),
+            Channel::Ch1,
+            Channel::Ch4,
+            &interleaved,
+        )
+        .await;
+    }
+}
+
+pub struct QuadDmaWaveform<'d, T, DMA1, DMA2, DMA3, DMA4>
 where
     T: GeneralInstance4Channel,
     DMA1: Dma<T, Ch1>,
@@ -129,35 +191,51 @@ where
     DMA3: Dma<T, Ch3>,
     DMA4: Dma<T, Ch4>,
 {
-    async fn set_motor_speeds(&mut self, speed: [u16; 4]) {
-        self.transmit((
-            dshot_encoder::throttle_clamp(speed[0], false),
-            dshot_encoder::throttle_clamp(speed[1], false),
-            dshot_encoder::throttle_clamp(speed[2], false),
-            dshot_encoder::throttle_clamp(speed[3], false),
-        ))
-        .await
-    }
+    dma1: Peri<'d, DMA1>,
+    dma2: Peri<'d, DMA2>,
+    dma3: Peri<'d, DMA3>,
+    dma4: Peri<'d, DMA4>,
+    _p: PhantomData<T>,
+}
 
-    async fn set_reverse_dir(&mut self, direction: [bool; 4]) {
-        self.transmit((
-            dshot_encoder::reverse(direction[0]),
-            dshot_encoder::reverse(direction[1]),
-            dshot_encoder::reverse(direction[2]),
-            dshot_encoder::reverse(direction[3]),
-        ))
-        .await
+impl<'d, T, DMA1, DMA2, DMA3, DMA4> QuadDmaWaveform<'d, T, DMA1, DMA2, DMA3, DMA4>
+where
+    T: GeneralInstance4Channel,
+    DMA1: Dma<T, Ch1>,
+    DMA2: Dma<T, Ch2>,
+    DMA3: Dma<T, Ch3>,
+    DMA4: Dma<T, Ch4>,
+{
+    pub fn new(
+        dma1: Peri<'d, DMA1>,
+        dma2: Peri<'d, DMA2>,
+        dma3: Peri<'d, DMA3>,
+        dma4: Peri<'d, DMA4>,
+    ) -> Self {
+        Self {
+            dma1,
+            dma2,
+            dma3,
+            dma4,
+            _p: PhantomData,
+        }
     }
+}
 
-    async fn set_motor_speeds_min(&mut self) {
-        self.transmit((
-            dshot_encoder::throttle_minimum(false),
-            dshot_encoder::throttle_minimum(false),
-            dshot_encoder::throttle_minimum(false),
-            dshot_encoder::throttle_minimum(false),
-        ))
-        .await
+impl<'d, T, DMA1, DMA2, DMA3, DMA4> WaveformGenerator
+    for QuadDmaWaveform<'d, T, DMA1, DMA2, DMA3, DMA4>
+where
+    T: GeneralInstance4Channel,
+    DMA1: Dma<T, Ch1>,
+    DMA2: Dma<T, Ch2>,
+    DMA3: Dma<T, Ch3>,
+    DMA4: Dma<T, Ch4>,
+{
+    type Timer = T;
+    async fn run_waveform(&mut self, pwm: &mut SimplePwm<'_, T>, cmd: [[u16; TRANSMIT_SIZE]; 4]) {
+        pwm.waveform(self.dma1.reborrow(), cmd[0].as_slice()).await;
+        pwm.waveform(self.dma2.reborrow(), cmd[1].as_slice()).await;
+        pwm.waveform(self.dma3.reborrow(), cmd[2].as_slice()).await;
+        pwm.waveform(self.dma4.reborrow(), cmd[3].as_slice()).await;
     }
-
-    async fn make_beep(&mut self) {}
 }
