@@ -47,7 +47,7 @@ impl From<Actual> for Rates {
 
 crate::const_default!(
     Actual => {
-        rate: 50.,
+        rate: 20.,
         expo: 0.5,
         cent: 5.0,
     }
