@@ -84,18 +84,6 @@ pub mod params {
     pub static TABLE: Table<Params> = Table::new("rate", Params::const_default());
 }
 
-struct Health(u32);
-
-bitflags::bitflags! {
-    impl Health: u32 {
-        const PARAMETERS_LOADED = 1 << 0;
-        const IMU_SOURCE_PROVIDED = 1 << 1;
-        const REF_SOURCE_PROVIDED = 1 << 2;
-        const INTEGRAL_ENABLED = 1 << 3;
-        const EXTREME_BIAS_EST = 1 << 4;
-    }
-}
-
 #[embassy_executor::task]
 pub async fn main() {
     const ID: &str = "rate_loop";
@@ -168,16 +156,33 @@ pub async fn main() {
     let mut comp_fuse_gyr = [0.0; 3];
     let mut ff_pred_gyr = [0.0; 3];
 
+    // TODO: This should be based on the IMU configuration
+    const MAX_GYR_MEAS: f32 = (0.95f32 * 2000.0).to_radians();
+
     info!("{}: Entering main loop", ID);
     loop {
-        let imu_data = rcv_imu_data.changed().await;
-        
+        let mut imu_data = rcv_imu_data.changed().await;
         let estimate = rcv_eksf_estimate.get().await;
-        let imu_data = Imu6DofData {
-            gyr: (Vector3::from(imu_data.gyr) - estimate.gyr_bias).into(),
-            acc: (Vector3::from(imu_data.acc) - estimate.acc_bias).into(),
-            timestamp_us: imu_data.timestamp_us,
-        };
+
+        let bias_okay = estimate
+            .acc_bias
+            .iter()
+            .chain(estimate.gyr_bias.iter())
+            .any(|b| b.abs() < 0.1);
+
+        if bias_okay {
+            imu_data = Imu6DofData {
+                gyr: (Vector3::from(imu_data.gyr) - estimate.gyr_bias).into(),
+                acc: (Vector3::from(imu_data.acc) - estimate.acc_bias).into(),
+                timestamp_us: imu_data.timestamp_us,
+            };
+        } else {
+            warn!(
+                "[rate_controller] Bias estimates rejected: gyr {:?}, acc {:?}",
+                estimate.gyr_bias.as_slice(),
+                estimate.acc_bias.as_slice()
+            );
+        }
 
         // Try to update rate and throttle setpoints
         rate_sp = rcv_rate_sp.try_get().unwrap_or(rate_sp);
@@ -196,7 +201,8 @@ pub async fn main() {
             ff_pred_gyr[axis] = pred_model[axis].update(ref_filtered[axis]);
 
             // Apply slew rate limiter to reference signal
-            ref_filtered[axis] = sp_slew_filt[axis].update(rate_sp[axis]);
+            let setpoint = rate_sp[axis].clamp(-MAX_GYR_MEAS, MAX_GYR_MEAS);
+            ref_filtered[axis] = sp_slew_filt[axis].update(setpoint);
 
             // Slew-rate limit the reference signal (avoids D-term clipping)
             ref_filtered[axis] = sp_lp_filt[axis].update(ref_filtered[axis]);
