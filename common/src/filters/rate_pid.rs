@@ -24,6 +24,7 @@ pub struct RatePid {
 
     // Configuration
     dt: f32,
+    max_integral: f32,
     integral_en: bool,
     lowpass: Lowpass<f32>,
     d_lowpass: NthOrderLowpass<f32, 2>,
@@ -42,6 +43,7 @@ impl RatePid {
             terms: PidTerms::default(),
             integral_en: true,
             dt,
+            max_integral: 1.0,
             lowpass: Lowpass::new(tau * 10., dt),
             d_lowpass: NthOrderLowpass::new(tau, dt),
             d_slew: None,
@@ -61,44 +63,44 @@ impl RatePid {
         self
     }
 
-    pub fn update(&mut self, reference: f32, measurement: f32, prediction: f32) -> f32 {
-        // Calculate proportional error (with slight overdrive to account for
-        // air resistance)
-
-        let mut reference = reference * 1.0;
-
+    pub fn update(&mut self, mut reference: f32, measurement: f32, prediction: f32) -> f32 {
+        // Calculate proportional error
         let proportional = self.kp * (reference - measurement);
+
+        // Optionally slew-rate limit the reference signal to prevent very quick
+        // changes from being clipped by derivative controller.
+        if let Some(d_slew) = self.d_slew.as_mut() {
+            reference = d_slew.update(reference);
+        }
+
+        let d_gain = self.kd / self.dt;
+
+        // Calculate derivative of reference
+        let ref_derivative = d_gain * (reference - self.prev_ref);
+        self.prev_ref = reference;
 
         // Take derivatives of measurement (negative because d(ref - meas)/dt)
         let measurement_lp = self.d_lowpass.update(measurement);
-        let meas_derivative = -self.kd * (measurement_lp - self.prev_meas) / self.dt;
+        let meas_derivative = d_gain * (self.prev_meas - measurement_lp);
         self.prev_meas = measurement_lp;
+
+        // Limit integrator to only be actuve during "calm" moves
+        const CALM_THRESHOLD: f32 = 1.0;
 
         // Calculate error integral (if reference is small) This ensures we do
         // not carry over integration which occured for large references
         // (velocities) where air resistance and other strange dynamics likely
         // played a larger role than at a low reference.
-        if prediction.abs() < 1.0 && self.integral_en {
-            self.integral += self.ki * (prediction - measurement) * self.dt
-                / (1.0 + self.lowpass.update(meas_derivative).abs());
+        if self.integral_en 
+        && measurement_lp.abs() < CALM_THRESHOLD 
+        && reference.abs() < CALM_THRESHOLD {
+            let model_error = prediction - measurement;
+            let damping = 1.0 + self.lowpass.update(meas_derivative.abs());
+            self.integral += self.ki * model_error * self.dt / damping;
+            self.integral = self.integral.clamp(-self.max_integral, self.max_integral);
+
         }
 
-        // Optionally slew-rate limit the reference signal to prevent very quick
-        // changes from being clipped by derivative controller.
-        reference = self
-            .d_slew
-            .as_mut()
-            .map_or(reference, |slew| slew.update(reference));
-
-        // Calculate derivative
-        let ref_derivative = self.kd * (reference - self.prev_ref) / self.dt;
-        self.prev_ref = reference;
-
-        // Sum all terms together. The meas_derivative_lp is subtracted because
-        // the derivative terms is normally `d(ref
-        // - meas)/dt` but in this case the derivative of ref and meas are done
-        // separately, and therefore we need to use the negative sign here (for
-        // clarity).
         self.terms = PidTerms {
             p_out: proportional,
             i_out: self.integral,
@@ -125,7 +127,7 @@ impl RatePid {
 
     pub fn set_gains(&mut self, kp: f32, ki: f32, kd: f32) {
         self.kp = kp;
-        self.ki = ki * kp;
+        self.ki = ki;
         self.kd = kd * kp;
     }
 
