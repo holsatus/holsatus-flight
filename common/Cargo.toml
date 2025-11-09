@@ -136,7 +136,7 @@ ufmt = "0.2.0"
 postcard = { version = "1.0.10" }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 
-ublox = { version = "0.4.5", optional = true, default-features = false }
+ublox = { version = "0.7.0", features = ["ubx_proto23"], optional = true, default-features = false }
 portable-atomic = "1.9"
 approx = "0.5"
 thiserror = { version = "2.0.7", default-features = false }
