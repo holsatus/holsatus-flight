@@ -22,6 +22,7 @@ pub enum Command {
     },
     SetControlMode(SetControlMode),
     RunArmChecks,
+    EskfResetOrigin,
 }
 
 macro_rules! impl_command_from {

@@ -43,21 +43,45 @@ crate::const_default!(
             },
             Stream {
                 message_id: Generator::LocalPositionNed as u32,
-                interval_ms: 20,
+                interval_ms: 50,
             },
             Stream {
                 message_id: Generator::AttitudeQuaternion as u32,
                 interval_ms: 50,
             },
+            Stream {
+                message_id: Generator::LocalPositionNedSystemGlobalOffset as u32,
+                interval_ms: 500,
+            },
+            Stream {
+                message_id: Generator::GpsRawInt as u32,
+                interval_ms: 200,
+            }
         ])
     }
 );
 
-#[derive(mav_param::Tree, Debug, Clone, Default, PartialEq)]
+#[derive(mav_param::Tree, Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Identity {
     pub sys: u8,
     pub com: u8,
+}
+
+impl Identity {
+    /// Returns `true` if the identity of `self` is the target of `msg_target`
+    /// 
+    /// This includes both a total match, i.e. `self == msg_target` but also if
+    /// the `msg_target` is a broadcast address. 
+    pub fn is_target_of(&self, msg_target: Identity) -> bool {
+        let sys_match = (msg_target.sys == 0) || (msg_target.sys == self.sys);
+        let com_match = (msg_target.com == 0) || (msg_target.com == self.com);
+        sys_match && com_match
+    }
+
+    pub fn is_global_broadcast(&self) -> bool {
+        self.sys == 0 && self.com == 0
+    }
 }
 
 #[derive(Debug, Clone, Copy, mav_param::Tree, Default)]

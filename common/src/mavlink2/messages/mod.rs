@@ -1,5 +1,5 @@
 use super::{mav_mode, mav_state, Error};
-use mavio::dialects::common::messages::*;
+use mavio::{dialects::common::messages::*};
 
 // Pick a lane man..
 mod time {
@@ -15,32 +15,6 @@ mod time {
 
     pub fn us_u64() -> u64 {
         Instant::now().as_micros()
-    }
-}
-
-const TARGET_HZ: usize = 30;
-const POSITION_SET: &'static [Generator] = &[
-    Generator::AttitudeQuaternion,
-    Generator::LocalPositionNed,
-    Generator::LocalPositionNedSystemGlobalOffset,
-    Generator::ServoOutputRaw,
-    Generator::ScaledImu,
-];
-
-#[embassy_executor::task]
-pub(crate) async fn stream_position_set() -> ! {
-    let duration_micros = 1e6 / (POSITION_SET.len() * TARGET_HZ) as f32;
-    let duration = embassy_time::Duration::from_micros(duration_micros as u64);
-    loop {
-        for generator in POSITION_SET {
-            embassy_time::Timer::after(duration).await;
-            super::CHANNEL
-                .send(super::Message::SendGenerator {
-                    generator: *generator,
-                    target: super::Target::Broadcast,
-                })
-                .await;
-        }
     }
 }
 
@@ -149,6 +123,8 @@ define_message_set! {
         LocalPositionNed,
         LocalPositionNedSystemGlobalOffset,
         LinkNodeStatus,
+        GpsRawInt,
+        ProtocolVersion,
     }
 }
 
@@ -158,6 +134,7 @@ pub trait Generate: Sized + mavio::Message {
 
 impl Generate for Heartbeat {
     fn generate() -> Result<Self, Error> {
+
         Ok(Heartbeat {
             type_: mavio::dialects::minimal::enums::MavType::Quadrotor,
             autopilot: mavio::dialects::minimal::enums::MavAutopilot::Generic,
@@ -325,8 +302,19 @@ impl Generate for RcChannelsRaw {
 
 impl Generate for AutopilotVersion {
     fn generate() -> Result<Self, Error> {
-        // TODO fill this in correctly
-        Ok(Self::default())
+        let mut message = AutopilotVersion::default();
+        
+        use mavio::default_dialect::enums::MavProtocolCapability as Cap;
+        message.capabilities |= Cap::MAVLINK2;
+        message.capabilities |= Cap::COMMAND_INT;
+        message.capabilities |= Cap::PARAM_ENCODE_BYTEWISE;
+        // message.capabilities |= Cap::SET_ATTITUDE_TARGET;
+        // message.capabilities |= Cap::SET_POSITION_TARGET_GLOBAL_INT;
+
+        // TODO: Pull this from crate version
+        message.flight_sw_version = u32::from_le_bytes([0, 1, 0, 0]);
+
+        Ok(message)
     }
 }
 
@@ -413,6 +401,44 @@ impl Generate for GpsRawInt {
                 ..Default::default()
             }
         };
+
+        Ok(message)
+    }
+}
+
+
+impl Generate for ProtocolVersion {
+    fn generate() -> Result<Self, Error> {
+        let mut message = ProtocolVersion::default();
+
+        message.version = 200;
+        message.max_version = 200;
+        message.min_version = 200;
+
+        Ok(message)
+    }
+}
+
+// These are requested by QGroundControl, should we just keep ignoring them?
+impl Generate for ComponentInformation {
+    fn generate() -> Result<Self, Error> {
+        let message = ComponentInformation::default();
+
+        Ok(message)
+    }
+}
+
+impl Generate for ComponentMetadata {
+    fn generate() -> Result<Self, Error> {
+        let message = ComponentMetadata::default();
+
+        Ok(message)
+    }
+}
+
+impl Generate for AvailableModes {
+    fn generate() -> Result<Self, Error> {
+        let message = AvailableModes::default();
 
         Ok(message)
     }

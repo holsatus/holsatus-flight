@@ -52,11 +52,13 @@ pub struct GnssTime {
 #[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct GnssData {
-    // The device-local time of when
-    // the packet was parsed.
+    /// The device-local time of when the packet was parsed.
     pub timestamp_us: u64,
+    /// The received timestamp of the GNSS packet.
     pub time: GnssTime,
+    /// The type of GNSS fix at the time of reception.
     pub fix: GnssFix,
+    /// The number of satellites visible to the receiver.
     pub num_satellites: u8,
 
     /// Raw latitude coordinate, in `1e7 * deg`.
@@ -66,9 +68,9 @@ pub struct GnssData {
     /// Height above mean sea level (MSL), in `m/s`.
     pub height_above_msl: f32,
 
-    /// Accuracy of `velocity_north` and `velocity_east`, in `m/s`.
+    /// Accuracy of `latitude_raw` and `longitude_raw`, in `m/s`.
     pub horizontal_accuracy: f32,
-    /// Accuracy of `velocity_down`, in `m/s`.
+    /// Accuracy of `height_above_msl`, in `m/s`.
     pub vertical_accuracy: f32,
 
     /// Velocity along the north-south axis, in `m/s`.

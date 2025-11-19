@@ -1,3 +1,5 @@
+use embedded_io_async::Read;
+
 use crate::errors::ParseError;
 
 pub mod crsf;
@@ -44,3 +46,20 @@ pub trait BufReadExt: embedded_io_async::BufRead {
 }
 
 impl<R: embedded_io_async::BufRead> BufReadExt for R {}
+
+// TODO: Standardize interface for parsers which operate directly on a reader.
+// But maybe the `to_fill` and `consume` method, which is reader agnostic, would
+// be more general purpose?
+
+#[allow(async_fn_in_trait)]
+pub trait BufParser {
+    type Packet;
+    type Error;
+    async fn read_from<R: BufReadExt + Read>(&mut self, reader: R) -> Result<Self::Packet, BufParserError<Self::Error, R::Error>>;
+}
+
+pub enum BufParserError<P, R> {
+    Parser(P),
+    Reader(R),
+    ReaderEof,
+}

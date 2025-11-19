@@ -5,4 +5,4 @@ attach:
 
 flash:
     cargo build --release
-    probe-rs run --chip STM32F405RGTx {{path}}
+    probe-rs run --always-print-stacktrace --chip STM32F405RGTx {{path}}

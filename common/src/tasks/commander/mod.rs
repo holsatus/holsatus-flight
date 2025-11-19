@@ -205,6 +205,14 @@ impl Commander {
                 CMD_CONTROL_MODE.send(mode);
 
                 Response::Accepted
+            },
+            Command::EskfResetOrigin => {
+                use crate::tasks::eskf::{Message, CHANNEL};
+                if CHANNEL.try_send(Message::GnssResetOrigin).is_ok() {
+                    Response::Accepted
+                } else {
+                    Response::Failed
+                }
             }
         }
     }

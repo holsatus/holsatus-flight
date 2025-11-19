@@ -64,10 +64,13 @@ pub enum Message {
 
     #[cfg(feature = "gnss")]
     GnssData(crate::types::measurements::GnssData),
+
+    #[cfg(feature = "gnss")]
+    GnssResetOrigin,
 }
 
 // Do not queue up sensor readings.
-static CHANNEL: Channel<Message, 10> = Channel::new();
+pub static CHANNEL: Channel<Message, 10> = Channel::new();
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -126,8 +129,8 @@ mod params {
 
     crate::const_default!(
         Parameters => {
-            acc_noise_std: 0.1,
-            gyr_noise_std: 0.01,
+            acc_noise_std: 0.002,
+            gyr_noise_std: 0.001,
             acc_drift_std: 0.0001,
             gyr_drift_std: 0.0001,
             covariance_init: 0.1,
@@ -183,14 +186,13 @@ pub async fn main() -> ! {
 
     let mut snd_eskf_estimate = s::ESKF_ESTIMATE.sender();
 
-    let mut filter = eskf::ESKF::new().with_mut(|filt| {
-        filt.acc_noise_std(params.acc_noise_std);
-        filt.acc_bias_std(params.acc_drift_std);
-        filt.gyr_noise_std(params.gyr_noise_std);
-        filt.gyr_bias_std(params.gyr_drift_std);
-        filt.covariance_diag(params.covariance_init);
-        filt.with_gravity(Vector3::z() * GRAVITY);
-    });
+    let mut filter = eskf_rs::NavigationFilter::new()
+        .acc_noise_density(params.acc_noise_std)
+        .acc_bias_random_walk(params.acc_drift_std)
+        .gyr_noise_density(params.gyr_noise_std)
+        .gyr_bias_random_walk(params.gyr_drift_std)
+        // .covariance_diag(params.covariance_init)
+        .with_gravity(Vector3::z() * GRAVITY);
 
     drop(params);
 
@@ -199,10 +201,7 @@ pub async fn main() -> ! {
     let dt = 1.0 / crate::get_ctrl_freq!() as f32;
 
     #[cfg(feature = "gnss")]
-    let mut gnss_origin: Option<GnssPoint> = None;
-
-    #[cfg(feature = "gnss")]
-    let mut last_gnss_time = Instant::MIN;
+    let mut gnss_fusion = gnss_fusion::EskfGnssFusion::new();
 
     // For smoothing the position estimate using the velocity estimate
     let mut comps = [
@@ -235,7 +234,7 @@ pub async fn main() -> ! {
                 #[cfg(feature = "gnss")]
                 {
                     position_provider |=
-                        time_now.duration_since(last_gnss_time) < Duration::from_secs(2);
+                        gnss_fusion.time_elapsed() < Duration::from_secs(2);
                 }
 
                 if position_valid && !position_provider {
@@ -243,7 +242,8 @@ pub async fn main() -> ! {
                     position_valid = false;
                 }
 
-                filter.predict_optimized(imu_data.acc.into(), imu_data.gyr.into(), delta_time);
+                // Meat and potatos
+                filter.predict(imu_data.acc.into(), imu_data.gyr.into(), delta_time);
 
                 // Using the latest delta time
                 comps.iter_mut().for_each(|c| c.set_dt(delta_time));
@@ -262,7 +262,7 @@ pub async fn main() -> ! {
                     filter.acc_bias = [0.0; 3].into();
                     filter.gyr_bias = [0.0; 3].into();
                     #[cfg(feature = "gnss")] {
-                        gnss_origin = None;
+                        gnss_fusion.reset_origin();
                     }
                 }
 
@@ -302,122 +302,30 @@ pub async fn main() -> ! {
                 let rotation_var =
                     SMatrix::from_array_storage(nalgebra::ArrayStorage(vicon_data.att_var));
 
-                let result = filter.observe_position_rotation(
+                if filter.observe_position(
                     position,
                     position_var,
+                ).is_err() {
+                    error!("[eskf] Unable to do matrix inversion during ESKF position update");
+                }
+
+                if filter.observe_rotation(
                     rotation,
                     rotation_var,
-                );
-
-                position_valid = true;
-
-                if result.is_err() {
+                ).is_err() {
                     error!("[eskf] Unable to do matrix inversion during ESKF update");
                 }
+
+                position_valid = true;
             }
             #[cfg(feature = "gnss")]
             Message::GnssData(gnss_data) => {
-                use crate::types::measurements::GnssFix;
-                const GNSS_MIN_NUM_SATELLITES: u8 = 3;
-
-                if (gnss_data.fix as u8) < (GnssFix::Fix2D as u8) {
-                    warn!("[eskf] GNSS must have at least 2D fix");
-                    continue;
+                if gnss_fusion.fuse_measurement(&gnss_data, &mut filter) {
+                    position_valid = true;
                 }
-
-                if gnss_data.num_satellites < GNSS_MIN_NUM_SATELLITES {
-                    warn!("[eskf] Too few satellites to fuse GNSS data");
-                    continue;
-                }
-
-                last_gnss_time = Instant::from_micros(gnss_data.timestamp_us);
-
-                let lat_raw = gnss_data.latitude_raw;
-                let lon_raw = gnss_data.longitude_raw;
-                let altitude = gnss_data.height_above_msl;
-
-                // Get the current origin point, initializing if necesary
-                let point = GnssPoint {
-                    lat_raw,
-                    lon_raw,
-                    altitude,
-                };
-                let origin = gnss_origin.get_or_insert_with(|| point);
-
-                let delta = point - *origin;
-
-                // Convert coordinates into equivalent meters
-                let lat_delta_meters = KM_PER_DEG_OF_LAT * delta.lat_delta * 1e3;
-                let lon_delta_meters = lat_factor(lat_raw) * delta.lon_delta * 1e3;
-                let alt_delta_meters = -delta.alt_delta;
-
-                // Which is our current position, relative to origin
-                let position =
-                    nalgebra::Point3::new(lat_delta_meters, lon_delta_meters, alt_delta_meters);
-
-                // Already in NED coordinates!
-                let velocity = Vector3::new(
-                    gnss_data.velocity_north,
-                    gnss_data.velocity_east,
-                    gnss_data.velocity_down,
-                );
-
-                // Interpret position accuracy as standard deviation
-                let pos_variance = Vector3::new(
-                    (gnss_data.horizontal_accuracy * 2.0).powi(2),
-                    (gnss_data.horizontal_accuracy * 2.0).powi(2),
-                    (gnss_data.vertical_accuracy * 2.0).powi(2),
-                );
-
-                // The full 3D position variance matrix
-                let position_var = SMatrix::from_diagonal(&pos_variance);
-
-                // NOTE: This might all be complete shit
-                // For the velocity variance we first need to convert
-                // the accuracy estimates from the default polar coordinates
-                // consisting of heading and velocity estimates, into seperate
-                // cartesian accuracies. This also gives off-axis covariances.
-
-                // The jacobian allows us to transform the polar coordinates
-                let heading = gnss_data.heading_motion.to_radians();
-                let (heading_sin, heading_cos) = heading.sin_cos();
-                let jacobian = nalgebra::Matrix2::new(
-                    heading_cos,
-                    -gnss_data.ground_speed * heading_sin,
-                    heading_sin,
-                    gnss_data.ground_speed * heading_cos,
-                );
-
-                // Variance in polar coordinates
-                let vel_polar_var = nalgebra::Matrix2::new(
-                    gnss_data.ground_speed_accuracy.powi(2),
-                    0.0,
-                    0.0,
-                    gnss_data.heading_accuracy.to_radians().powi(2),
-                );
-
-                // Variance in cartesian coordinates
-                let vel_cartesian_var = jacobian * vel_polar_var * jacobian.transpose();
-
-                // The full 3D velocity variance matrix
-                let velocity_var = nalgebra::stack![
-                    vel_cartesian_var, 0;
-                    0, nalgebra::matrix![gnss_data.ground_speed_accuracy.powi(2)]
-                ] + SMatrix::from_diagonal_element(1.0);
-
-                let result = filter.observe_position_velocity(
-                    position,
-                    position_var,
-                    velocity,
-                    velocity_var,
-                );
-
-                position_valid = true;
-
-                if result.is_err() {
-                    error!("[eskf] Unable to do matrix inversion during ESKF update");
-                }
-            }
+            },
+            #[cfg(feature = "gnss")]
+            Message::GnssResetOrigin => gnss_fusion.reset_origin(),
         }
     }
 }
@@ -432,4 +340,148 @@ const KM_PER_DEG_OF_LAT: f32 = EARTH_CIRCUM_KM / 360.0;
 pub fn lat_factor(latitude_raw: i32) -> f32 {
     let latitude_deg = (latitude_raw as f32) * 1e-7;
     KM_PER_DEG_OF_LAT * latitude_deg.to_radians().cos()
+}
+
+#[cfg(feature = "gnss")]
+mod gnss_fusion {
+    use embassy_time::{Duration, Instant};
+    use eskf_rs::NavigationFilter;
+    use nalgebra::{SMatrix, Vector3};
+
+    use crate::{tasks::eskf::{GnssPoint, KM_PER_DEG_OF_LAT, lat_factor}, types::measurements::GnssData};
+
+    pub struct EskfGnssFusion {
+        last_time: Instant,
+        origin: Option<GnssPoint>
+    }
+
+    impl EskfGnssFusion {
+        pub fn new() -> Self {
+            Self {
+                last_time: Instant::MIN,
+                origin: None,
+            }
+        }
+
+        pub fn reset_origin(&mut self) {
+            self.origin = None
+        }
+
+        pub fn time_elapsed(&self) -> Duration {
+            self.last_time.elapsed()
+        }
+
+        pub fn fuse_measurement(&mut self, gnss_data: &GnssData, filter: &mut NavigationFilter) -> bool {
+            use crate::types::measurements::GnssFix;
+            const GNSS_MIN_NUM_SATELLITES: u8 = 3;
+
+            if (gnss_data.fix as u8) < (GnssFix::Fix2D as u8) {
+                warn!("[eskf] GNSS must have at least 2D fix");
+                return false;
+            }
+
+            if gnss_data.num_satellites < GNSS_MIN_NUM_SATELLITES {
+                warn!("[eskf] Too few satellites to fuse GNSS data");
+                return false;
+            }
+
+            self.last_time = Instant::from_micros(gnss_data.timestamp_us);
+
+            let lat_raw = gnss_data.latitude_raw;
+            let lon_raw = gnss_data.longitude_raw;
+            let altitude = gnss_data.height_above_msl;
+
+            // Get the current origin point, initializing if necesary
+            let point = GnssPoint {
+                lat_raw,
+                lon_raw,
+                altitude,
+            };
+
+            // Retrive the origin, or set it as current position
+            let origin = *self.origin.get_or_insert(point);
+
+            // Delta degrees (assume small distances for this)
+            let delta = point - origin;
+
+            // Convert delta into equivalent meters
+            let north_delta = KM_PER_DEG_OF_LAT * delta.lat_delta * 1e3;
+            let east_delta = lat_factor(lat_raw) * delta.lon_delta * 1e3;
+            let down_delta = -delta.alt_delta;
+
+            // Which is our current position, relative to origin
+            let position =
+                Vector3::new(north_delta, east_delta, down_delta);
+
+            // Velocity is already in NED coordinates!
+            let velocity = Vector3::new(
+                gnss_data.velocity_north,
+                gnss_data.velocity_east,
+                gnss_data.velocity_down,
+            );
+
+            // Interpret position accuracy as standard deviation
+            let position_var = SMatrix::from_diagonal(&[
+                (gnss_data.horizontal_accuracy).powi(2),
+                (gnss_data.horizontal_accuracy).powi(2),
+                (gnss_data.vertical_accuracy).powi(2),
+            ].into());
+
+            // The velocity variance is a bit more complex
+            let velocity_var = Self::gnss_velocity_cov(&gnss_data);
+
+            // These two observations together take 120-180 µs on an
+            // stm32f405 with optim-level = 3, pretty good id say?
+            if filter.observe_position(
+                position,
+                position_var,
+            ).is_err() {
+                error!("[eskf] Unable to do matrix inversion during ESKF velocity update");
+            }
+
+            if filter.observe_velocity(
+                velocity, 
+                velocity_var
+            ).is_err() {
+                error!("[eskf] Unable to do matrix inversion during ESKF velocity update");
+            }
+
+            true
+        }
+
+        pub fn gnss_velocity_cov(gnss_data: &GnssData) -> SMatrix<f32, 3, 3> {
+            let v_gs = gnss_data.ground_speed;
+            let psi = gnss_data.heading_motion;
+            
+            // Use a small minimum sigma to ensure numerical stability if accuracy is reported as 0.0
+            let sigma_gs = gnss_data.ground_speed_accuracy.max(1e-3);
+            let sigma_psi = gnss_data.heading_accuracy.max(1e-3);
+
+            // Calculate baseline variance, which also is the along-track variance.
+            let sigma_gs_sq = sigma_gs.powi(2);
+            let sigma_along_sq = sigma_gs_sq;
+
+            // Cross-track variance is the sum of the baseline isotropic variance and
+            // the variance induced by heading uncertainty.
+            let sigma_cross_sq = sigma_gs_sq + (v_gs * sigma_psi).powi(2);
+
+            // Rotate variances into the North-East frame
+            let (s, c) = psi.sin_cos();
+            let var_vn = c * c * sigma_along_sq + s * s * sigma_cross_sq;
+            let var_ve = s * s * sigma_along_sq + c * c * sigma_cross_sq;
+
+            // North-East covariance term
+            let cov_vn_ve = c * s * (sigma_along_sq - sigma_cross_sq);
+
+            // Assume the vertical velocity uncertainty is the same as the horizontal
+            // ground speed uncertainty.
+            let var_vd = sigma_gs_sq;
+
+            SMatrix::<f32, 3, 3>::new(
+                var_vn,    cov_vn_ve, 0.0,
+                cov_vn_ve, var_ve,    0.0,
+                0.0,       0.0,       var_vd,
+            )
+        }
+    }
 }

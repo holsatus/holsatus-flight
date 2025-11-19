@@ -86,7 +86,6 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
     let mut snd_motors_state = s::MOTORS_STATE.sender();
 
     let params = params::TABLE.read().await;
-    debug!("[{}] Received initial parameters", ID);
 
     let mut dirs;
 

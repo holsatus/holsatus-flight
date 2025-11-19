@@ -1,5 +1,6 @@
 use embassy_time::{Duration, Instant};
 use embedded_io::Error;
+use embedded_io_async::BufRead;
 
 use crate::{
     parsers::{crsf::CrsfParser, sbus::SbusParser},
@@ -10,6 +11,21 @@ use crate::{
 pub enum Parser {
     Sbus(SbusParser),
     Crsf(CrsfParser),
+}
+
+#[repr(u8)]
+pub enum ParserVariant {
+    Sbus = 0,
+    Crsf = 5,
+}
+
+impl From<ParserVariant> for Parser {
+    fn from(value: ParserVariant) -> Self {
+        match value {
+            ParserVariant::Sbus => Parser::Sbus(SbusParser::new()),
+            ParserVariant::Crsf => Parser::Crsf(CrsfParser::new()),
+        }
+    }
 }
 
 #[embassy_executor::task]
@@ -23,7 +39,9 @@ pub async fn main(serial_id: &'static str) -> ! {
     let mut snd_rc_channels = s::RC_CHANNELS_RAW.sender();
     let mut snd_rc_status = s::RC_STATUS.sender();
 
-    let mut parser = Parser::Crsf(CrsfParser::new());
+    let parser_variant = ParserVariant::Crsf;
+    let mut parser = Parser::from(parser_variant);
+
     let mut buffer = [0u8; 64];
 
     // Used to avoid excessive logging for some Uart errors
@@ -47,7 +65,7 @@ pub async fn main(serial_id: &'static str) -> ! {
         }
 
         // Read serial data, but with a timeout
-        let bytes = match serial.reader.read(&mut buffer).await {
+        let bytes = match serial.reader.read(buffer.as_mut()).await {
             Ok(bytes) => bytes,
             Err(err) => {
                 if err_debounce.elapsed() > Duration::from_millis(50) {
@@ -58,14 +76,16 @@ pub async fn main(serial_id: &'static str) -> ! {
             }
         };
 
+        // Shadow original buffer with the bytes we have just read
+        let mut buffer = &buffer[..bytes];
+
         // Exhaustively parse bytes. This might immediately overwrite
         // a just-parsed packet, but it ensures we use the latest packet.
-        let mut sub_buffer = &buffer[..bytes];
-        while sub_buffer.len() > 0 {
+        while buffer.len() > 0 {
             match &mut parser {
                 Parser::Sbus(sbus) => {
                     let result;
-                    (result, sub_buffer) = sbus.push_bytes(sub_buffer);
+                    (result, buffer) = sbus.push_bytes(buffer);
 
                     match result {
                         Some(Ok(packet)) if !packet.failsafe => {
@@ -84,15 +104,15 @@ pub async fn main(serial_id: &'static str) -> ! {
                 }
                 Parser::Crsf(crsf) => {
                     let result;
-                    (result, sub_buffer) = crsf.push_bytes(sub_buffer);
+                    (result, buffer) = crsf.push_bytes(buffer);
 
                     match result {
                         Some(Ok(raw_packet)) => {
                             rc_status.failsafe = false;
-                            last_parse_time = Instant::now();
                             use crate::parsers::crsf::packet_containers::Packet;
                             match raw_packet.to_packet() {
                                 Ok(Packet::RcChannelsPacked(packet)) => {
+                                    last_parse_time = Instant::now();
                                     snd_rc_channels.send(Some(packet.0))
                                 }
                                 Ok(Packet::LinkStatistics(packet)) => {
@@ -115,4 +135,19 @@ pub async fn main(serial_id: &'static str) -> ! {
             }
         }
     }
+}
+
+// TODO - Improve the parser API to operate on BufRead implementors. This should
+// save a copy into the temporary buffer,
+
+pub enum BufParserError<P, R> {
+    Parser(P),
+    Reader(R),
+}
+
+#[allow(async_fn_in_trait)]
+pub trait BufParser {
+    type Packet;
+    type Error;
+    async fn read_from<R: BufRead>(&mut self, reader: R) -> Result<Self::Packet, BufParserError<Self::Error, R::Error>>;
 }

@@ -1,4 +1,4 @@
-use mav_param::{Ident, Value};
+use mav_param::Value;
 use mavio::{
     default_dialect::{
         enums::MavParamType,
@@ -39,57 +39,51 @@ pub fn value_into_mav_bytewise(value: Value) -> (f32, MavParamType) {
     }
 }
 
+async fn send_parameter_value(server: &mut MavlinkServer, target: Identity, value: mav_param::Value, raw_ident: &[u8; 16]) -> Result<(), crate::mavlink2::Error> {
+        let param_id = raw_ident.clone();
+        let (param_value, param_type) = value_into_mav_bytewise(value);
+
+        let message = ParamValue {
+            param_id,
+            param_value,
+            param_type,
+            param_count: u16::MAX,
+            param_index: u16::MAX,
+        };
+
+        server.send_mav_message(&message, target.into()).await?;
+
+        Ok(())
+}
+
 impl<V: MaybeVersioned> super::Handler<V> for ParamRequestRead {
     async fn handle_inner(
+        self,
         server: &mut MavlinkServer,
-        msg: Self,
         frame: Frame<V>,
     ) -> Result<(), crate::mavlink2::Error> {
-        // Message was not intended for us, ignore it // TODO routing?
-        if msg.target_system != server.param.id.sys || msg.target_component != server.param.id.com {
-            debug!("[mavlink] Received a ParamRequestList not intended for us");
+
+       let target = Identity {
+            sys: self.target_system,
+            com: self.target_component,
+        };
+
+        if !server.param.id.is_target_of(target) {
             return Ok(());
         }
 
-        let Ok(ident) = Ident::try_from(&msg.param_id) else {
-            error!(
-                "[mavlink] The requested parameter identifier is not valid utf8: {:?}",
-                msg.param_id
-            );
-            return Ok(());
-        };
-
         match crate::tasks::param_storage::TABLES
-            .get_param(&msg.param_id)
+            .get_param(&self.param_id)
             .await
         {
             Ok(value) => {
-                debug!(
-                    "[mavlink] Read out the parameter {} as {:?}",
-                    ident.as_str(),
-                    value
-                );
-
-                let param_id = ident.as_raw().clone();
-                let (param_value, param_type) = value_into_mav_bytewise(value);
-
-                let message = ParamValue {
-                    param_id,
-                    param_value,
-                    param_type,
-                    param_count: u16::MAX,
-                    param_index: u16::MAX,
-                };
-
-                let target = Identity {
-                    sys: frame.header().system_id(),
-                    com: frame.header().component_id(),
-                };
-
-                server.send_mav_message(&message, target).await?;
+                send_parameter_value(server, Identity::from(&frame), value, &self.param_id).await?;
             }
             Err(error) => {
-                error!("[mavlink] Could not get the parameter: {:?}", error,)
+                match core::str::from_utf8(&self.param_id) {
+                    Ok(ident) => error!("[mavlink] Could not get the parameter: {:?} utf8({})", error, ident),
+                    _ => error!("[mavlink] Could not get the parameter: {:?} raw({:?})", error, self.param_id),
+                }
             }
         }
 
@@ -99,13 +93,17 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamRequestRead {
 
 impl<V: MaybeVersioned> super::Handler<V> for ParamRequestList {
     async fn handle_inner(
+        self,
         server: &mut MavlinkServer,
-        msg: Self,
         frame: Frame<V>,
     ) -> Result<(), crate::mavlink2::Error> {
-        // Message was not intended for us, ignore it // TODO routing?
-        if msg.target_system != server.param.id.sys || msg.target_component != server.param.id.com {
-            debug!("[mavlink] Received a ParamRequestList not intended for us");
+
+        let target = Identity {
+            sys: self.target_system,
+            com: self.target_component,
+        };
+
+        if !server.param.id.is_target_of(target) {
             return Ok(());
         }
 
@@ -141,11 +139,11 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamRequestList {
                         param_index += 1;
 
                         let target = Identity {
-                            sys: frame.header().system_id(),
-                            com: frame.header().component_id(),
+                            sys: frame.system_id(),
+                            com: frame.component_id(),
                         };
 
-                        server.send_mav_message(&message, target).await?;
+                        server.send_mav_message(&message, target.into()).await?;
                     }
                     Err(_) => error!("[mavlink] A parameter could not be fetched"),
                 }
@@ -158,23 +156,28 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamRequestList {
 
 impl<V: MaybeVersioned> super::Handler<V> for ParamSet {
     async fn handle_inner(
+        self,
         server: &mut MavlinkServer,
-        msg: Self,
-        _: Frame<V>,
+        frame: Frame<V>,
     ) -> Result<(), crate::mavlink2::Error> {
-        // Message was not intended for us, ignore it // TODO routing?
-        if msg.target_system != server.param.id.sys || msg.target_component != server.param.id.com {
-            debug!("[mavlink] Received a ParamRequestList not intended for us");
+
+        let target_id = Identity {
+            sys: self.target_system,
+            com: self.target_component,
+        };
+
+        // Require total match for setting parameter
+        if target_id != server.param.id {
             return Ok(());
         }
 
-        let Some(value) = value_from_mav_bytewise(msg.param_value, msg.param_type) else {
+        let Some(value) = value_from_mav_bytewise(self.param_value, self.param_type) else {
             error!("[mavlink] An invalid parameter type was used in ParamSet command");
             return Ok(());
         };
 
         match crate::tasks::param_storage::TABLES
-            .set_param(&msg.param_id, value)
+            .set_param(&self.param_id, value)
             .await
         {
             Ok(ident) => {
@@ -182,10 +185,24 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamSet {
                     "[mavlink] Set the parameter {:?} to {:?}",
                     ident.as_str(),
                     value
-                )
+                );
             }
             Err(error) => {
-                error!("[mavlink] Could not set the parameter: {:?}", error,)
+                error!("[mavlink] Could not set the parameter: {:?}", error,);
+                return Err(crate::mavlink2::Error::MaxNumberPorts) // TODO Correct error?
+            }
+        }
+
+        match crate::tasks::param_storage::TABLES
+            .get_param(&self.param_id)
+            .await
+        {
+            Ok(value) => {
+                send_parameter_value(server, Identity::from(&frame), value, &self.param_id).await?;
+            }
+            Err(error) => {
+                error!("[mavlink] Could not get the parameter: {:?}", error,);
+                return Err(crate::mavlink2::Error::MaxNumberPorts) // TODO Correct error?
             }
         }
 

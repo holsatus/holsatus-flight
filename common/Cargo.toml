@@ -89,14 +89,9 @@ nalgebra = { version = "0.34.0", default-features = false, features = [
     "libm",
 ] }
 
-eskf = { git = "https://github.com/peterkrull/eskf-rs", default-features = false, features = [
+eskf_rs = { git = "https://github.com/peterkrull/eskf-rs", default-features = false, features = [
     "no_std",
 ] }
-
-# mavlink = { git = "https://github.com/holsatus/rust-mavlink", default-features = false, features = [
-#     "holsatus",
-#     "embedded"
-# ], optional = true}
 
 futures = { version = "0.3.31", default-features = false, features = [
     "async-await",
@@ -116,6 +111,11 @@ icm20948-async = { git = "https://github.com/peterkrull/icm20948-async/", rev = 
     "align-mag",
     "serde",
 ] }
+
+# icm20948-async = { git = "https://github.com/stachursky444/icm20948-async", branch = "fix-spi-interface", features = [
+#     "align-mag",
+#     "serde",
+# ] }
 
 ahrs = { git = "https://github.com/jmagnuson/ahrs-rs", rev = "4a4fb76", default-features = false }
 kalman_filter = { git = "https://github.com/peterkrull/kalman-filter-rs" }

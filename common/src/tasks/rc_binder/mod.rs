@@ -82,6 +82,11 @@ pub mod params {
                 digital_binds(&[ // Button D
                     (POS_3, DigitalEvent::DoGyrCalibrate),
                 ]),
+
+                digital_binds(&[ /* Button E */ ]),
+                digital_binds(&[ /* Button F */ 
+                    (POS_3, DigitalEvent::EskfResetOrigin),
+                ]),
             ])
         })
     );
@@ -191,6 +196,8 @@ pub mod params {
         DisarmVehicle,
         ForceDisarmVehicle,
 
+        EskfResetOrigin = 150,
+
         DoAccCalibrate = 200,
         DoGyrCalibrate,
         DoMagCalibrate,
@@ -248,6 +255,7 @@ pub mod params {
                 DigitalEvent::SetModeRate => SetControlMode::Rate.into(),
                 DigitalEvent::SetModeAngle => SetControlMode::Angle.into(),
                 DigitalEvent::SetModeAutonomous => SetControlMode::Autonomous.into(),
+                DigitalEvent::EskfResetOrigin => Self::EskfResetOrigin,
             };
 
             Ok(command)

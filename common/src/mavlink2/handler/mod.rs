@@ -5,13 +5,14 @@ use mavio::{
 
 use crate::mavlink2::MavlinkServer;
 
+pub mod command;
 pub mod param;
 pub mod vicon;
 
 pub trait Handler<V: MaybeVersioned> {
     async fn handle_inner(
+        self,
         server: &mut MavlinkServer,
-        msg: Self,
         frame: Frame<V>,
     ) -> Result<(), super::Error>;
 
@@ -19,7 +20,7 @@ pub trait Handler<V: MaybeVersioned> {
     where
         for<'a> Self: MessageSpecStatic + TryFrom<&'a Payload, Error = SpecError>,
     {
-        let msg = frame.decode_message::<Self>()?;
-        Self::handle_inner(server, msg, frame).await
+        let this = frame.decode_message::<Self>()?;
+        this.handle_inner(server, frame).await
     }
 }

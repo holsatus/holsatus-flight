@@ -25,8 +25,18 @@ assign_resources! {
         periph: I2C1,
         sda: PB9,
         scl: PB8,
-        tx_dma: DMA1_CH6,
+        tx_dma: DMA1_CH7,
         rx_dma: DMA1_CH0,
+    }
+    spi_1: Spi1 {
+        periph: SPI1,
+        sck: PB3,
+        miso: PB4,
+        mosi: PB5,
+        rx_dma: DMA2_CH0,
+        tx_dma: DMA2_CH5,
+        cs_1: PA0,
+        cs_2: PA1,
     }
     usart_1: Usart1 {
         periph: USART1,
@@ -34,6 +44,13 @@ assign_resources! {
         tx_pin: PA9,
         rx_dma: DMA2_CH2,
         tx_dma: DMA2_CH7,
+    }
+    usart_2: Usart2 {
+        periph: USART2,
+        rx_pin: PA3,
+        tx_pin: PA2,
+        rx_dma: DMA1_CH5,
+        tx_dma: DMA1_CH6,
     }
     usart_3: Usart3 {
         periph: USART3,
@@ -77,7 +94,7 @@ assign_resources! {
     }
 }
 
-pub fn assign(p: Peripherals) -> AssignedResources {
+pub fn split(p: Peripherals) -> AssignedResources {
     split_resources!(p)
 }
 
@@ -118,6 +135,30 @@ impl I2c1 {
 pub(crate) async fn imu_reader(i2c: I2c1, i2c_cfg: I2cConfig, imu_cfg: ImuConfig) -> ! {
     let i2c = i2c.setup(i2c_cfg);
     common::tasks::imu_reader::main_6dof_i2c(i2c, imu_cfg, Some(0x69)).await
+}
+
+// ----------------------------------------------------------
+// ------------------------- SPI ----------------------------
+// ----------------------------------------------------------
+
+impl Spi1 {
+    pub fn setup(self) -> impl embedded_hal_async::spi::SpiBus {
+        embassy_stm32::spi::Spi::new(
+            self.periph,
+            self.sck,
+            self.mosi,
+            self.miso,
+            self.tx_dma,
+            self.rx_dma,
+            Default::default(),
+        )
+    }
+}
+
+#[embassy_executor::task]
+pub(crate) async fn spi_reader(spi: Spi1) -> ! {
+    let i2c = spi.setup();
+    todo!("Not implemented yet")
 }
 
 // ----------------------------------------------------------
@@ -350,6 +391,9 @@ use common::grantable_io::GrantableIo;
 static BUF_RX1: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
 static BUF_TX1: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
 
+static BUF_RX2: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
+static BUF_TX2: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
+
 static BUF_RX3: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
 static BUF_TX3: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
 
@@ -357,6 +401,7 @@ static BUF_RX6: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
 static BUF_TX6: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
 
 impl_ring_buffered_usart_setup!(run_usart1, Usart1, USART1, rb = 32, BUF_RX1, BUF_TX1);
+impl_ring_buffered_usart_setup!(run_usart2, Usart2, USART2, rb = 32, BUF_RX2, BUF_TX2);
 impl_ring_buffered_usart_setup!(run_usart3, Usart3, USART3, rb = 32, BUF_RX3, BUF_TX3);
 impl_ring_buffered_usart_setup!(run_usart6, Usart6, USART6, rb = 32, BUF_RX6, BUF_TX6);
 

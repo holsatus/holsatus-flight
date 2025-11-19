@@ -2,6 +2,7 @@ pub mod angle_pid;
 pub mod linear_lut;
 pub mod motor_lin;
 pub mod rate_pid;
+pub mod statistics;
 
 use core::array::from_fn;
 use num_traits::Float;

@@ -1,4 +1,4 @@
-use core::num::Wrapping;
+use core::num::{NonZeroU16, Wrapping};
 
 use embassy_executor::SendSpawner;
 use maitake_sync::WaitMap;
@@ -54,7 +54,7 @@ macro_rules! enforce_mav_target {
 struct MavlinkServer {
     param: Parameters,
     interfaces: MultiInterface,
-    next_peer_timeout: Option<Instant>,
+    next_peer_timeout: Option<(Identity, Instant)>,
 }
 
 #[derive(Debug)]
@@ -66,49 +66,49 @@ struct Interface {
     peers: Vec<Peer, MAX_NUM_PEERS>,
 }
 
-static STREAM_MAP: WaitMap<u8, Option<params::Stream>> = WaitMap::new();
+impl Interface {
+    fn new(stream: IoStream) -> Self {
+        Self {
+            stream_id: stream.name().id(),
+            stream,
+            parser: FrameParser::new(),
+            sequence: Wrapping(0),
+            peers: Vec::new(),
+        }
+    }
 
-#[embassy_executor::task(pool_size = MAX_NUM_STREAMS)]
-async fn stream_runner(id: u8) {
-    let mut opt_stream = None;
-    loop {
-        match select(STREAM_MAP.wait(id), async {
-            match opt_stream {
-                // Send the generator for broadcast and wait the duration.
-                // Waiting the duration is not as precise timing-wise
-                // as using a ticker, but it does degrade more gracefully
-                // during high throughput.
-                Some((generator, duration)) => loop {
-                    CHANNEL
-                        .send(Message::SendGenerator {
-                            generator,
-                            target: Target::Broadcast,
-                        })
-                        .await;
-                    Timer::after(duration).await;
-                },
-                // We are not configured  to do anything, pend forever
-                None => core::future::pending::<()>().await,
-            }
-        })
-        .await
-        {
-            Either::First(Ok(new_stream)) => {
-                // Map the message into something more useful
-                opt_stream = new_stream.and_then(|stream| {
-                    Some((
-                        Generator::from_id(stream.message_id)?,
-                        Duration::from_millis(stream.interval_ms as u64),
-                    ))
-                });
-            }
-            // The second future never returns by itself, the the WaitMap
-            // is never closed, so we never get to this point in reality.
-            _ => (),
+    pub fn has_peer(&self, peer_id: &Identity) -> bool {
+        self.peers.iter().any(|p| p.identity == *peer_id)
+    }
+
+    pub async fn send_frame(
+        &mut self,
+        message: &dyn mavio::Message,
+        param: &Parameters,
+    ) -> Result<(), Error> {
+        let frame = build_frame::<V2>(param, message, self.sequence.0)?;
+
+        let mut buffer = [0u8; 280];
+        let bytes = frame.serialize(&mut buffer)?;
+        let slice = &buffer[..bytes];
+
+        self.stream.write_all(slice).await.map_err(self.map_err())?;
+
+        self.sequence += 1;
+
+        Ok(())
+    }
+
+    /// Slightly crusty function to add an identifier to the io error.
+    fn map_err(&self) -> impl Fn(EmbeddedIoError) -> Error + use<'_> {
+        |err: EmbeddedIoError| Error::Io {
+            err,
+            stream_id: self.stream_id,
         }
     }
 }
 
+/// Handle multiple interfaces
 struct MultiInterface([Option<Interface>; MAX_NUM_INTERFACES]);
 
 impl MultiInterface {
@@ -160,17 +160,17 @@ impl MultiInterface {
     ///
     /// This is used to determine when the server should check for
     /// inactive peers and remove them.
-    fn find_next_peer_timeout(&mut self) -> Option<Instant> {
-        let mut soonest_timeout = Instant::MAX;
+    fn find_next_peer_timeout(&mut self) -> Option<(Identity, Instant)> {
+        let mut soonest_timeout = (Identity::default(), Instant::MAX);
         for port in self.iter() {
             if let Some(peer) = port.peers.iter().min_by_key(|p| p.last_seen) {
-                if peer.last_seen < soonest_timeout {
-                    soonest_timeout = peer.last_seen;
+                if peer.last_seen < soonest_timeout.1 {
+                    soonest_timeout = (peer.identity, peer.last_seen);
                 }
             }
         }
 
-        (soonest_timeout != Instant::MAX).then_some(soonest_timeout)
+        (soonest_timeout.1 != Instant::MAX).then_some(soonest_timeout)
     }
 
     pub async fn recv_frame(&mut self) -> (Result<Frame<V2>, EmbeddedIoError>, StreamId) {
@@ -216,44 +216,44 @@ impl MultiInterface {
     }
 }
 
-impl Interface {
-    fn new(stream: IoStream) -> Self {
-        Self {
-            stream_id: stream.name().id(),
-            stream,
-            parser: FrameParser::new(),
-            sequence: Wrapping(0),
-            peers: Vec::new(),
-        }
-    }
+/// Propagate message stream configuration to runner tasks
+static STREAM_MAP: WaitMap<u8, Option<params::Stream>> = WaitMap::new();
 
-    pub fn has_peer(&self, peer_id: &Identity) -> bool {
-        self.peers.iter().any(|p| p.identity == *peer_id)
-    }
-
-    pub async fn send_frame(
-        &mut self,
-        message: &dyn mavio::Message,
-        param: &Parameters,
-    ) -> Result<(), Error> {
-        let frame = build_frame::<V2>(param, message, self.sequence.0)?;
-
-        let mut buffer = [0u8; 280];
-        let bytes = frame.serialize(&mut buffer)?;
-        let slice = &buffer[..bytes];
-
-        self.stream.write_all(slice).await.map_err(self.map_err())?;
-
-        self.sequence += 1;
-
-        Ok(())
-    }
-
-    /// Slightly crusty function to add an identifier to the io error.
-    fn map_err(&self) -> impl Fn(EmbeddedIoError) -> Error + use<'_> {
-        |err: EmbeddedIoError| Error::Io {
-            err,
-            stream_id: self.stream_id,
+#[embassy_executor::task(pool_size = MAX_NUM_STREAMS)]
+async fn stream_runner(id: u8) {
+    let mut opt_stream = None;
+    loop {
+        match select(STREAM_MAP.wait(id), async {
+            match opt_stream {
+                // Send the generator for broadcast and wait the duration.
+                // Waiting the duration is not as precise timing-wise
+                // as using a ticker, but it does degrade more gracefully
+                // during high throughput.
+                Some((generator, duration)) => loop {
+                    CHANNEL
+                        .send(Message::SendGenerator {
+                            generator,
+                            target: Target::Broadcast,
+                        })
+                        .await;
+                    Timer::after(duration).await;
+                },
+                // We are not configured  to do anything, pend forever
+                None => core::future::pending::<()>().await,
+            }
+        })
+        .await
+        {
+            Either::First(Ok(new_stream)) => {
+                // Map the message into something more useful
+                opt_stream = new_stream.and_then(|stream| {
+                    Some((
+                        Generator::from_id(stream.message_id)?,
+                        Duration::from_millis(stream.interval_ms as u64),
+                    ))
+                });
+            }
+            _ => (),
         }
     }
 }
@@ -346,7 +346,19 @@ pub enum Message {
         generator: messages::Generator,
         target: Target,
     },
+    StreamGenerator {
+        generator: messages::Generator,
+        period_ms: GeneratorPeriod,
+    },
     Foo,
+}
+
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum GeneratorPeriod {
+    Disable,
+    Default,
+    Millis(NonZeroU16),
 }
 
 static CHANNEL: Channel<Message, 5> = Channel::new();
@@ -373,9 +385,6 @@ impl MavlinkServer {
 
         // The hearbeat microservice makes basic info available to others
         spawner.spawn(microservice::heartbeat::service_heartbeat().unwrap());
-
-        // For debugging, spawn the task streaming certain messages
-        spawner.spawn(messages::stream_position_set().unwrap());
 
         // Request and wait for the parameter table to be loaded
         let param = params::TABLE.read().await.clone();
@@ -415,7 +424,7 @@ impl MavlinkServer {
         let next_peer_timeout = self.next_peer_timeout;
         async move {
             match next_peer_timeout {
-                Some(timeout) => Timer::at(timeout).await,
+                Some((_, timeout)) => Timer::at(timeout).await,
                 None => core::future::pending().await,
             }
         }
@@ -460,14 +469,29 @@ impl MavlinkServer {
                 let message = generator.generate()?;
                 self.send_mav_message(&message, target).await?;
             }
+            Message::StreamGenerator {.. } => {
+
+                /* There are several cases that need to be handled here.
+                - If there is already a task streaming the message_id, update it
+                - If there is an inactive streamer task, run it
+                - If the requested period is Default, re-fetch the parameters
+                for (id, stream) in self.param.stream.iter().enumerate() {
+                    if stream.is_some_and(|stream|stream.message_id == generator as u32) {
+                        STREAM_MAP.wake(&id, val)
+                    }
+                }
+                */
+                warn!("[mavlink] TODO: Implement StreamGenerator")
+            }
         }
         Ok(())
     }
 
+    #[inline(never)]
     async fn send_mav_message(
         &mut self,
         message: &dyn mavio::Message,
-        target: impl Into<Target>,
+        target: Target,
     ) -> Result<(), Error> {
         let send_target = target.into();
         match send_target {
@@ -527,8 +551,10 @@ impl MavlinkServer {
                     com: frame.component_id(),
                 };
 
-                self.send_mav_message(&msg, target).await?;
+                self.send_mav_message(&msg, target.into()).await?;
             }
+
+            // TODO: SetGpsGlobalOrigin::ID => (right click menu in QGroundControl)
 
             // Parameter-protocol related messages
             m::ParamRequestRead::ID => m::ParamRequestRead::handle(self, frame).await?,
@@ -538,18 +564,12 @@ impl MavlinkServer {
             m::CommandInt::ID => {
                 let msg = frame.decode_message::<m::CommandInt>()?;
                 enforce_mav_target!(self, msg);
-                error!("[mavlink] TODO: Support CommandInt messages");
-                return Err(Error::UnsupportedMsg {
-                    id: m::CommandInt::ID,
-                });
+                m::CommandInt::handle(self, frame).await?;
             }
             m::CommandLong::ID => {
                 let msg = frame.decode_message::<m::CommandLong>()?;
                 enforce_mav_target!(self, msg);
-                error!("[mavlink] TODO: Support CommandLong messages");
-                return Err(Error::UnsupportedMsg {
-                    id: m::CommandLong::ID,
-                });
+                m::CommandLong::handle(self, frame).await?;
             }
 
             m::ViconPositionEstimate::ID => {
@@ -625,8 +645,33 @@ impl MavlinkServer {
             error!("[mavlink] Invalid link ID: {:?}", stream_id);
         }
 
+        if self.next_peer_timeout.is_some_and(|(peer, _)| peer == frame_identity) {
+            self.update_next_peer_timeout();
+        } else if self.next_peer_timeout.is_none() {
+            self.next_peer_timeout = Some((
+                frame_identity,
+                frame_seen + self.param.timeout()
+            ))
+        }
+
+        match self.next_peer_timeout {
+            Some((id, _)) if id == frame_identity => {
+                self.update_next_peer_timeout();
+            },
+            None => {
+                self.next_peer_timeout = Some((
+                    frame_identity,
+                    frame_seen + self.param.timeout()
+                ))
+            },
+            _ => ()
+        }
+
         if self.next_peer_timeout.is_none() {
-            self.next_peer_timeout = Some(frame_seen + self.param.timeout());
+            self.next_peer_timeout = Some((
+                frame_identity,
+                frame_seen + self.param.timeout()
+            ));
         }
 
         Ok(())
@@ -664,7 +709,7 @@ impl MavlinkServer {
         self.next_peer_timeout = self
             .interfaces
             .find_next_peer_timeout()
-            .map(|instant| instant + self.param.timeout())
+            .map(|(identity, instant)| (identity, instant + self.param.timeout()))
     }
 }
 

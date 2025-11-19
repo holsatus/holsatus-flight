@@ -8,15 +8,15 @@ use crate::{
 
 impl<V: MaybeVersioned> super::Handler<V> for ViconPositionEstimate {
     async fn handle_inner(
+        self,
         _server: &mut MavlinkServer,
-        msg: Self,
         _: Frame<V>,
     ) -> Result<(), crate::mavlink2::Error> {
         // TODO Refer to read-out implementation on XPS
 
         debug!("[mavlink] Received Vicon position estimate");
 
-        let c = &msg.covariance;
+        let c = &self.covariance;
 
         let mut pos_var = nalgebra::matrix![
             c[ 0], c[ 1], c[ 2];
@@ -41,9 +41,9 @@ impl<V: MaybeVersioned> super::Handler<V> for ViconPositionEstimate {
         }
 
         VICON_POSITION_ESTIMATE.send(ViconData {
-            timestamp_us: msg.usec,
-            position: [msg.x, msg.y, msg.z],
-            attitude: [msg.roll, msg.pitch, msg.yaw],
+            timestamp_us: self.usec,
+            position: [self.x, self.y, self.z],
+            attitude: [self.roll, self.pitch, self.yaw],
             pos_var: pos_var.data.0,
             att_var: att_var.data.0,
         });

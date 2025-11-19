@@ -50,6 +50,10 @@ pub(crate) fn usart1() -> UartConfig {
     UartConfig { baud: 420_000 }
 }
 
+pub(crate) fn usart2() -> UartConfig {
+    UartConfig { baud: 115_200 }
+}
+
 pub(crate) fn usart3() -> UartConfig {
     UartConfig { baud: 115_200 }
 }
