@@ -42,13 +42,12 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Broadcast<T, N, M> {
     /// # Example
     ///
     /// ```rust
-    /// use mutex::raw_impls::cs::CriticalSectionRawMutex as Mutex;
-    /// use holsatus_sync::broadcast::Broadcast;
+    /// use common::sync::broadcast::Broadcast;
     ///
     /// #[derive(Clone, PartialEq)]
     /// struct Message(u8);
     ///
-    /// static BROADCAST: Broadcast<Message, Mutex, 2> = Broadcast::new();
+    /// static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
     ///
     /// let sender = BROADCAST.sender();
     /// let mut receiver = BROADCAST.receiver();
@@ -88,13 +87,12 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Broadcast<T, N, M> {
     /// # Example
     ///
     /// ```rust
-    /// use mutex::raw_impls::cs::CriticalSectionRawMutex as Mutex;
-    /// use holsatus_sync::broadcast::Broadcast;
+    /// use common::sync::broadcast::Broadcast;
     ///
     /// #[derive(Clone)]
     /// struct Message(u8);
     ///
-    /// static BROADCAST: Broadcast<Message, Mutex, 2> = Broadcast::new();
+    /// static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
     ///
     /// let receiver = BROADCAST.receiver();
     /// ```
@@ -122,13 +120,12 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Broadcast<T, N, M> {
     /// # Example
     ///
     /// ```rust
-    /// use mutex::raw_impls::cs::CriticalSectionRawMutex as Mutex;
-    /// use holsatus_sync::broadcast::Broadcast;
+    /// use common::sync::broadcast::Broadcast;
     ///
     /// #[derive(Clone)]
     /// struct Message(u8);
     ///
-    /// static BROADCAST: Broadcast<Message, Mutex, 2> = Broadcast::new();
+    /// static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
     ///
     /// let sender = BROADCAST.sender();
     /// ```
@@ -285,13 +282,12 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Sender<'_, T, N, M> {
     /// # Example
     ///
     /// ```rust
-    /// use mutex::raw_impls::cs::CriticalSectionRawMutex as Mutex;
-    /// use holsatus_sync::broadcast::Broadcast;
+    /// use common::sync::broadcast::Broadcast;
     ///
     /// #[derive(Clone)]
     /// struct Message(u8);
     ///
-    /// let broadcast = Broadcast::<Message, Mutex, 2>::new();
+    /// let broadcast = Broadcast::<Message, 2>::new();
     ///
     /// let sender = broadcast.sender();
     /// let _receiver = broadcast.receiver();
@@ -315,13 +311,12 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Sender<'_, T, N, M> {
     /// # Example
     ///
     /// ```rust
-    /// use mutex::raw_impls::cs::CriticalSectionRawMutex as Mutex;
-    /// use holsatus_sync::broadcast::Broadcast;
+    /// use common::sync::broadcast::Broadcast;
     ///
     /// #[derive(Clone, PartialEq)]
     /// struct Message(u8);
     ///
-    /// static BROADCAST: Broadcast<Message, Mutex, 2> = Broadcast::new();
+    /// static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
     ///
     /// let sender = BROADCAST.sender();
     /// let mut receiver = BROADCAST.receiver();
@@ -352,13 +347,12 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Sender<'_, T, N, M> {
     /// # Example
     ///
     /// ```rust
-    /// use mutex::raw_impls::cs::CriticalSectionRawMutex as Mutex;
-    /// use holsatus_sync::broadcast::Broadcast;
+    /// use common::sync::broadcast::Broadcast;
     ///
     /// #[derive(Clone)]
     /// struct Message(u8);
     ///
-    /// static BROADCAST: Broadcast<Message, Mutex, 2> = Broadcast::new();
+    /// static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
     ///
     /// let sender = BROADCAST.sender();
     ///
@@ -391,13 +385,12 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Receiver<'_, T, N, M> {
     /// # Example
     ///
     /// ```rust
-    /// use mutex::raw_impls::cs::CriticalSectionRawMutex as Mutex;
-    /// use holsatus_sync::broadcast::Broadcast;
+    /// use common::sync::broadcast::Broadcast;
     ///
     /// #[derive(Clone, PartialEq)]
     /// struct Message(u8);
     ///
-    /// static BROADCAST: Broadcast<Message, Mutex, 2> = Broadcast::new();
+    /// static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
     ///
     /// let sender = BROADCAST.sender();
     /// let mut receiver = BROADCAST.receiver();
@@ -426,13 +419,12 @@ impl<T: Clone, M: ScopedRawMutex, const N: usize> Receiver<'_, T, N, M> {
     /// # Example
     ///
     /// ```rust
-    /// use mutex::raw_impls::cs::CriticalSectionRawMutex as Mutex;
-    /// use holsatus_sync::broadcast::Broadcast;
+    /// use common::sync::broadcast::Broadcast;
     ///
     /// #[derive(Clone, PartialEq)]
     /// struct Message(u8);
     ///
-    /// static BROADCAST: Broadcast<Message, Mutex, 2> = Broadcast::new();
+    /// static BROADCAST: Broadcast<Message, 2> = Broadcast::new();
     ///
     /// let sender = BROADCAST.sender();
     /// let mut receiver = BROADCAST.receiver();

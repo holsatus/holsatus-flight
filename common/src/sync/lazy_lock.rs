@@ -10,7 +10,7 @@ use portable_atomic::{AtomicBool, Ordering};
 /// # Example
 /// ```
 /// use futures_executor::block_on;
-/// use holsatus_sync::lazy_lock::LazyLock;
+/// use common::sync::lazy_lock::LazyLock;
 ///
 /// // Define a static value that will be lazily initialized
 /// // at runtime at the first access.

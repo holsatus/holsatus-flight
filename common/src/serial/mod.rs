@@ -10,7 +10,7 @@ use embedded_io_async::BufRead;
 use heapless::Vec;
 
 use crate::{
-    errors::adapter::embedded_io::EmbeddedIoError, sync::serial::BufReadExt, MAX_IO_STREAMS,
+    errors::adapter::embedded_io::EmbeddedIoError, utils::buf_read_ext::BufReadExt, MAX_IO_STREAMS,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

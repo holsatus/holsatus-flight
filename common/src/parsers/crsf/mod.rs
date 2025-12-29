@@ -44,7 +44,7 @@ pub const CRSF_SYNC_BYTE: u8 = 0xC8;
 const CRSF_HEADER_LEN: usize = 2;
 
 use crate::serial::IoReader;
-use crate::sync::serial::BufReadExt;
+use crate::utils::buf_read_ext::BufReadExt;
 use crate::utils::crc8::Crc8;
 use embedded_io_async::Read;
 use packet_containers::{Packet, RawPacket};

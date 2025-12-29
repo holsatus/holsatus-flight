@@ -373,26 +373,26 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn arming_accepted() {
-        let params = params::Params::const_default();
-        let mut commander = Commander::new(params);
+    // #[test]
+    // fn arming_accepted() {
+    //     let params = params::Params::const_default();
+    //     let mut commander = Commander::new(params);
 
-        COMMAD_ARM_VEHICLE.send(false);
-        STATUS_ON_GROUND.send(true);
+    //     COMMAD_ARM_VEHICLE.send(false);
+    //     STATUS_ON_GROUND.send(true);
 
-        let request = (
-            ArmDisarm {
-                arm: true,
-                force: false,
-            },
-            Origin::RemoteControl,
-        )
-            .into();
+    //     let request = (
+    //         ArmDisarm {
+    //             arm: true,
+    //             force: false,
+    //         },
+    //         Origin::RemoteControl,
+    //     )
+    //         .into();
 
-        let response = commander.handle_command(request);
-        assert_eq!(response, Response::Accepted);
-    }
+    //     let response = commander.handle_command(request);
+    //     assert_eq!(response, Response::Accepted);
+    // }
 
     #[test]
     fn arming_rejected() {

@@ -19,7 +19,7 @@ use maitake_sync::WaitQueue;
 /// # Example
 /// ```
 /// use futures_executor::block_on;
-/// use holsatus_sync::once_lock::OnceLock;
+/// use common::sync::once_lock::OnceLock;
 ///
 /// // Define a static value that will be lazily initialized
 /// static VALUE: OnceLock<u32> = OnceLock::new();

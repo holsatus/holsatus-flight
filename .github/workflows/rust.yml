@@ -48,7 +48,7 @@ jobs:
       run: cargo build --no-default-features --manifest-path common/Cargo.toml --features "mpc usb mavlink gnss" --verbose
 
     - name: Run tests in Holsatus Flight "common" library
-      run: cargo test --no-default-features --manifest-path common/Cargo.toml --verbose
+      run: cargo test --no-default-features --manifest-path common/Cargo.toml --features "std" --verbose -- --test-threads=1
 
     - name: Build binary for stm32f405-dev target
       run: |
