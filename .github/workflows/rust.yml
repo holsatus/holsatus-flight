@@ -36,20 +36,16 @@ jobs:
       run: cargo build --no-default-features --manifest-path common/Cargo.toml --verbose
 
     - name: Build Holsatus Flight "common" library with "mpc"
-      run: cargo build --no-default-features --manifest-path common/Cargo.toml \
-        --features "mpc" --verbose
+      run: cargo build --no-default-features --manifest-path common/Cargo.toml --features "mpc" --verbose
 
     - name: Build Holsatus Flight "common" library with "mpc usb"
-      run: cargo build --no-default-features --manifest-path common/Cargo.toml \
-        --features "mpc usb" --verbose
+      run: cargo build --no-default-features --manifest-path common/Cargo.toml --features "mpc usb" --verbose
 
     - name: Build Holsatus Flight "common" library with "mpc usb mavlink"
-      run: cargo build --no-default-features --manifest-path common/Cargo.toml \
-        --features "mpc usb mavlink" --verbose
+      run: cargo build --no-default-features --manifest-path common/Cargo.toml --features "mpc usb mavlink" --verbose
 
     - name: Build Holsatus Flight "common" library with "mpc usb mavlink gnss"
-      run: cargo build --no-default-features --manifest-path common/Cargo.toml \
-        --features "mpc usb mavlink gnss" --verbose
+      run: cargo build --no-default-features --manifest-path common/Cargo.toml --features "mpc usb mavlink gnss" --verbose
 
     - name: Run tests in Holsatus Flight "common" library
       run: cargo test --no-default-features --manifest-path common/Cargo.toml --verbose
