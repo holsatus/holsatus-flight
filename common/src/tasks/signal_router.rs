@@ -1,3 +1,6 @@
+#[cfg(not(feature = "mpc"))]
+use core::future::pending;
+
 use futures::{select_biased, FutureExt};
 use nalgebra::UnitQuaternion;
 
@@ -81,6 +84,15 @@ pub async fn main() -> ! {
     );
 
     loop {
+
+        #[cfg(feature = "mpc")]
+        let fut_mpc_angle_sp = rcv_mpc_angle_sp.changed();
+        #[cfg(feature = "mpc")]
+        let fut_mpc_force_sp = rcv_mpc_force_sp.changed();
+
+        #[cfg(not(feature = "mpc"))]
+        let (fut_mpc_angle_sp, fut_mpc_force_sp) = (pending::<()>(), pending::<()>());
+
         // Listen to all signals in order of priority, and handle them asyncronously.
         select_biased! {
 
@@ -151,16 +163,24 @@ pub async fn main() -> ! {
             },
 
             // Route MPC-generated attitude into angle controller
-            mpc_angle_sp = rcv_mpc_angle_sp.changed().fuse() => {
+            mpc_angle_sp = fut_mpc_angle_sp.fuse() => {
+                #[cfg(feature = "mpc")]
                 if control_mode == ControlMode::Autonomous {
                     snd_angle_sp.send(mpc_angle_sp);
+                }
+                #[cfg(not(feature = "mpc"))] {
+                    _ = mpc_angle_sp;
                 }
             }
 
             // Route MPC-generated total thrust force
-            mpc_force_sp = rcv_mpc_force_sp.changed().fuse() => {
+            mpc_force_sp = fut_mpc_force_sp.fuse() => {
+                #[cfg(feature = "mpc")]
                 if control_mode == ControlMode::Autonomous {
                     snd_z_thrust_sp.send(mpc_force_sp);
+                }
+                #[cfg(not(feature = "mpc"))] {
+                    _ = mpc_force_sp;
                 }
             }
         };
