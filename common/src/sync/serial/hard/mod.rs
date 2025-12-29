@@ -148,6 +148,10 @@ impl Write for HardWriter<'_> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         Ok(HardWriter::write(self, buf).await)
     }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 impl ErrorType for HardWriter<'_> {

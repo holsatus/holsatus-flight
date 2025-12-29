@@ -348,6 +348,9 @@ mod gnss_fusion {
     use eskf_rs::NavigationFilter;
     use nalgebra::{SMatrix, Vector3};
 
+    #[allow(unused_imports)]
+    use num_traits::Float as _;
+
     use crate::{tasks::eskf::{GnssPoint, KM_PER_DEG_OF_LAT, lat_factor}, types::measurements::GnssData};
 
     pub struct EskfGnssFusion {

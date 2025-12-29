@@ -33,14 +33,14 @@ impl<'a, W: Write<Error = E>, E: embedded_io::Error> SyncWrite for SyncWriter<'a
         // The mutex is expected to never be locked, since the CLI is evaluated
         // before anything else in the loop
         let mut writer = self.writer.try_lock().expect("Failed to lock writer");
-        embassy_futures::block_on(async { writer.write(buf).await })
+        embassy_futures::block_on(writer.write(buf))
     }
 
     fn flush(&mut self) -> Result<(), Self::Error> {
         // The mutex is expected to never be locked, since the CLI is evaluated
         // before anything else in the loop
         let mut writer = self.writer.try_lock().expect("Failed to lock writer");
-        embassy_futures::block_on(async { writer.flush().await })
+        embassy_futures::block_on(writer.flush())
     }
 }
 

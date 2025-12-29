@@ -144,6 +144,8 @@ pub(crate) fn rerun_thread(
     const TRAIL_LEN: usize = 1000;
     let mut pos_trail: VecDeque<Vec3D> = VecDeque::with_capacity(TRAIL_LEN);
 
+    let mut mpc_intercept_pos = common::tasks::controller_mpc::MPC_INTERCEPT_POS.receiver();
+
     loop {
         log_ticker.next();
 
@@ -254,6 +256,21 @@ pub(crate) fn rerun_thread(
                 "sim/firmware/mpc_position_pred",
                 &LineStrips3D::new([slices]),
             )?;
+        }
+
+        if let Some(intercept_pos) = mpc_intercept_pos.try_changed() {
+            if let Some(intercept_pos) = intercept_pos {
+                rec.log(
+                    "sim/firmware/mpc_intercept_pos",
+                    &Points3D::new([intercept_pos]).with_radii([1.0]),
+                )?;
+            } else {
+                let empty: &[[f32; 3]] = &[]; 
+                rec.log(
+                    "sim/firmware/mpc_intercept_pos",
+                    &Points3D::new(empty),
+                )?;
+            }
         }
 
         if let Some(rate_sp) = common::signals::TRUE_RATE_SP.try_get() {

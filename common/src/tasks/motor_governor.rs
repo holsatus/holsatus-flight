@@ -71,7 +71,7 @@ pub mod params {
         }
     );
 
-    pub static TABLE: Table<Params> = Table::new("mtr", Params::const_default());
+    pub static TABLE: Table<Params> = Table::default("mtr");
 }
 
 pub async fn main(mut motors: impl OutputGroup) -> ! {

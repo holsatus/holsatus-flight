@@ -32,13 +32,18 @@ pub mod params {
 
     #[derive(mav_param::Tree, Clone)]
     pub struct Params {
+        #[param(rename = "grace_ms")]
+        pub rearm_grace_ms: u16,
         #[param(rename = "tick_ms")]
         pub periodics_ms: u16,
     }
 
     impl Params {
         pub const fn const_default() -> Self {
-            Params { periodics_ms: 500 }
+            Params { 
+                rearm_grace_ms: 5000,
+                periodics_ms: 500,
+            }
         }
     }
 
@@ -48,8 +53,9 @@ pub mod params {
 /// The main commander task
 struct Commander {
     name: &'static str,
-    ticker: Ticker,
+    periodics_ticker: Ticker,
     disarm_info: DisarmInfo,
+    rearm_grace_period: Duration,
     actuator_override_active: bool,
 }
 
@@ -63,11 +69,12 @@ impl Commander {
     fn new(params: params::Params) -> Self {
         Self {
             name: "commander",
-            ticker: Ticker::every(Duration::from_millis(params.periodics_ms as u64)),
+            periodics_ticker: Ticker::every(Duration::from_millis(params.periodics_ms as u64)),
             disarm_info: DisarmInfo {
                 time: Instant::MIN,
                 origin: Origin::Unspecified,
             },
+            rearm_grace_period: Duration::from_millis(params.rearm_grace_ms as u64),
             actuator_override_active: false,
         }
     }
@@ -99,7 +106,7 @@ impl Commander {
     async fn main_loop(&mut self) -> ! {
         trace!("[{}] Starting main loop", self.name);
         loop {
-            match select(PROCEDURE.receive_request(), self.ticker.next()).await {
+            match select(PROCEDURE.receive_request(), self.periodics_ticker.next()).await {
                 Either::First((command, handle)) => {
                     let response = self.handle_command(command);
                     handle.respond(response)
@@ -115,6 +122,8 @@ impl Commander {
     /// hold up the commander. If some action takes time, it should be
     /// delegated to another task, and if some action is temporarily
     /// rejected, this should just be reflected in the response.
+    /// 
+    /// Maybe this will be relaxed in the future with an async timeout?
     fn handle_command(&mut self, request: Request) -> Response {
         trace!("[{}] Handling command: {:?}", self.name, request);
         match request.command {
@@ -125,12 +134,12 @@ impl Commander {
             Command::DoCalibration(cmd) => {
                 use crate::calibration::{AccCalib, Calibrate, GyrCalib};
 
-                if COMMAD_ARM_VEHICLE.is(&true) {
+                if COMMAD_ARM_VEHICLE.partial_eq(&true) {
                     error!("[{}] Cannot calibrate when armed", self.name);
                     return Response::Rejected;
                 }
 
-                if !CALIBRATOR_STATE.is(&CalibratorState::Idle) {
+                if !CALIBRATOR_STATE.partial_eq(&CalibratorState::Idle) {
                     error!("[{}] Another calibration is already in progress", self.name);
                 }
 
@@ -153,7 +162,7 @@ impl Commander {
                     return Response::Rejected;
                 }
 
-                if COMMAD_ARM_VEHICLE.is(&false) {
+                if COMMAD_ARM_VEHICLE.partial_eq(&false) {
                     error!("[{}] Must be armed to override actuators", self.name);
                     return Response::Rejected;
                 }
@@ -171,7 +180,7 @@ impl Commander {
             }
             Command::SetActuatorOverride { active } => {
                 if active {
-                    if STATUS_ON_GROUND.is(&false) {
+                    if STATUS_ON_GROUND.partial_eq(&false) {
                         error!("[{}] Vehicle must be on ground to override", self.name);
                         return Response::Rejected;
                     }
@@ -206,6 +215,7 @@ impl Commander {
 
                 Response::Accepted
             },
+            #[cfg(feature = "gnss")]
             Command::EskfResetOrigin => {
                 use crate::tasks::eskf::{Message, CHANNEL};
                 if CHANNEL.try_send(Message::GnssResetOrigin).is_ok() {
@@ -213,6 +223,10 @@ impl Commander {
                 } else {
                     Response::Failed
                 }
+            }
+            #[cfg(not(feature = "gnss"))]
+            Command::EskfResetOrigin => {
+                Response::Unsupported
             }
         }
     }
@@ -224,7 +238,7 @@ impl Commander {
 
     /// Run necessary checks and arm the vehicle
     fn arm_vehicle(&mut self, force: bool) -> Response {
-        if COMMAD_ARM_VEHICLE.is(&true) {
+        if COMMAD_ARM_VEHICLE.partial_eq(&true) {
             info!("[{}] Vehicle already armed", self.name);
             return Response::Unchanged;
         }
@@ -247,7 +261,7 @@ impl Commander {
 
     /// Run necessary checks and disarm the vehicle
     fn disarm_vehicle(&mut self, force: bool, origin: Origin) -> Response {
-        if COMMAD_ARM_VEHICLE.is(&false) {
+        if COMMAD_ARM_VEHICLE.partial_eq(&false) {
             info!("[{}] Vehicle already disarmed", self.name);
             return Response::Unchanged;
         }
@@ -279,7 +293,10 @@ impl Commander {
     /// e.g. if re-arming within a grace period
     fn arm_skip_condition(&self) -> bool {
         // Skip checks if manually disarmed within last 5 seconds
-        if self.disarm_info.time.elapsed() < Duration::from_secs(5)
+        if self.disarm_info.time.elapsed() < self.rearm_grace_period
+
+            // TODO: Maybe the grace should be irrespective of the disarm origin?
+            // Otherwise a bugged GCS could prevent a manual RC recovery.
             && self.disarm_info.origin == Origin::RemoteControl
         {
             info!("[{}] Within 5 second arm grace period", self.name);
@@ -293,12 +310,13 @@ impl Commander {
     fn arm_checks(&self) -> bool {
         info!("[{}] Running arm checks", self.name);
 
+        // TODO - Arming blocker should just be a part of the commander
         let Some(blocker) = s::ARMING_BLOCKER.try_get() else {
             warn!("[{}] Could not fetch ArmingBlocker flag", self.name);
             return false;
         };
 
-        if STATUS_ON_GROUND.is(&false) {
+        if STATUS_ON_GROUND.partial_eq(&false) {
             warn!("[{}] Vehicle not on ground", self.name);
             return false;
         }
@@ -312,7 +330,9 @@ impl Commander {
         true
     }
 
-    /// Execute a preflight check
+    /// Execute a disarming check
+    /// 
+    /// Currently this always returns true
     fn disarm_checks(&self) -> bool {
         trace!("[{}] Running disarm checks", self.name);
 

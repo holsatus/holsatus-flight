@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 use embassy_time::Timer;
 
-use crate::consts::GRAVITY;
+use crate::{consts::GRAVITY, filters::Lowpass, get_ctrl_freq};
 
 #[embassy_executor::task]
 pub async fn main() -> ! {
@@ -12,6 +12,10 @@ pub async fn main() -> ! {
     let mut rcv_motors_state = crate::signals::MOTORS_STATE.receiver();
     let mut rcv_motors_mixed = crate::tasks::controller_rate::RATE_MOTORS_MIXED.receiver();
 
+    let dt = 1.0 / get_ctrl_freq!() as f32;
+
+    let mut acc_z_filter = Lowpass::new(0.1, dt);
+
     loop {
         rcv_motors_state.get_and(|state| state.is_armed()).await;
         debug!("[if_estimator] Vehicle is armed, continuing");
@@ -19,8 +23,10 @@ pub async fn main() -> ! {
         let force_target = rcv_motors_mixed.changed().await;
         let imu_data = rcv_imu_data.get().await;
 
-        let accel: f32 = imu_data.acc[2].abs();
-        let force: f32 = force_target.iter().sum();
+        let accel = imu_data.acc[2].abs();
+        let accel = acc_z_filter.update(accel);
+        
+        let force = force_target.iter().sum::<f32>();
 
         debug!("[if_estimator] Accel {}, force: {}", accel, force);
 
@@ -43,4 +49,4 @@ pub async fn main() -> ! {
     }
 }
 
-const VEHICLE_MASS: f32 = 0.566;
+const VEHICLE_MASS: f32 = 0.630;

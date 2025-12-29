@@ -1,7 +1,7 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
 use clap::Parser;
-use common::{signals::ESKF_ESTIMATE, types::control::RcAnalog};
+use common::{embassy_time, signals::ESKF_ESTIMATE, tasks::commander::message::ArmDisarm, types::control::RcAnalog};
 
 mod rerun_logger;
 mod resources;
@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let level_1_spawner = thread_executor::new_spawner()?;
     let level_t_spawner = thread_executor::new_spawner()?;
 
-    common::signals::CONTROL_FREQUENCY.store(2500, Ordering::Relaxed);
+    common::signals::CONTROL_FREQUENCY.store(1000, Ordering::Relaxed);
 
     // Launch the simulation thread and MAVLink TCP runner
     resources::simulation_runner(sitl.clone(), 2000);
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     level_0_spawner.spawn(resources::imu_reader(r.imu).unwrap());
     level_0_spawner.spawn(resources::motor_governor(r.motors).unwrap());
 
-    // level_0_spawner.spawn(common::tasks::rc_reader::main("serial0").unwrap()); // TODO Emulate serial?
+    // level_0_spawner.spawn(common::tasks::rc_reader::main("serial0").unwrap()); // TODO Emulate rc serial?
     level_0_spawner.spawn(common::tasks::rc_binder::main().unwrap());
     level_0_spawner.spawn(common::tasks::signal_router::main().unwrap());
     level_0_spawner.spawn(common::tasks::controller_rate::main().unwrap());
@@ -68,9 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     level_t_spawner.spawn(common::tasks::controller_mpc::main().unwrap());
     level_t_spawner.spawn(common::mavlink2::main("tcp-serial1").unwrap());
 
-    thread_executor::RUNTIME.spawn(autonomous_flight_speedloop());
-
-    // spawner_1.spawn(resources::gnss_reader(r.vicon).unwrap());
+    level_t_spawner.spawn(autonomous_intercept().unwrap());
 
     // Park the current thread
     std::thread::park();
@@ -81,6 +79,95 @@ fn millis_in_future(millis: u64) -> common::embassy_time::Instant {
     let now = common::embassy_time::Instant::now();
     now + common::embassy_time::Duration::from_millis(millis)
 }
+
+/* READY FOR TESTING */
+
+#[embassy_executor::task]
+pub async fn autonomous_intercept() {
+    use common::tasks::commander::*;
+    use common::tasks::controller_mpc::{CHANNEL, Message};
+
+    common::embassy_time::Timer::after_secs(1).await;
+
+    PROCEDURE
+        .send(Request {
+            command: message::ArmDisarm {
+                arm: true,
+                force: true,
+            }
+            .into(),
+            origin: Origin::Automatic,
+        })
+        .await;
+
+    PROCEDURE
+        .send(Request {
+            command: message::SetControlMode::Autonomous.into(),
+            origin: Origin::Automatic,
+        })
+        .await;
+
+    let mut rcv_motors_state = common::signals::MOTORS_STATE.receiver();
+    rcv_motors_state.get_and(|state| state.is_armed()).await;
+
+    CHANNEL.send(Message::ClearInterseptPoint).await;
+
+    // Return to origin
+    CHANNEL.send(Message::SetPositionAt(
+        [0.0, 0.0, -10.0],
+        millis_in_future(2000),
+    )).await;
+
+    common::embassy_time::Timer::after_secs(4).await;
+
+    const INTERCEPT_POINT: [f32; 3] = [-30.0, 100.0, -30.0];
+
+    CHANNEL.send(Message::SetInterseptPoint(
+        INTERCEPT_POINT,
+        millis_in_future(5000),
+    )).await;
+
+    common::embassy_time::Timer::after_millis(5000).await;
+
+    CHANNEL.send(Message::ClearInterseptPoint).await;
+    
+    // Return to origin
+    CHANNEL.send(Message::SetPositionAt(
+        INTERCEPT_POINT,
+        millis_in_future(1000),
+    )).await;
+
+    // Return to origin
+    CHANNEL.send(Message::SetPositionAt(
+        [0.0, 0.0, -20.0],
+        millis_in_future(6000),
+    )).await;
+
+    common::embassy_time::Timer::after_secs(3).await;
+
+    CHANNEL.send(Message::SetPositionAt(
+        [0.0, 0.0, -2.0],
+        millis_in_future(7000),
+    )).await;
+    CHANNEL.send(Message::SetPositionAt(
+        [0.0, 0.0, -1.0],
+        millis_in_future(9900),
+    )).await;
+    
+    common::embassy_time::Timer::after_secs(12).await;
+
+    // Request the arming the vehicle, doing all checks
+    PROCEDURE.request(Request {
+        command: ArmDisarm {
+            arm: false,
+            force: false,
+            }.into(),
+        origin: Origin::Automatic,
+    }).await;
+
+    common::embassy_time::Timer::after_secs(120).await;
+}
+
 
 async fn auto_program() {
     use common::tasks::commander::{PROCEDURE, Origin, Request, message::{ArmDisarm, SetControlMode}};
@@ -166,8 +253,9 @@ async fn auto_program() {
 
 async fn autonomous_flight_smol() {
     use common::tasks::commander::*;
+    use common::tasks::controller_mpc::{CHANNEL, Message};
 
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     log::warn!("Sending arming command");
     PROCEDURE
@@ -181,8 +269,6 @@ async fn autonomous_flight_smol() {
         })
         .await;
 
-    let mut receiver = ESKF_ESTIMATE.receiver();
-
     log::warn!("Sending control mode command");
     PROCEDURE
         .send(Request {
@@ -194,65 +280,19 @@ async fn autonomous_flight_smol() {
     let mut rcv_motors_state = common::signals::MOTORS_STATE.receiver();
     rcv_motors_state.get_and(|state| state.is_armed()).await;
 
-    common::tasks::controller_mpc::CHANNEL
-        .send(common::tasks::controller_mpc::Message::SetPositionAt(
-            [0.0, 0.0, -0.25],
-            millis_in_future(2000),
-        ))
-        .await;
+    CHANNEL.send(Message::SetPositionAt(
+        [400.0, 0.0, -200.0],
+        millis_in_future(9900),
+    )).await;
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_secs(8)).await;
 
-    common::tasks::controller_mpc::CHANNEL
-        .send(common::tasks::controller_mpc::Message::SetPositionAt(
-            [0.0, 0.0, -3.0],
-            millis_in_future(1000),
-        ))
-        .await;
+    CHANNEL.send(Message::SetPositionAt(
+        [600.0, 0.0, -300.0],
+        millis_in_future(9000),
+    )).await;
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    common::tasks::controller_mpc::CHANNEL
-        .send(common::tasks::controller_mpc::Message::SetPositionAt(
-            [2.0, 0.0, -2.0],
-            millis_in_future(2000),
-        ))
-        .await;
-
-    tokio::time::sleep(Duration::from_secs(5)).await;
-
-    for i in 0..40 {
-        common::tasks::controller_mpc::CHANNEL
-            .send(common::tasks::controller_mpc::Message::SetPositionAt(
-                [2.0 - i as f32 / 10., 0.0, -2.0],
-                millis_in_future(9900),
-            ))
-            .await;
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-
-    tokio::time::sleep(Duration::from_millis(10000)).await;
-    receiver.get_and(|est| est.vel[0].abs() < 1.0).await;
-
-    common::tasks::controller_mpc::CHANNEL
-        .send(common::tasks::controller_mpc::Message::SetPositionAt(
-            [0.0, 0.0, -1.0],
-            millis_in_future(4000),
-        ))
-        .await;
-
-    receiver.get_and(|est| est.vel[0].abs() < 1.0).await;
-    receiver.get_and(|est| est.pos[2] > -1.2).await;
-
-    common::tasks::controller_mpc::CHANNEL
-        .send(common::tasks::controller_mpc::Message::SetPositionAt(
-            [0.0, 0.0, 0.0],
-            millis_in_future(1000),
-        ))
-        .await;
-
-    receiver.get_and(|est| est.pos[2] > -0.1).await;
+    tokio::time::sleep(Duration::from_secs(20)).await;
 
     PROCEDURE
         .send(Request {
@@ -389,7 +429,7 @@ async fn autonomous_flight_speedloop() {
     for i in 0..20 {
         common::tasks::controller_mpc::CHANNEL
             .send(common::tasks::controller_mpc::Message::SetPositionAt(
-                [0.0 - i as f32 / 5., 0.0, -5.0 - i as f32],
+                [0.0 - i as f32 / 2.5, 0.0, -5.0 - i as f32],
                 millis_in_future(9900),
             ))
             .await;
@@ -397,10 +437,10 @@ async fn autonomous_flight_speedloop() {
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
 
-        for i in 0..8 {
+    for i in 0..8 {
         common::tasks::controller_mpc::CHANNEL
             .send(common::tasks::controller_mpc::Message::SetPositionAt(
-                [-4.0 + i as f32, 0.0, -25.0],
+                [-8.0 + (i*2) as f32, 0.0, -25.0],
                 millis_in_future(9900),
             ))
             .await;
@@ -411,7 +451,7 @@ async fn autonomous_flight_speedloop() {
     for i in 0..20 {
         common::tasks::controller_mpc::CHANNEL
             .send(common::tasks::controller_mpc::Message::SetPositionAt(
-                [4.0 - i as f32 / 5., 0.0, -25.0 + i as f32],
+                [8.0 - i as f32 / 2.5, 0.0, -25.0 + i as f32],
                 millis_in_future(9900),
             ))
             .await;

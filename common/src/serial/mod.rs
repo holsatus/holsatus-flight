@@ -1,5 +1,5 @@
 use embedded_io::ReadExactError;
-use grantable_io::{AppConsumer, AppProducer};
+use grantable_io::{Reader, Writer};
 use heapless::String;
 use maitake_sync::{blocking, Mutex, MutexGuard};
 
@@ -117,8 +117,8 @@ pub fn claim(ident: impl Into<StreamId>) -> Result<IoStream, Error> {
 /// and unlocked together.
 pub struct IoStreamRaw<'a> {
     name: StreamName,
-    reader: Mutex<AppConsumer<'a, EmbeddedIoError>>,
-    writer: Mutex<AppProducer<'a, EmbeddedIoError>>,
+    reader: Mutex<Reader<'a, EmbeddedIoError>>,
+    writer: Mutex<Writer<'a, EmbeddedIoError>>,
 }
 
 impl PartialEq for &IoStreamRaw<'_> {
@@ -130,8 +130,8 @@ impl PartialEq for &IoStreamRaw<'_> {
 impl<'a> IoStreamRaw<'a> {
     pub fn new(
         name: &str,
-        reader: AppConsumer<'a, EmbeddedIoError>,
-        writer: AppProducer<'a, EmbeddedIoError>,
+        reader: Reader<'a, EmbeddedIoError>,
+        writer: Writer<'a, EmbeddedIoError>,
     ) -> Self {
         IoStreamRaw {
             name: StreamName::new(name).unwrap(),
@@ -166,7 +166,7 @@ impl IoStream {
 }
 
 pub struct IoReader {
-    reader: MutexGuard<'static, AppConsumer<'static, EmbeddedIoError>>,
+    reader: MutexGuard<'static, Reader<'static, EmbeddedIoError>>,
     raw: &'static IoStreamRaw<'static>,
 }
 
@@ -200,7 +200,7 @@ impl PartialEq for IoReader {
 impl Drop for IoReader {
     fn drop(&mut self) {
         let name = self.name().as_str();
-        trace!("Dropping SerialReader for: {}", name);
+        trace!("Dropping IoReader for: {}", name);
     }
 }
 
@@ -240,7 +240,7 @@ impl IoReader {
 }
 
 pub struct IoWriter {
-    writer: MutexGuard<'static, AppProducer<'static, EmbeddedIoError>>,
+    writer: MutexGuard<'static, Writer<'static, EmbeddedIoError>>,
     raw: &'static IoStreamRaw<'static>,
 }
 
@@ -274,7 +274,7 @@ impl PartialEq for IoWriter {
 impl Drop for IoWriter {
     fn drop(&mut self) {
         let name = self.name().as_str();
-        trace!("Dropping SerialWriter for: {}", name);
+        trace!("Dropping IoWriter for: {}", name);
     }
 }
 

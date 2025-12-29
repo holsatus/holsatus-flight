@@ -159,6 +159,8 @@ impl Simulation {
             .rotation(initial.rotation.into())
             .angvel(initial.ang_velocity.into())
             .linvel(initial.lin_velocity.into())
+            .linear_damping(vehicle.lin_damp)
+            .angular_damping(vehicle.ang_damp)
             .build();
 
         let drone_collider = ColliderBuilder::cuboid(0.13, 0.13, 0.04)

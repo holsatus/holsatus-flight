@@ -60,6 +60,7 @@ where
     // Setup the filesystem with default options
     let fs = FileSystem::new(inner, FsOptions::new()).await?;
 
+
     // Find log file with largest index
     let mut current_file_idx = 0;
     let mut iter = fs.root_dir().iter();
@@ -98,7 +99,8 @@ where
         // Ensure we get entirety of packet data
         while serde_slice.len() > 0 {
             // Bytes to copy from vec to buffer
-            let to_copy = (write_buf.capacity() - write_buf.len()).min(serde_slice.len());
+            let write_buf_rem = write_buf.capacity() - write_buf.len();
+            let to_copy = write_buf_rem.min(serde_slice.len());
 
             // Copy bytes and shorten slices
             let res = write_buf.extend_from_slice(&serde_slice[..to_copy]);

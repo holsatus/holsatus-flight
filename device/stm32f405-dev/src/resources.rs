@@ -157,7 +157,7 @@ impl Spi1 {
 
 #[embassy_executor::task]
 pub(crate) async fn spi_reader(spi: Spi1) -> ! {
-    let i2c = spi.setup();
+    let spi = spi.setup();
     todo!("Not implemented yet")
 }
 
@@ -457,11 +457,4 @@ pub mod usb {
 // -------------------------- fin ---------------------------
 // ----------------------------------------------------------
 
-#[embassy_executor::task]
-pub(crate) async fn stack_prober() -> ! {
-    loop {
-        common::embassy_time::Timer::after_ticks(123456).await;
-        let addr = cortex_m::register::msp::read();
-        defmt::info!("Stack pointer address: {:x}", addr);
-    }
-}
+

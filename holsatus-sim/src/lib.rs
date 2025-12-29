@@ -161,7 +161,7 @@ impl SimulatedMotors {
 
 impl SimulatedMotors {
     pub fn set_motor_speeds(&mut self, speeds: [u16; 4]) {
-        self.sim.set_motors_cmd(&speeds.map(|s|(s - 47) as f32 / 2000.0));
+        self.sim.set_motors_cmd(&speeds.map(|s|s.saturating_sub(47) as f32 / 2000.0));
     }
 
     pub fn set_motor_speeds_min(&mut self) {

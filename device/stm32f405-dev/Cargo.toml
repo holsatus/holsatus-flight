@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["mpc", "mavlink", "usb", "gnss"]
+default = ["mpc", "mavlink", "gnss"]
 
 mpc = ["common/mpc"]
 

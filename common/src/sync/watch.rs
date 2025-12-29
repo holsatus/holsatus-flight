@@ -46,7 +46,10 @@ impl<T: Clone, M: ScopedRawMutex> Watch<T, M> {
         self.inner_getter(None, None).map(|(value, _)| value)
     }
 
-    pub fn is(&self, other: &T) -> bool
+    /// Do a PartialEq comparison with the inner value.
+    /// 
+    /// If no value has been sent, this will return false.
+    pub fn partial_eq(&self, other: &T) -> bool
     where
         T: PartialEq,
     {

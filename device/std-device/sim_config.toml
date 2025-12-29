@@ -3,19 +3,19 @@
 simulation_rate = 1000.0
 
 [initial]
-position = [0.0, 2.0, 0.0]
+position = [0.0, 0.0, 0.0]
 rotation = [0.0, 0.0, 0.0]
 
 [vehicle]
 
 # Linear drag coefficient of the drone body
-linear_vel_damp = 50.0
+linear_damp = 0.1
 
 # Angular drag coefficient of the drone body
-angular_vel_damp = 10.0
+angular_damp = 0.1
 
 # Mass of the drone body
-mass = 0.566
+mass = 0.630
 
 # Mass moment of inertia along principal axes
 principal_inertia = [0.0012, 0.0012, 0.0012]
@@ -59,7 +59,7 @@ motor_map = [10.452, 0.55]
 [acc_dist]
 
 # Noise, bias and warp/scaling of sensor values
-noise = [0.1, 0.1, 0.1]
+noise = [0.01, 0.01, 0.01]
 bias = [0.0, 0.0, 0.0]
 warp = [
     [1.0, 0.0, 0.0],
@@ -76,7 +76,7 @@ max_range = 157.0
 [gyr_dist]
 
 # Noise, bias and warp/scaling of sensor values
-noise = [0.01, 0.01, 0.01]
+noise = [0.001, 0.001, 0.001]
 bias = [0.0, 0.0, 0.0]
 warp = [
     [1.0, 0.0, 0.0],

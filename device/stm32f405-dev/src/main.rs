@@ -132,7 +132,7 @@ async fn auto_program_entry() -> ! {
         // Run the program to completion, or, until the mode changes
         common::embassy_futures::select::select(
             rcv_flight_mode.changed_and(|mode| !matches!(mode, ControlMode::Autonomous)),
-            auto_program::hover_minute(),
+            auto_program::autonomous_intercept(),
         )
         .await;
     }
@@ -316,5 +316,91 @@ mod auto_program {
                 origin: Origin::Automatic,
             })
             .await;
+    }
+
+
+    pub async fn autonomous_intercept() {
+        use common::tasks::commander::*;
+        use common::tasks::controller_mpc::{CHANNEL, Message};
+
+        common::embassy_time::Timer::after_secs(1).await;
+
+        PROCEDURE
+            .send(Request {
+                command: message::ArmDisarm {
+                    arm: true,
+                    force: true,
+                }
+                .into(),
+                origin: Origin::Automatic,
+            })
+            .await;
+
+        PROCEDURE
+            .send(Request {
+                command: message::SetControlMode::Autonomous.into(),
+                origin: Origin::Automatic,
+            })
+            .await;
+
+        let mut rcv_motors_state = common::signals::MOTORS_STATE.receiver();
+        rcv_motors_state.get_and(|state| state.is_armed()).await;
+
+        CHANNEL.send(Message::ClearInterseptPoint).await;
+
+        // Return to origin
+        CHANNEL.send(Message::SetPositionAt(
+            [0.0, 0.0, -10.0],
+            millis_in_future(2000),
+        )).await;
+
+        common::embassy_time::Timer::after_secs(4).await;
+
+        const INTERCEPT_POINT: [f32; 3] = [-30.0, 100.0, -30.0];
+
+        CHANNEL.send(Message::SetInterseptPoint(
+            INTERCEPT_POINT,
+            millis_in_future(5000),
+        )).await;
+
+        common::embassy_time::Timer::after_millis(5000).await;
+
+        CHANNEL.send(Message::ClearInterseptPoint).await;
+        
+        // Return to origin
+        CHANNEL.send(Message::SetPositionAt(
+            INTERCEPT_POINT,
+            millis_in_future(1000),
+        )).await;
+
+        // Return to origin
+        CHANNEL.send(Message::SetPositionAt(
+            [0.0, 0.0, -20.0],
+            millis_in_future(6000),
+        )).await;
+
+        common::embassy_time::Timer::after_secs(3).await;
+
+        CHANNEL.send(Message::SetPositionAt(
+            [0.0, 0.0, -2.0],
+            millis_in_future(7000),
+        )).await;
+        CHANNEL.send(Message::SetPositionAt(
+            [0.0, 0.0, -1.0],
+            millis_in_future(9900),
+        )).await;
+        
+        common::embassy_time::Timer::after_secs(12).await;
+
+        // Request the arming the vehicle, doing all checks
+        PROCEDURE.request(Request {
+            command: message::ArmDisarm {
+                arm: false,
+                force: false,
+                }.into(),
+            origin: Origin::Automatic,
+        }).await;
+
+        common::embassy_time::Timer::after_secs(120).await;
     }
 }
