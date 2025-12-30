@@ -159,7 +159,7 @@ impl Simulation {
             .rotation(initial.rotation.into())
             .angvel(initial.ang_velocity.into())
             .linvel(initial.lin_velocity.into())
-            .linear_damping(vehicle.lin_damp)
+            .linear_damping(0.0)
             .angular_damping(vehicle.ang_damp)
             .build();
 
@@ -270,6 +270,11 @@ impl Simulation {
         rb.reset_torques(true);
         rb.add_force(world_force, true);
         rb.add_torque(world_torque, true);
+
+        // Calculate quadratic damping
+        let velocity_norm = rb.linvel().norm();
+        let dynamic_damping = self.params.lin_damp * velocity_norm;
+        rb.set_linear_damping(dynamic_damping);
 
         // Get velocity prior to simulation step
         let rb = self.phys.get_rb_ref(self.rb_handle);
