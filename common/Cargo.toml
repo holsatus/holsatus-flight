@@ -142,7 +142,7 @@ mavio = { git = "https://gitlab.com/peterkrull/mavio/", branch = "frame-parser",
 
 grantable-io = { git = "https://github.com/holsatus/grantable-io", rev = "cb22c68", default-features = false, features = ["embedded-io-async-061"]}
 
-tinympc-rs = { git = "https://github.com/peterkrull/tinympc-rs", branch = "project-simplify", optional = true, default-features = false }
+tinympc-rs = { git = "https://github.com/peterkrull/tinympc-rs", branch = "main", optional = true, default-features = false }
 
 [profile.release.package.tinympc-rs]
 opt-level = 3
