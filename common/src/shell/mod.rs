@@ -30,16 +30,15 @@ impl<'a, W: Write<Error = E>, E: embedded_io::Error> ErrorType for SyncWriter<'a
 
 impl<'a, W: Write<Error = E>, E: embedded_io::Error> SyncWrite for SyncWriter<'a, W, E> {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        // The mutex is expected to never be locked, since the CLI is evaluated
-        // before anything else in the loop
-        let mut writer = self.writer.try_lock().expect("Failed to lock writer");
+        // Avoid panicking if another path still holds the writer briefly.
+        // Blocking here is preferable to crashing the shell task.
+        let mut writer = embassy_futures::block_on(self.writer.lock());
         embassy_futures::block_on(writer.write(buf))
     }
 
     fn flush(&mut self) -> Result<(), Self::Error> {
-        // The mutex is expected to never be locked, since the CLI is evaluated
-        // before anything else in the loop
-        let mut writer = self.writer.try_lock().expect("Failed to lock writer");
+        // See `write`: serialize access instead of panic-on-contention.
+        let mut writer = embassy_futures::block_on(self.writer.lock());
         embassy_futures::block_on(writer.flush())
     }
 }
@@ -94,6 +93,7 @@ pub async fn run_cli(serial: &mut IoStream) -> Result<(), EmbeddedIoError> {
         .build()?;
 
     let mut buffer = [0u8; 64];
+    let mut escape_state = EscapeState::None;
     loop {
         let n = {
             let mut m_serial = mutexed_serial.lock().await;
@@ -104,19 +104,102 @@ pub async fn run_cli(serial: &mut IoStream) -> Result<(), EmbeddedIoError> {
             n
         };
 
+        if n == 0 {
+            // Some backends report "no data" as an empty read.
+            // Yield briefly to avoid pegging the executor.
+            Timer::after_millis(1).await;
+            continue;
+        }
+
         trace!("Read {} bytes from serial port: {:?}", n, &buffer[..n]);
 
         for byte in buffer.iter().take(n) {
+            let normalized_byte = match *byte {
+                0x7F => 0x08, // DEL -> Backspace
+                b'\n' => b'\r', // normalize newline
+                value => value,
+            };
+
+            // Ignore ANSI escape/control sequences often emitted by terminals
+            // on startup and during line editing.
+            match escape_state {
+                EscapeState::None => {
+                    if normalized_byte == 0x1B {
+                        escape_state = EscapeState::Esc;
+                        continue;
+                    }
+                }
+                EscapeState::Esc => {
+                    escape_state = match normalized_byte {
+                        b'[' => EscapeState::Csi,
+                        b']' => EscapeState::Osc,
+                        _ => EscapeState::None,
+                    };
+                    continue;
+                }
+                EscapeState::Csi => {
+                    if (0x40..=0x7E).contains(&normalized_byte) {
+                        escape_state = EscapeState::None;
+                    }
+                    continue;
+                }
+                EscapeState::Osc => {
+                    escape_state = match normalized_byte {
+                        0x07 => EscapeState::None,
+                        0x1B => EscapeState::OscEsc,
+                        _ => EscapeState::Osc,
+                    };
+                    continue;
+                }
+                EscapeState::OscEsc => {
+                    escape_state = if normalized_byte == b'\\' {
+                        EscapeState::None
+                    } else {
+                        EscapeState::Osc
+                    };
+                    continue;
+                }
+            }
+
+            let is_allowed = normalized_byte == b'\r'
+                || normalized_byte == 0x08
+                || normalized_byte == b'\t'
+                || normalized_byte.is_ascii_graphic()
+                || normalized_byte == b' ';
+
+            if !is_allowed {
+                continue;
+            }
+
             // Process the byte from the serial port
             let mut parsed_command = None;
-            if let Err(error) = cli.process_byte::<Base, _>(
-                *byte,
-                &mut Base::processor(|_, command| {
+            let process_result = {
+                let mut processor = Base::processor(|_, command| {
                     parsed_command = Some(command);
                     Ok(())
-                }),
-            ) {
+                });
+                cli.process_byte::<Base, _>(normalized_byte, &mut processor)
+            };
+
+            if let Err(error) = process_result {
                 error!("[cli] parse error: {:?}", error);
+
+                command_buffer.fill(0);
+                history_buffer.fill(0);
+                cli = CliBuilder::default()
+                    .writer(&mut sync_writer)
+                    .command_buffer(command_buffer.as_mut_slice())
+                    .history_buffer(history_buffer.as_mut_slice())
+                    .prompt(CMD_PROMPT)
+                    .build()?;
+
+                let mut m_serial = mutexed_serial.lock().await;
+                let serial = m_serial.deref_mut();
+                let _ = serial.write_all(CLEAR_LINE).await;
+                let _ = serial.write_all(b"\r").await;
+                let _ = serial.write_all(b"[error] Parse error; input reset\n\r").await;
+                let _ = serial.write_all(CMD_PROMPT.as_bytes()).await;
+                let _ = serial.flush().await;
                 continue;
             }
 
@@ -135,6 +218,7 @@ pub async fn run_cli(serial: &mut IoStream) -> Result<(), EmbeddedIoError> {
                     #[cfg(feature = "mavlink")]
                     Base::Mavlink { cmd } => cmd.handler(&mut serial).await,
                     Base::Arming { cmd } => cmd.handler(&mut serial).await,
+                    Base::Motor { cmd } => cmd.handler(&mut serial).await,
                     Base::Param { cmd } => cmd.handler(&mut serial).await,
                     Base::Inspect { cmd } => cmd.handler(&mut serial).await,
 
@@ -163,10 +247,17 @@ pub async fn run_cli(serial: &mut IoStream) -> Result<(), EmbeddedIoError> {
     }
 }
 
+enum EscapeState {
+    None,
+    Esc,
+    Csi,
+    Osc,
+    OscEsc,
+}
+
 const CLEAR_SCREEN: &[u8] = b"\x1B[2J";
 const CLEAR_LINE: &[u8] = b"\x1B[2K";
 const CMD_PROMPT: &str = "$ ";
-const INTERRUPT: &u8 = &0x03;
 const HOLSATUS_GRAPHIC: &[u8] = b"\x1B[32m
 \r   _   _       _           _
 \r  | | | |     | |         | |
@@ -201,6 +292,12 @@ enum Base {
     Arming {
         #[command(subcommand)]
         cmd: commands::arming::ArmingCommand,
+    },
+
+    /// Trigger onboard motor test profiles
+    Motor {
+        #[command(subcommand)]
+        cmd: commands::motor::MotorCommand,
     },
 
     /// Interact with the MAVLink servers

@@ -1,11 +1,13 @@
 use crate::{
     errors::adapter::embedded_io::EmbeddedIoError,
-    shell::{CLEAR_SCREEN, INTERRUPT},
+    shell::CLEAR_SCREEN,
+    tasks::commander::{
+        message::{ArmDisarm, Origin, Request, Response},
+        PROCEDURE,
+    },
     types::status::ArmingBlocker,
     utils::u_types::UBuffer,
 };
-use embassy_futures::select::{select, Either};
-use embassy_time::{Duration, Ticker};
 use embedded_cli::Command;
 use embedded_io_async::{Read, Write};
 use ufmt::{uWrite, uwrite};
@@ -13,6 +15,18 @@ use ufmt::{uWrite, uwrite};
 #[derive(Command)]
 #[command(help_title = "Arming commands")]
 pub enum ArmingCommand {
+    /// Request arming through commander checks
+    Arm,
+
+    /// Request arming and bypass checks
+    ArmForce,
+
+    /// Request disarming through commander checks
+    Disarm,
+
+    /// Request immediate disarm and bypass checks
+    DisarmForce,
+
     /// View the current arming status
     Status,
 
@@ -30,14 +44,125 @@ impl super::CommandHandler for ArmingCommand {
         mut serial: impl Read<Error = EmbeddedIoError> + Write<Error = EmbeddedIoError>,
     ) -> Result<(), EmbeddedIoError> {
         match self {
+            ArmingCommand::Arm => {
+                let res = PROCEDURE
+                    .request(Request {
+                        command: ArmDisarm {
+                            arm: true,
+                            force: false,
+                        }
+                        .into(),
+                        origin: Origin::CommandLine,
+                    })
+                    .await;
+
+                match res {
+                    Some(Response::Accepted) | Some(Response::Unchanged) => {
+                        serial.write_all(b"Arming request accepted\n\r").await?;
+                    }
+                    Some(other) => {
+                        let _ = other;
+                        serial.write_all(b"Arming request rejected\n\r").await?;
+                    }
+                    None => {
+                        serial
+                            .write_all(b"No response from commander\n\r")
+                            .await?;
+                    }
+                }
+            }
+            ArmingCommand::ArmForce => {
+                let res = PROCEDURE
+                    .request(Request {
+                        command: ArmDisarm {
+                            arm: true,
+                            force: true,
+                        }
+                        .into(),
+                        origin: Origin::CommandLine,
+                    })
+                    .await;
+
+                match res {
+                    Some(Response::Accepted) | Some(Response::Unchanged) => {
+                        serial.write_all(b"Force-arm request accepted\n\r").await?;
+                    }
+                    Some(other) => {
+                        let _ = other;
+                        serial.write_all(b"Force-arm request rejected\n\r").await?;
+                    }
+                    None => {
+                        serial
+                            .write_all(b"No response from commander\n\r")
+                            .await?;
+                    }
+                }
+            }
+            ArmingCommand::Disarm => {
+                let res = PROCEDURE
+                    .request(Request {
+                        command: ArmDisarm {
+                            arm: false,
+                            force: false,
+                        }
+                        .into(),
+                        origin: Origin::CommandLine,
+                    })
+                    .await;
+
+                match res {
+                    Some(Response::Accepted) | Some(Response::Unchanged) => {
+                        serial.write_all(b"Disarm request accepted\n\r").await?;
+                    }
+                    Some(other) => {
+                        let _ = other;
+                        serial.write_all(b"Disarm request rejected\n\r").await?;
+                    }
+                    None => {
+                        serial
+                            .write_all(b"No response from commander\n\r")
+                            .await?;
+                    }
+                }
+            }
+            ArmingCommand::DisarmForce => {
+                let res = PROCEDURE
+                    .request(Request {
+                        command: ArmDisarm {
+                            arm: false,
+                            force: true,
+                        }
+                        .into(),
+                        origin: Origin::CommandLine,
+                    })
+                    .await;
+
+                match res {
+                    Some(Response::Accepted) | Some(Response::Unchanged) => {
+                        serial
+                            .write_all(b"Force-disarm request accepted\n\r")
+                            .await?;
+                    }
+                    Some(other) => {
+                        let _ = other;
+                        serial
+                            .write_all(b"Force-disarm request rejected\n\r")
+                            .await?;
+                    }
+                    None => {
+                        serial
+                            .write_all(b"No response from commander\n\r")
+                            .await?;
+                    }
+                }
+            }
             ArmingCommand::Status => {
                 serial
                     .write_all(b"Fetching arming status is currently not available\n\r")
                     .await?;
             }
             ArmingCommand::Flags { frequency } => {
-                let mut maybe_ticker =
-                    frequency.map(|f| Ticker::every(Duration::from_hz(f as u64)));
+                let mut maybe_ticker = super::periodic_ticker(&mut serial, *frequency).await?;
 
                 loop {
                     let Some(blocker) = crate::signals::ARMING_BLOCKER.try_get() else {
@@ -81,25 +206,8 @@ impl super::CommandHandler for ArmingCommand {
 
                     serial.flush().await?;
 
-                    // TODO - Maybe we can isolate this functionality into a
-                    // helper function
-                    match &mut maybe_ticker {
-                        None => break,
-                        Some(ticker) => {
-                            let mut bytes = [0u8];
-                            if let Either::First(res) =
-                                select(serial.read(&mut bytes[..]), ticker.next()).await
-                            {
-                                match res {
-                                    Ok(_) => {
-                                        if bytes[0] == *INTERRUPT {
-                                            break;
-                                        }
-                                    }
-                                    Err(e) => return Err(e),
-                                }
-                            }
-                        }
+                    if super::wait_next_or_ctrl_c(&mut serial, &mut maybe_ticker).await? {
+                        break;
                     }
                 }
             }

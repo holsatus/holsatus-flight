@@ -3,10 +3,8 @@
 
 use core::sync::atomic::Ordering;
 
-use common::embassy_time;
 use defmt::info;
 use defmt_rtt as _;
-use dshot_encoder::command;
 use panic_probe as _;
 
 mod config;
@@ -58,9 +56,9 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     common::embassy_time::Timer::after_secs(1).await;
     // Give special priority to the serial port used as primary input
     level_0_spawner.spawn(resources::imu_reader(r.i2c_1, config::i2c1(), config::imu()).unwrap());
-    level_0_spawner.spawn(resources::run_usart1(r.usart_1, config::usart1(), "usart1").unwrap()); // CRSF
+    // level_0_spawner.spawn(resources::run_usart1(r.usart_1, config::usart1(), "usart1").unwrap()); // CRSF
     // level_1_spawner.spawn(resources::run_usart2(r.usart_2, config::usart2(), "usart2").unwrap()); // UNUSED
-    level_1_spawner.spawn(resources::run_usart3(r.usart_3, config::usart3(), "usart3").unwrap()); // MAVLINK
+    level_1_spawner.spawn(resources::run_usart3(r.usart_3, config::usart3(), "usart3").unwrap()); // RC?
     level_1_spawner.spawn(resources::run_usart6(r.usart_6, config::usart6(), "usart6").unwrap()); // GNSS
 
     common::embassy_time::Timer::after_secs(1).await;
@@ -87,9 +85,9 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
 
     // These take direct ownership of their hardware to avoid additional complexity
     level_0_spawner.spawn(resources::motor_governor(r.motors, config::motor()).unwrap());
-
-    level_0_spawner.spawn(common::tasks::rc_reader::main("usart1").unwrap());
-    level_0_spawner.spawn(common::tasks::rc_binder::main().unwrap());
+    level_0_spawner.spawn(common::tasks::motor_test::main().unwrap());
+    // level_0_spawner.spawn(common::tasks::rc_reader::main("usart3").unwrap());
+    // level_0_spawner.spawn(common::tasks::rc_binder::main().unwrap());
     level_0_spawner.spawn(common::tasks::signal_router::main().unwrap());
     level_0_spawner.spawn(common::tasks::controller_rate::main().unwrap());
 
@@ -98,6 +96,7 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     #[cfg(feature = "gnss")]
     level_1_spawner.spawn(common::tasks::gnss_reader::main("usart6").unwrap());
     level_1_spawner.spawn(common::tasks::commander::main().unwrap());
+    level_1_spawner.spawn(common::tasks::att_estimator::main().unwrap());
     level_1_spawner.spawn(common::tasks::controller_angle::main().unwrap());
 
     // ------------------- Low-priority tasks -------------------
@@ -107,7 +106,7 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
 
     level_t_spawner.spawn(common::tasks::calibrator::main().unwrap());
     level_t_spawner.spawn(common::tasks::arm_blocker::main().unwrap());
-    level_t_spawner.spawn(common::tasks::eskf::main().unwrap());
+    // level_t_spawner.spawn(common::tasks::eskf::main().unwrap());
 
     #[cfg(feature = "mpc")]
     {

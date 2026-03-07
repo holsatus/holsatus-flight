@@ -54,8 +54,14 @@ pub mod params {
         }
     }
 
+    // crate::const_default!(
+    //     Reverse => Reverse::MOTOR_0.union(Reverse::MOTOR_3)
+    // );
+    // crate::const_default!(
+    //     Reverse => Reverse::MOTOR_3
+    // );
     crate::const_default!(
-        Reverse => Reverse::MOTOR_0.union(Reverse::MOTOR_3)
+        Reverse => Reverse::MOTOR_2
     );
 
     #[derive(mav_param::Tree, Clone, Debug)]
@@ -81,6 +87,7 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
     // Input signals
     let mut rcv_comand_arm = crate::tasks::commander::COMMAD_ARM_VEHICLE.receiver();
     let mut rcv_motors_mixed = crate::tasks::controller_rate::RATE_MOTORS_MIXED.receiver();
+    let mut rcv_ctrl_motors = s::CTRL_MOTORS.receiver();
 
     // Output signals
     let mut snd_motors_state = s::MOTORS_STATE.sender();
@@ -106,6 +113,10 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
         dshot_map.map(command).clamp(min, max as f32) as u16
     };
 
+    let dshot_direct_fn = |throttle: f32| {
+        dshot_map.map(throttle.clamp(0.0, 1.0)).clamp(min, max as f32) as u16
+    };
+
     let mut lowpasses = [Lowpass::new(0.0005, 0.002); 4];
 
     // Set initial state
@@ -128,6 +139,8 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
             params.rev.contains(Reverse::MOTOR_3),
         ];
 
+        let reverse_mask = params.rev.bits();
+
         drop(params);
 
         // Send minimum throttle for a few seconds to start arming
@@ -138,11 +151,23 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
             Timer::after_millis(50).await;
         }
 
-        // Set motor directions for the four motors
-        info!("{}: Setting directions {:?}", ID, dirs);
-        for _ in 0..20 {
+        // Set motor directions for the four motors (DShot command sequence).
+        // Many ESCs require repeated command frames while throttle is minimum.
+        info!("{}: Applying reverse dirs {:?} (mask={})", ID, dirs, reverse_mask);
+
+        for _ in 0..200 {
+            motors.set_motor_speeds_min().await;
+            Timer::after_millis(10).await;
+        }
+
+        for _ in 0..100 {
             motors.set_reverse_dir(dirs).await;
-            Timer::after_millis(50).await;
+            Timer::after_millis(20).await;
+        }
+
+        for _ in 0..200 {
+            motors.set_motor_speeds_min().await;
+            Timer::after_millis(10).await;
         }
 
         // TODO - Ask the commander whether we are still clear to arm?
@@ -155,7 +180,10 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
         'armed: loop {
             match select(
                 rcv_comand_arm.changed_and(|&arm| arm == false),
-                with_timeout(timeout_dur, rcv_motors_mixed.changed()),
+                with_timeout(
+                    timeout_dur,
+                    select(rcv_motors_mixed.changed(), rcv_ctrl_motors.changed()),
+                ),
             )
             .await
             {
@@ -171,13 +199,24 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
                     snd_motors_state.send(MotorsState::Disarmed(DisarmReason::Timeout));
                     continue 'disarmed;
                 }
-                Second(Ok([0., 0., 0., 0.])) => {
+                Second(Ok(First([0., 0., 0., 0.]))) | Second(Ok(Second([0., 0., 0., 0.]))) => {
                     motors.set_motor_speeds_min().await;
                     snd_motors_state.send(MotorsState::ArmedIdle);
                     continue 'armed;
                 }
-                Second(Ok(speeds)) => {
+                Second(Ok(First(speeds))) => {
                     let mut speeds_u16 = speeds.map(dshot_map_fn);
+
+                    for i in 0..4 {
+                        speeds_u16[i] = lowpasses[i].update(speeds_u16[i] as f32) as u16;
+                    }
+
+                    motors.set_motor_speeds(speeds_u16).await;
+                    snd_motors_state.send(MotorsState::Armed(speeds_u16));
+                    continue 'armed;
+                }
+                Second(Ok(Second(speeds))) => {
+                    let mut speeds_u16 = speeds.map(dshot_direct_fn);
 
                     for i in 0..4 {
                         speeds_u16[i] = lowpasses[i].update(speeds_u16[i] as f32) as u16;

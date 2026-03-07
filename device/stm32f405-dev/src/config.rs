@@ -80,13 +80,16 @@ pub(crate) fn initialize() -> embassy_stm32::Peripherals {
     let mut config = embassy_stm32::Config::default();
 
     use embassy_stm32::rcc::*;
-    config.rcc.hse = None;
-    config.rcc.pll_src = PllSource::HSI;
+    config.rcc.hse = Some(Hse{
+        freq: embassy_stm32::time::Hertz(12_000_000),
+        mode: HseMode::Oscillator,
+    });
+    config.rcc.pll_src = PllSource::HSE;
     config.rcc.pll = Some(Pll {
-        prediv: PllPreDiv::DIV8,
+        prediv: PllPreDiv::DIV6,
         mul: PllMul::MUL168,
-        divp: Some(PllPDiv::DIV2), // 16mhz / 8 * 168 / 2 = 168Mhz.
-        divq: Some(PllQDiv::DIV7), // 16mhz / 8 * 168 / 7 = 48Mhz.
+        divp: Some(PllPDiv::DIV2), // 16mhz / 6 * 168 / 2 = 168Mhz.
+        divq: Some(PllQDiv::DIV7), // 16mhz / 6 * 168 / 7 = 48Mhz.
         divr: None,
     });
     config.rcc.ahb_pre = AHBPrescaler::DIV1;

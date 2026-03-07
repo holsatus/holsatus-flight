@@ -141,6 +141,7 @@ impl Commander {
 
                 if !CALIBRATOR_STATE.partial_eq(&CalibratorState::Idle) {
                     error!("[{}] Another calibration is already in progress", self.name);
+                    return Response::Rejected;
                 }
 
                 match cmd.sensor_type {

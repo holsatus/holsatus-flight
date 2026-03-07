@@ -54,6 +54,16 @@ where
     bit: (u16, u16),
 }
 
+pub struct DshotDriver2<'d, T, WAV>
+where
+    T: GeneralInstance4Channel,
+    WAV: WaveformGenerator2<Timer = T>,
+{
+    pwm: SimplePwm<'d, T>,
+    wav: WAV,
+    bit: (u16, u16),
+}
+
 impl<'d, T, WAV> DshotDriver<'d, T, WAV>
 where
     T: GeneralInstance4Channel,
@@ -105,6 +115,52 @@ where
     }
 }
 
+impl<'d, T, WAV> DshotDriver2<'d, T, WAV>
+where
+    T: GeneralInstance4Channel,
+    WAV: WaveformGenerator2<Timer = T>,
+{
+    pub fn new(
+        timer: Peri<'d, T>,
+        pin1: Peri<'d, impl TimerPin<T, Ch1>>,
+        pin2: Peri<'d, impl TimerPin<T, Ch2>>,
+        wav: WAV,
+        khz: u32,
+    ) -> Self {
+        let mut pwm = SimplePwm::new(
+            timer,
+            Some(PwmPin::new(pin1, OutputType::PushPull)),
+            Some(PwmPin::new(pin2, OutputType::PushPull)),
+            None,
+            None,
+            Hertz::khz(khz),
+            CountingMode::EdgeAlignedUp,
+        );
+
+        use embassy_stm32::timer::Channel as C;
+        for ch in [C::Ch1, C::Ch2] {
+            pwm.channel(ch).set_duty_cycle_fully_off();
+            pwm.channel(ch).enable();
+        }
+
+        let period = pwm.max_duty_cycle() as u32;
+
+        let b0 = ((384 * period) >> 10) as u16;
+        let b1 = ((768 * period) >> 10) as u16;
+
+        Self {
+            pwm,
+            wav,
+            bit: (b0, b1),
+        }
+    }
+
+    async fn transmit(&mut self, commands: [u16; 2]) {
+        let commands = commands.map(|cmd| construct_command(self.bit, cmd));
+        self.wav.run_waveform(&mut self.pwm, commands).await
+    }
+}
+
 impl<'d, T, WAV> OutputGroup for DshotDriver<'d, T, WAV>
 where
     T: GeneralInstance4Channel,
@@ -127,12 +183,50 @@ where
     async fn make_beep(&mut self) {}
 }
 
+impl<'d, T, WAV> OutputGroup for DshotDriver2<'d, T, WAV>
+where
+    T: GeneralInstance4Channel,
+    WAV: WaveformGenerator2<Timer = T>,
+{
+    async fn set_motor_speeds(&mut self, speed: [u16; 4]) {
+        self.transmit([
+            dshot_encoder::throttle_clamp(speed[0], false),
+            dshot_encoder::throttle_clamp(speed[1], false),
+        ])
+        .await
+    }
+
+    async fn set_reverse_dir(&mut self, direction: [bool; 4]) {
+        self.transmit([
+            dshot_encoder::reverse(direction[0]),
+            dshot_encoder::reverse(direction[1]),
+        ])
+        .await
+    }
+
+    async fn set_motor_speeds_min(&mut self) {
+        self.transmit([dshot_encoder::throttle_minimum(false); 2])
+            .await
+    }
+
+    async fn make_beep(&mut self) {}
+}
+
 pub trait WaveformGenerator {
     type Timer: GeneralInstance4Channel;
     async fn run_waveform(
         &mut self,
         pwm: &mut SimplePwm<'_, Self::Timer>,
         cmd: [[u16; TRANSMIT_SIZE]; 4],
+    );
+}
+
+pub trait WaveformGenerator2 {
+    type Timer: GeneralInstance4Channel;
+    async fn run_waveform(
+        &mut self,
+        pwm: &mut SimplePwm<'_, Self::Timer>,
+        cmd: [[u16; TRANSMIT_SIZE]; 2],
     );
 }
 
@@ -177,6 +271,51 @@ where
             self.dma.reborrow(),
             Channel::Ch1,
             Channel::Ch4,
+            &interleaved,
+        )
+        .await;
+    }
+}
+
+pub struct UpDmaWaveform2<'d, T, DMA>
+where
+    T: GeneralInstance4Channel,
+    DMA: UpDma<T>,
+{
+    dma: Peri<'d, DMA>,
+    _p: PhantomData<T>,
+}
+
+impl<'d, T, DMA> UpDmaWaveform2<'d, T, DMA>
+where
+    T: GeneralInstance4Channel,
+    DMA: UpDma<T>,
+{
+    pub fn new(dma: Peri<'d, DMA>) -> Self {
+        Self {
+            dma,
+            _p: PhantomData,
+        }
+    }
+}
+
+impl<'d, T, DMA> WaveformGenerator2 for UpDmaWaveform2<'d, T, DMA>
+where
+    T: GeneralInstance4Channel,
+    DMA: UpDma<T>,
+{
+    type Timer = T;
+    async fn run_waveform(&mut self, pwm: &mut SimplePwm<'_, T>, cmd: [[u16; TRANSMIT_SIZE]; 2]) {
+        let mut interleaved = [0u16; TRANSMIT_SIZE * 2];
+        for i in 0..TRANSMIT_SIZE {
+            interleaved[i * 2 + 0] = cmd[0][i];
+            interleaved[i * 2 + 1] = cmd[1][i];
+        }
+
+        pwm.waveform_up_multi_channel(
+            self.dma.reborrow(),
+            Channel::Ch1,
+            Channel::Ch2,
             &interleaved,
         )
         .await;

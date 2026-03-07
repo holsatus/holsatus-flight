@@ -29,7 +29,7 @@ pub mod params {
 
     crate::const_default!(
         Params => {
-            rot: Rotation::const_default(),
+            rot: Rotation::RotX180,
             cal_acc: Calib3D::const_default(),
             cal_gyr: Calib3D::const_default(),
         }

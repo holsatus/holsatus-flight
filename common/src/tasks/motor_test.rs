@@ -7,6 +7,16 @@ use embassy_time::{Duration, Instant, Ticker};
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum MotorTest {
     Stop,
+    Calibrate {
+        high: f32,
+        millis_high: u16,
+        millis_low: u16,
+    },
+    Single {
+        motor: u8,
+        speed: f32,
+        millis: u16,
+    },
     Ramp {
         size: f32,
         rate: f32,
@@ -68,6 +78,40 @@ pub async fn main() {
                 MotorTest::Stop => {
                     snd_ctrl_motors.send([0.0, 0.0, 0.0, 0.0]);
                     break 'testing;
+                }
+                MotorTest::Calibrate {
+                    high,
+                    millis_high,
+                    millis_low,
+                } => {
+                    let elapsed = state_time_elapsed(&state);
+                    if elapsed < Duration::from_millis(*millis_high as u64) {
+                        snd_ctrl_motors.send([*high; 4]);
+                    } else if elapsed
+                        < Duration::from_millis((*millis_high + *millis_low) as u64)
+                    {
+                        snd_ctrl_motors.send([0.0; 4]);
+                    } else {
+                        snd_ctrl_motors.send([0.0; 4]);
+                        break 'testing;
+                    }
+                }
+                MotorTest::Single {
+                    motor,
+                    speed,
+                    millis,
+                } => {
+                    let elapsed = state_time_elapsed(&state);
+
+                    if elapsed < Duration::from_millis(*millis as u64) {
+                        let mut speeds = [0.0; 4];
+                        let idx = (*motor as usize).min(3);
+                        speeds[idx] = *speed;
+                        snd_ctrl_motors.send(speeds);
+                    } else {
+                        snd_ctrl_motors.send([0.0; 4]);
+                        break 'testing;
+                    }
                 }
                 MotorTest::Ramp { size, rate, end } => match &mut state {
                     State::Start(time) => {
@@ -190,5 +234,11 @@ pub async fn main() {
                 },
             }
         }
+    }
+}
+
+fn state_time_elapsed(state: &State) -> Duration {
+    match state {
+        State::Start(t) | State::Main(t) | State::End(t) | State::Exit(t) => t.elapsed(),
     }
 }

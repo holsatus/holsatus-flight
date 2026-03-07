@@ -128,6 +128,8 @@ impl<D: Driver<'static>> embedded_io_async::ErrorType for UsbWriter<D> {
 
 impl<D: Driver<'static>> embedded_io_async::Write for UsbWriter<D> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        const USB_IO_TIMEOUT_MS: u64 = 50;
+
         if !self.usb_writer.dtr() {
             Timer::after_millis(100).await;
             return Err(embedded_io::ErrorKind::NotConnected);
@@ -135,19 +137,38 @@ impl<D: Driver<'static>> embedded_io_async::Write for UsbWriter<D> {
 
         let mut count = 0;
         for chunk in buf.chunks(self.usb_writer.max_packet_size() as usize) {
-            self.usb_writer.write_packet(chunk).await.map_err(err_map)?;
+            with_timeout(
+                Duration::from_millis(USB_IO_TIMEOUT_MS),
+                self.usb_writer.write_packet(chunk),
+            )
+            .await
+            .map_err(|_| embedded_io::ErrorKind::TimedOut)?
+            .map_err(err_map)?;
             count += chunk.len()
         }
 
         if buf.len() % self.usb_writer.max_packet_size() as usize == 0 {
-            self.usb_writer.write_packet(&[]).await.map_err(err_map)?;
+            with_timeout(
+                Duration::from_millis(USB_IO_TIMEOUT_MS),
+                self.usb_writer.write_packet(&[]),
+            )
+            .await
+            .map_err(|_| embedded_io::ErrorKind::TimedOut)?
+            .map_err(err_map)?;
         }
 
         Ok(count)
     }
 
     async fn flush(&mut self) -> Result<(), Self::Error> {
-        self.usb_writer.flush().await.map_err(err_map)
+        const USB_IO_TIMEOUT_MS: u64 = 50;
+        with_timeout(
+            Duration::from_millis(USB_IO_TIMEOUT_MS),
+            self.usb_writer.flush(),
+        )
+        .await
+        .map_err(|_| embedded_io::ErrorKind::TimedOut)?
+        .map_err(err_map)
     }
 }
 

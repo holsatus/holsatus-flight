@@ -210,7 +210,7 @@ impl super::CommandHandler for ParamCommand {
                             match (table_value, *value) {
                             $(
                                 (::mav_param::Value::$mav_var(_) , ArgValue::$arg_var(num)) $(
-                                    if num > $type::MIN as i64 && num < $type::MAX as i64
+                                    if num >= $type::MIN as i64 && num <= $type::MAX as i64
                                 )? => ::mav_param::Value::$mav_var(num $(as $type)?)
                             ),+ ,
                             _ => {

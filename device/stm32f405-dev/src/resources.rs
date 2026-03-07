@@ -4,6 +4,7 @@ use assign_resources::assign_resources;
 
 use common::{
     drivers::imu::ImuConfig,
+    embassy_futures,
     embedded_io,
     errors::adapter::embedded_io::EmbeddedIoError,
     hw_abstraction::OutputGroup,
@@ -25,7 +26,7 @@ assign_resources! {
         periph: I2C1,
         sda: PB9,
         scl: PB8,
-        tx_dma: DMA1_CH6,
+        tx_dma: DMA1_CH7,
         rx_dma: DMA1_CH0,
     }
     spi_1: Spi1 {
@@ -35,16 +36,16 @@ assign_resources! {
         mosi: PB5,
         rx_dma: DMA2_CH0,
         tx_dma: DMA2_CH5,
-        cs_1: PA0,
-        cs_2: PA1,
+        cs_1: PC4,
+        cs_2: PC5,
     }
-    usart_1: Usart1 {
-        periph: USART1,
-        rx_pin: PB7,
-        tx_pin: PB6,
-        rx_dma: DMA2_CH2,
-        tx_dma: DMA2_CH7,
-    }
+    // usart_1: Usart1 {
+    //     periph: USART1,
+    //     rx_pin: PB7,
+    //     tx_pin: PB6,
+    //     rx_dma: DMA2_CH2,
+    //     tx_dma: DMA2_CH7,
+    // }
     // usart_2: Usart2 {
     //     periph: USART2,
     //     rx_pin: PA3,
@@ -67,12 +68,14 @@ assign_resources! {
         tx_dma: DMA2_CH6,
     }
     motors: MotorDriver {
-        up_dma: DMA1_CH2,
-        timer: TIM3,
-        pin_1: PA6,
-        pin_2: PA7,
-        pin_3: PB0,
-        pin_4: PB1,
+        up_dma_1: DMA1_CH2,
+        timer_1: TIM3,
+        pin_1: PA6, //A2
+        pin_2: PA7, //A3
+        up_dma_2: DMA1_CH6,
+        timer_2: TIM4,
+        pin_3: PB6, //SCL
+        pin_4: PB7, //SDA
     }
     sdcard: Sdcard {
         periph: SDIO,
@@ -331,23 +334,202 @@ pub(crate) async fn param_storage(flash: Flash, range: Range<u32>) -> ! {
 
 impl MotorDriver {
     pub fn setup(&mut self, dshot: DshotConfig) -> impl OutputGroup + '_ {
-        use crate::dshot_pwm::{DshotDriver, UpDmaWaveform};
-        DshotDriver::new(
-            self.timer.reborrow(),
+        use crate::dshot_pwm::{DshotDriver2, UpDmaWaveform2};
+
+        let first_pair = DshotDriver2::new(
+            self.timer_1.reborrow(),
             self.pin_1.reborrow(),
             self.pin_2.reborrow(),
+            UpDmaWaveform2::new(self.up_dma_1.reborrow()),
+            dshot as u32,
+        );
+
+        let second_pair = DshotDriver2::new(
+            self.timer_2.reborrow(),
             self.pin_3.reborrow(),
             self.pin_4.reborrow(),
-            UpDmaWaveform::new(self.up_dma.reborrow()),
+            UpDmaWaveform2::new(self.up_dma_2.reborrow()),
             dshot as u32,
-        )
+        );
+
+        DualOutputGroup {
+            first_pair,
+            second_pair,
+        }
     }
+}
+
+struct DualOutputGroup<A, B> {
+    first_pair: A,
+    second_pair: B,
+}
+
+impl<A, B> OutputGroup for DualOutputGroup<A, B>
+where
+    A: OutputGroup,
+    B: OutputGroup,
+{
+    async fn set_motor_speeds(&mut self, speed: [u16; 4]) {
+        embassy_futures::join::join(
+            self.first_pair.set_motor_speeds([speed[0], speed[1], 0, 0]),
+            self.second_pair.set_motor_speeds([speed[2], speed[3], 0, 0]),
+        )
+        .await;
+    }
+
+    async fn set_reverse_dir(&mut self, direction: [bool; 4]) {
+        embassy_futures::join::join(
+            self.first_pair
+                .set_reverse_dir([direction[0], direction[1], false, false]),
+            self.second_pair
+                .set_reverse_dir([direction[2], direction[3], false, false]),
+        )
+        .await;
+    }
+
+    async fn set_motor_speeds_min(&mut self) {
+        embassy_futures::join::join(
+            self.first_pair.set_motor_speeds_min(),
+            self.second_pair.set_motor_speeds_min(),
+        )
+        .await;
+    }
+
+    async fn make_beep(&mut self) {}
 }
 
 #[embassy_executor::task]
 pub(crate) async fn motor_governor(mut motors: MotorDriver, dshot_cfg: DshotConfig) -> ! {
     let motors = motors.setup(dshot_cfg);
     common::tasks::motor_governor::main(motors).await
+}
+
+#[embassy_executor::task]
+pub(crate) async fn motor_direct_test(mut motors: MotorDriver, dshot_cfg: DshotConfig) -> ! {
+    use common::embassy_time::Timer;
+
+    defmt::info!("[motor-direct] waiting for ESC boot chime to complete");
+    Timer::after_secs(10).await;
+
+    let mut motors = motors.setup(dshot_cfg);
+
+    defmt::info!("[motor-direct] starting raw DShot bench test");
+    Timer::after_secs(2).await;
+
+    for _ in 0..80 {
+        motors.set_motor_speeds_min().await;
+        Timer::after_millis(20).await;
+    }
+
+    for motor in 0..4usize {
+        defmt::info!("[motor-direct] channel {} at fixed throttle", motor);
+
+        let mut cmd = [0u16; 4];
+        cmd[motor] = 900;
+
+        for _ in 0..500 {
+            motors.set_motor_speeds(cmd).await;
+            Timer::after_millis(4).await;
+        }
+
+        for _ in 0..80 {
+            motors.set_motor_speeds_min().await;
+            Timer::after_millis(20).await;
+        }
+    }
+
+    defmt::info!("[motor-direct] test complete, holding motors at minimum");
+    loop {
+        motors.set_motor_speeds_min().await;
+        Timer::after_millis(20).await;
+    }
+}
+
+#[embassy_executor::task]
+pub(crate) async fn motor_pwm_test(mut motors: MotorDriver) -> ! {
+    use common::embassy_time::Timer;
+    use embassy_stm32::{
+        gpio::OutputType,
+        time::Hertz,
+        timer::{
+            low_level::CountingMode,
+            simple_pwm::{PwmPin, SimplePwm},
+            Channel,
+        },
+    };
+
+    defmt::info!("[motor-pwm] waiting for ESC power-up");
+    Timer::after_secs(4).await;
+
+    let mut pwm_12 = SimplePwm::new(
+        motors.timer_1.reborrow(),
+        Some(PwmPin::new(motors.pin_1.reborrow(), OutputType::PushPull)),
+        Some(PwmPin::new(motors.pin_2.reborrow(), OutputType::PushPull)),
+        None,
+        None,
+        Hertz::hz(50),
+        CountingMode::EdgeAlignedUp,
+    );
+
+    let mut pwm_34 = SimplePwm::new(
+        motors.timer_2.reborrow(),
+        Some(PwmPin::new(motors.pin_3.reborrow(), OutputType::PushPull)),
+        Some(PwmPin::new(motors.pin_4.reborrow(), OutputType::PushPull)),
+        None,
+        None,
+        Hertz::hz(50),
+        CountingMode::EdgeAlignedUp,
+    );
+
+    pwm_12.channel(Channel::Ch1).enable();
+    pwm_12.channel(Channel::Ch2).enable();
+    pwm_34.channel(Channel::Ch1).enable();
+    pwm_34.channel(Channel::Ch2).enable();
+
+    let max_duty_12 = pwm_12.max_duty_cycle() as u32;
+    let max_duty_34 = pwm_34.max_duty_cycle() as u32;
+
+    let pulse_to_duty_12 = |pulse_us: u32| ((max_duty_12 * pulse_us) / 20_000) as u16;
+    let pulse_to_duty_34 = |pulse_us: u32| ((max_duty_34 * pulse_us) / 20_000) as u16;
+
+    let mut set_all = |pulse_us: u32| {
+        pwm_12
+            .channel(Channel::Ch1)
+            .set_duty_cycle(pulse_to_duty_12(pulse_us));
+        pwm_12
+            .channel(Channel::Ch2)
+            .set_duty_cycle(pulse_to_duty_12(pulse_us));
+        pwm_34
+            .channel(Channel::Ch1)
+            .set_duty_cycle(pulse_to_duty_34(pulse_us));
+        pwm_34
+            .channel(Channel::Ch2)
+            .set_duty_cycle(pulse_to_duty_34(pulse_us));
+    };
+
+    // Full ESC PWM calibration: max throttle -> minimum throttle
+    defmt::info!("[motor-pwm] calibration step 1/2: full throttle");
+    set_all(2000);
+    Timer::after_secs(4).await;
+
+    defmt::info!("[motor-pwm] calibration step 2/2: minimum throttle");
+    set_all(1000);
+    Timer::after_secs(6).await;
+
+    defmt::info!("[motor-pwm] sweep all 4 motors: low -> medium");
+    loop {
+        set_all(1000);
+        Timer::after_secs(2).await;
+
+        for pulse_us in [1050, 1100, 1150, 1200, 1250, 1300, 1350, 1400, 1450, 1500] {
+            set_all(pulse_us);
+            Timer::after_millis(800).await;
+        }
+
+        Timer::after_secs(2).await;
+        set_all(1000);
+        Timer::after_secs(2).await;
+    }
 }
 
 // ----------------------------------------------------------
@@ -437,7 +619,7 @@ static BUF_TX3: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
 static BUF_RX6: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
 static BUF_TX6: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
 
-impl_ring_buffered_usart_setup!(run_usart1, Usart1, USART1, rb = 32, BUF_RX1, BUF_TX1);
+// impl_ring_buffered_usart_setup!(run_usart1, Usart1, USART1, rb = 32, BUF_RX1, BUF_TX1);
 // impl_ring_buffered_usart_setup!(run_usart2, Usart2, USART2, rb = 32, BUF_RX2, BUF_TX2);
 impl_ring_buffered_usart_setup!(run_usart3, Usart3, USART3, rb = 32, BUF_RX3, BUF_TX3);
 impl_ring_buffered_usart_setup!(run_usart6, Usart6, USART6, rb = 32, BUF_RX6, BUF_TX6);

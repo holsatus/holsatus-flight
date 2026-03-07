@@ -13,6 +13,60 @@ use crate::{
     utils::u_types::UBuffer,
 };
 
+async fn ensure_calibration_request_accepted(
+    serial: &mut (impl Write<Error = EmbeddedIoError> + Read<Error = EmbeddedIoError>),
+    sensor_type: SensorType,
+) -> Result<bool, EmbeddedIoError> {
+    let response = PROCEDURE
+        .request(Request {
+            command: DoCalibration {
+                sensor_id: None,
+                sensor_type,
+            }
+            .into(),
+            origin: Origin::Unspecified,
+        })
+        .await;
+
+    match response {
+        Some(Response::Accepted) => Ok(true),
+        Some(Response::Rejected) => {
+            serial
+                .write_all(b"Calibration request was rejected\n\r")
+                .await?;
+            Ok(false)
+        }
+        Some(Response::Unsupported) => {
+            serial
+                .write_all(b"Calibration request is unsupported\n\r")
+                .await?;
+            Ok(false)
+        }
+        Some(Response::Unavailble) => {
+            serial
+                .write_all(b"Calibration resources unavailable\n\r")
+                .await?;
+            Ok(false)
+        }
+        Some(Response::Unchanged) => {
+            serial
+                .write_all(b"Calibration request had no effect\n\r")
+                .await?;
+            Ok(false)
+        }
+        Some(Response::Failed) => {
+            serial.write_all(b"Calibration request failed\n\r").await?;
+            Ok(false)
+        }
+        None => {
+            serial
+                .write_all(b"Commander failed to respond\n\r")
+                .await?;
+            Ok(false)
+        }
+    }
+}
+
 #[allow(unused)] // TODO until implementation is fixed
 #[derive(Command)]
 #[command(help_title = "Calibration commands")]
@@ -86,53 +140,79 @@ impl super::CommandHandler for CalibrateCommand {
             } => {
                 const _DEFAULT_MAX_VAR: f32 = 0.1;
                 const _DEFAULT_MAX_DROPPED: usize = 5;
+                const START_TIMEOUT: Duration = Duration::from_secs(2);
+                const FINISH_TIMEOUT_SECS: u32 = 120;
+
+                let mut receiver = crate::signals::CALIBRATOR_STATE.receiver();
+                // Ignore any stale state so we only observe transitions caused by this request.
+                let _ = receiver.try_get();
 
                 serial
                     .write_all(b"Requesting accelerometer calibration\n\r")
                     .await?;
-                PROCEDURE
-                    .request(Request {
-                        command: DoCalibration {
-                            sensor_id: None,
-                            sensor_type: SensorType::Accelerometer,
-                        }
-                        .into(),
-                        origin: Origin::Unspecified,
-                    })
-                    .await;
+                if !ensure_calibration_request_accepted(&mut serial, SensorType::Accelerometer)
+                    .await?
+                {
+                    return Ok(());
+                }
 
-                // Give the calibrator some time to start
-                Timer::after_millis(10).await;
-                let mut receiver = crate::signals::CALIBRATOR_STATE.receiver();
+                // Allow a short startup timeout, then a much larger timeout for completion.
+                let Ok(calibration_status) = with_timeout(START_TIMEOUT, receiver.changed()).await
+                else {
+                    serial
+                        .write_all(b"Calibration failed to start\n\r")
+                        .await?;
+                    return Ok(());
+                };
 
-                loop {
-                    let Ok(calibration_status) =
-                        with_timeout(Duration::from_secs(2), receiver.changed()).await
-                    else {
-                        serial
-                            .write_all(b"Calibration failed to respond\n\r")
-                            .await?;
-                        break;
-                    };
+                match calibration_status {
+                    crate::tasks::calibrator::CalibratorState::Idle => {
+                        serial.write_all(b"Calibration idle\n\r").await?;
+                    }
+                    crate::tasks::calibrator::CalibratorState::Calibrating(Sensor::Acc) => {
+                        serial.write_all(b"Calibrating sensor").await?;
 
-                    match calibration_status {
-                        crate::tasks::calibrator::CalibratorState::Idle => {
-                            serial.write_all(b"Calibration idle\n\r").await?;
-                            break;
+                        let mut complete = false;
+                        for _ in 0..FINISH_TIMEOUT_SECS {
+                            let Ok(next_state) =
+                                with_timeout(Duration::from_secs(1), receiver.changed()).await
+                            else {
+                                serial.write_all(b".").await?;
+                                continue;
+                            };
+
+                            match next_state {
+                                crate::tasks::calibrator::CalibratorState::Idle => {
+                                    complete = true;
+                                    break;
+                                }
+                                crate::tasks::calibrator::CalibratorState::Calibrating(
+                                    Sensor::Acc,
+                                ) => continue,
+                                _ => {
+                                    serial
+                                        .write_all(
+                                            b"\n\rerror: Calibration of different sensor in progress\n\r",
+                                        )
+                                        .await?;
+                                    return Ok(());
+                                }
+                            }
                         }
-                        crate::tasks::calibrator::CalibratorState::Calibrating(Sensor::Acc) => {
-                            let mut buffer = UBuffer::<32>::new();
-                            uwrite!(buffer, "Calibrating sensor\n\r")?;
-                            serial.write_all(buffer.bytes()).await?;
-                        }
-                        _ => {
+
+                        if !complete {
                             serial
-                                .write_all(
-                                    b"error: Calibration of different sensor in progress\n\r",
-                                )
+                                .write_all(b"\n\rCalibration timed out while running\n\r")
                                 .await?;
-                            break;
+                            return Ok(());
                         }
+
+                        serial.write_all(b"\n\rCalibration idle\n\r").await?;
+                    }
+                    _ => {
+                        serial
+                            .write_all(b"error: Calibration of different sensor in progress\n\r")
+                            .await?;
                     }
                 }
             }
@@ -145,53 +225,78 @@ impl super::CommandHandler for CalibrateCommand {
                 const _DEFAULT_MAX_VAR: f32 = 0.01;
                 const _DEFAULT_MAX_DROPPED: usize = 5;
                 const _DEFAULT_DURATION: u8 = 5;
+                const START_TIMEOUT: Duration = Duration::from_secs(2);
+                const FINISH_TIMEOUT_SECS: u32 = 120;
+
+                let mut receiver = crate::signals::CALIBRATOR_STATE.receiver();
+                // Ignore any stale state so we only observe transitions caused by this request.
+                let _ = receiver.try_get();
 
                 serial
                     .write_all(b"Requesting gyroscope calibration\n\r")
                     .await?;
-                PROCEDURE
-                    .request(Request {
-                        command: DoCalibration {
-                            sensor_id: None,
-                            sensor_type: SensorType::Gyroscope,
-                        }
-                        .into(),
-                        origin: Origin::Unspecified,
-                    })
-                    .await;
+                if !ensure_calibration_request_accepted(&mut serial, SensorType::Gyroscope)
+                    .await?
+                {
+                    return Ok(());
+                }
 
-                // Give the calibrator some time to start
-                Timer::after_millis(10).await;
-                let mut receiver = crate::signals::CALIBRATOR_STATE.receiver();
+                let Ok(calibration_status) = with_timeout(START_TIMEOUT, receiver.changed()).await
+                else {
+                    serial
+                        .write_all(b"Calibration failed to start\n\r")
+                        .await?;
+                    return Ok(());
+                };
 
-                loop {
-                    let Ok(calibration_status) =
-                        with_timeout(Duration::from_secs(2), receiver.changed()).await
-                    else {
-                        serial
-                            .write_all(b"Calibration failed to respond\n\r")
-                            .await?;
-                        break;
-                    };
+                match calibration_status {
+                    crate::tasks::calibrator::CalibratorState::Idle => {
+                        serial.write_all(b"Calibration idle\n\r").await?;
+                    }
+                    crate::tasks::calibrator::CalibratorState::Calibrating(Sensor::Gyr) => {
+                        serial.write_all(b"Calibrating sensor").await?;
 
-                    match calibration_status {
-                        crate::tasks::calibrator::CalibratorState::Idle => {
-                            serial.write_all(b"Calibration idle\n\r").await?;
-                            break;
+                        let mut complete = false;
+                        for _ in 0..FINISH_TIMEOUT_SECS {
+                            let Ok(next_state) =
+                                with_timeout(Duration::from_secs(1), receiver.changed()).await
+                            else {
+                                serial.write_all(b".").await?;
+                                continue;
+                            };
+
+                            match next_state {
+                                crate::tasks::calibrator::CalibratorState::Idle => {
+                                    complete = true;
+                                    break;
+                                }
+                                crate::tasks::calibrator::CalibratorState::Calibrating(
+                                    Sensor::Gyr,
+                                ) => continue,
+                                _ => {
+                                    serial
+                                        .write_all(
+                                            b"\n\rerror: Calibration of different sensor in progress\n\r",
+                                        )
+                                        .await?;
+                                    return Ok(());
+                                }
+                            }
                         }
-                        crate::tasks::calibrator::CalibratorState::Calibrating(Sensor::Gyr) => {
-                            let mut buffer = UBuffer::<32>::new();
-                            uwrite!(buffer, "Calibrating sensor\n\r")?;
-                            serial.write_all(buffer.bytes()).await?;
-                        }
-                        _ => {
+
+                        if !complete {
                             serial
-                                .write_all(
-                                    b"error: Calibration of different sensor in progress\n\r",
-                                )
+                                .write_all(b"\n\rCalibration timed out while running\n\r")
                                 .await?;
-                            break;
+                            return Ok(());
                         }
+
+                        serial.write_all(b"\n\rCalibration idle\n\r").await?;
+                    }
+                    _ => {
+                        serial
+                            .write_all(b"error: Calibration of different sensor in progress\n\r")
+                            .await?;
                     }
                 }
             }
@@ -205,24 +310,21 @@ impl super::CommandHandler for CalibrateCommand {
                 const _DEFAULT_PRESCALAR: f32 = 50.;
                 const _DEFAULT_DURATION: u8 = 5;
 
+                let mut receiver = crate::signals::CALIBRATOR_STATE.receiver();
+                // Ignore any stale state so we only observe transitions caused by this request.
+                let _ = receiver.try_get();
+
                 serial
-                    .write_all(b"Requesting gyroscope calibration\n\r")
+                    .write_all(b"Requesting magnetometer calibration\n\r")
                     .await?;
-                PROCEDURE
-                    .request(Request {
-                        command: DoCalibration {
-                            sensor_id: None,
-                            sensor_type: SensorType::Magnetometer,
-                        }
-                        .into(),
-                        origin: Origin::Unspecified,
-                    })
-                    .await;
+                if !ensure_calibration_request_accepted(&mut serial, SensorType::Magnetometer)
+                    .await?
+                {
+                    return Ok(());
+                }
 
                 // Give the calibrator some time to start
                 Timer::after_millis(10).await;
-                let mut receiver = crate::signals::CALIBRATOR_STATE.receiver();
-
                 loop {
                     let Ok(calibration_status) =
                         with_timeout(Duration::from_secs(2), receiver.changed()).await
@@ -236,6 +338,7 @@ impl super::CommandHandler for CalibrateCommand {
                     match calibration_status {
                         crate::tasks::calibrator::CalibratorState::Idle => {
                             serial.write_all(b"Calibration idle\n\r").await?;
+                            break;
                         }
                         crate::tasks::calibrator::CalibratorState::Calibrating(Sensor::Mag(
                             state,
@@ -261,11 +364,13 @@ impl super::CommandHandler for CalibrateCommand {
                                 let mut buffer = UBuffer::<32>::new();
                                 uwrite!(buffer, "Successfully calibrated magnetometer!\n\r")?;
                                 serial.write_all(buffer.bytes()).await?;
+                                break;
                             }
                             MagCalState::DoneFailed(_) => {
                                 let mut buffer = UBuffer::<32>::new();
                                 uwrite!(buffer, "Failed to calibrated magnetomter\n\r")?;
                                 serial.write_all(buffer.bytes()).await?;
+                                break;
                             }
                         },
                         _ => {

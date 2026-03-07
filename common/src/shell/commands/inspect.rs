@@ -1,10 +1,9 @@
 use crate::{
     errors::adapter::embedded_io::EmbeddedIoError,
-    shell::{CLEAR_SCREEN, INTERRUPT},
+    shell::CLEAR_SCREEN,
     utils::u_types::{UBuffer, UFloat},
 };
-use embassy_futures::select::{select, Either};
-use embassy_time::{Duration, Ticker, Timer};
+use embassy_time::Timer;
 use embedded_cli::{
     arguments::{FromArgument, FromArgumentError},
     Command,
@@ -55,8 +54,7 @@ impl super::CommandHandler for InspectCommand {
     ) -> Result<(), EmbeddedIoError> {
         match self {
             InspectCommand::Value { kind, frequency } => {
-                let mut maybe_ticker =
-                    frequency.map(|f| Ticker::every(Duration::from_hz(f as u64)));
+                let mut maybe_ticker = super::periodic_ticker(&mut serial, *frequency).await?;
 
                 loop {
                     if frequency.is_some() {
@@ -140,25 +138,8 @@ impl super::CommandHandler for InspectCommand {
 
                     serial.flush().await?;
 
-                    // TODO - Maybe we can isolate this functionality into a
-                    // helper function
-                    match &mut maybe_ticker {
-                        None => break,
-                        Some(ticker) => {
-                            let mut bytes = [0u8];
-                            if let Either::First(res) =
-                                select(serial.read(&mut bytes[..]), ticker.next()).await
-                            {
-                                match res {
-                                    Ok(_) => {
-                                        if bytes[0] == *INTERRUPT {
-                                            break;
-                                        }
-                                    }
-                                    Err(e) => return Err(e),
-                                }
-                            }
-                        }
+                    if super::wait_next_or_ctrl_c(&mut serial, &mut maybe_ticker).await? {
+                        break;
                     }
                 }
             }
