@@ -23,6 +23,9 @@ pub mod in_flight_estimator;
 #[cfg(feature = "usb")]
 pub mod usb_manager;
 
+#[cfg(feature = "usb")]
+pub mod usb_orientation_stream;
+
 #[cfg(feature = "mpc")]
 pub mod controller_mpc;
 

@@ -9,7 +9,7 @@ use common::{
     errors::adapter::embedded_io::EmbeddedIoError,
     hw_abstraction::OutputGroup,
     serial::IoStreamRaw,
-    types::config::{DshotConfig, I2cConfig, UartConfig},
+    types::config::{DshotConfig, I2cConfig, UartConfig, UartParity, UartStopBits},
 };
 
 use embassy_stm32::{
@@ -553,6 +553,25 @@ macro_rules! impl_ring_buffered_usart_setup {
 
                 let mut config = embassy_stm32::usart::Config::default();
                 config.baudrate = uart_cfg.baud;
+                config.parity = match uart_cfg.parity {
+                    UartParity::None => embassy_stm32::usart::Parity::ParityNone,
+                    UartParity::Even => embassy_stm32::usart::Parity::ParityEven,
+                    UartParity::Odd => embassy_stm32::usart::Parity::ParityOdd,
+                };
+                config.stop_bits = match uart_cfg.stop_bits {
+                    UartStopBits::One => embassy_stm32::usart::StopBits::STOP1,
+                    UartStopBits::Two => embassy_stm32::usart::StopBits::STOP2,
+                };
+
+                #[cfg(any(usart_v3, usart_v4))]
+                {
+                    config.invert_rx = uart_cfg.invert_rx;
+                }
+
+                #[cfg(not(any(usart_v3, usart_v4)))]
+                if uart_cfg.invert_rx {
+                    defmt::warn!("[uart] RX inversion requested but this USART peripheral does not support hardware inversion");
+                }
 
                 let usart = embassy_stm32::usart::Uart::new(
                     self.periph.reborrow(),

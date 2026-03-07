@@ -73,7 +73,8 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
         // parser operates on a blocking Write implementation. This way the
         // code will nenver truly block, since the write results in an interrupt.
         level_1_spawner.spawn(resources::usb::runner(r.usb, config::hwinfo()).unwrap());
-        level_t_spawner.spawn(common::shell::main("usb").unwrap());
+        // level_t_spawner.spawn(common::shell::main("usb").unwrap());
+        level_t_spawner.spawn(common::tasks::usb_orientation_stream::main("usb").unwrap());
     }
 
     #[cfg(feature = "sdmmc")]
@@ -86,7 +87,7 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     // These take direct ownership of their hardware to avoid additional complexity
     level_0_spawner.spawn(resources::motor_governor(r.motors, config::motor()).unwrap());
     level_0_spawner.spawn(common::tasks::motor_test::main().unwrap());
-    // level_0_spawner.spawn(common::tasks::rc_reader::main("usart3").unwrap());
+    level_0_spawner.spawn(common::tasks::rc_reader::main("usart3").unwrap());
     // level_0_spawner.spawn(common::tasks::rc_binder::main().unwrap());
     level_0_spawner.spawn(common::tasks::signal_router::main().unwrap());
     level_0_spawner.spawn(common::tasks::controller_rate::main().unwrap());
@@ -102,7 +103,11 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     // ------------------- Low-priority tasks -------------------
 
     #[cfg(feature = "mavlink")]
-    level_t_spawner.spawn(common::mavlink2::main("usart3").unwrap());
+    {
+        // usart3 is dedicated to RC/SBUS input.
+        // Move MAVLink to a different stream before enabling this again.
+        // level_t_spawner.spawn(common::mavlink2::main("usart3").unwrap());
+    }
 
     level_t_spawner.spawn(common::tasks::calibrator::main().unwrap());
     level_t_spawner.spawn(common::tasks::arm_blocker::main().unwrap());

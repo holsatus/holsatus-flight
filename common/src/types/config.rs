@@ -1,8 +1,24 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub enum UartParity {
+    None,
+    Even,
+    Odd,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub enum UartStopBits {
+    One,
+    Two,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct UartConfig {
     pub baud: u32,
+    pub parity: UartParity,
+    pub stop_bits: UartStopBits,
+    pub invert_rx: bool,
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]

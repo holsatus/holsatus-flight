@@ -20,6 +20,7 @@ pub async fn main() {
     let dt = 1.0 / get_ctrl_freq!() as f32;
 
     let mut ahrs = ahrs::Madgwick::new(dt, 0.01);
+    let q_rot_x_180 = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), core::f32::consts::PI);
 
     info!("{}: Entering main loop at {} Hz", ID, 1. / dt);
     '_infinite: loop {
@@ -50,10 +51,10 @@ pub async fn main() {
             }
         };
 
-        let attitude: [f32; 3] =
-            (|(x, y, z)| rot_x_180(Vector3::new(x, y, z)))(attitude_q.euler_angles()).into();
-
-        let attitude_q = UnitQuaternion::from_euler_angles(attitude[0], attitude[1], attitude[2]);
+        // Convert the AHRS output back to firmware frame with quaternion composition.
+        // Rotating Euler angles as a 3D vector is not a valid frame transform.
+        let attitude_q = q_rot_x_180 * attitude_q;
+        let attitude: [f32; 3] = attitude_q.euler_angles().into();
 
         // Mix signals and send to motor governer task
         snd_ahrs_attitude_q.send(attitude_q);

@@ -39,7 +39,7 @@ pub async fn main(serial_id: &'static str) -> ! {
     let mut snd_rc_channels = s::RC_CHANNELS_RAW.sender();
     let mut snd_rc_status = s::RC_STATUS.sender();
 
-    let parser_variant = ParserVariant::Crsf;
+    let parser_variant = ParserVariant::Sbus;
     let mut parser = Parser::from(parser_variant);
 
     let mut buffer = [0u8; 64];

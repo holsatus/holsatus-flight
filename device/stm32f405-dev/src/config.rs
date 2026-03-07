@@ -3,7 +3,7 @@ use common::{
         icm20948_async::{AccDlp, AccRange, AccUnit, Config, GyrDlp, GyrRange, GyrUnit},
         ImuConfig,
     },
-    types::config::{DshotConfig, I2cConfig, UartConfig},
+    types::config::{DshotConfig, I2cConfig, UartConfig, UartParity, UartStopBits},
 };
 
 #[cfg(feature = "sdmmc")]
@@ -49,19 +49,41 @@ pub(crate) fn motor() -> DshotConfig {
 }
 
 pub(crate) fn usart1() -> UartConfig {
-    UartConfig { baud: 420_000 }
+    UartConfig {
+        baud: 420_000,
+        parity: UartParity::None,
+        stop_bits: UartStopBits::One,
+        invert_rx: false,
+    }
 }
 
 pub(crate) fn usart2() -> UartConfig {
-    UartConfig { baud: 115_200 }
+    UartConfig {
+        baud: 115_200,
+        parity: UartParity::None,
+        stop_bits: UartStopBits::One,
+        invert_rx: false,
+    }
 }
 
 pub(crate) fn usart3() -> UartConfig {
-    UartConfig { baud: 115_200 }
+    UartConfig {
+        // SBUS protocol timing/framing.
+        baud: 100_000,
+        parity: UartParity::Even,
+        stop_bits: UartStopBits::Two,
+        // On STM32F405 this may require external inversion depending on USART capabilities.
+        invert_rx: true,
+    }
 }
 
 pub(crate) fn usart6() -> UartConfig {
-    UartConfig { baud: 115_200 }
+    UartConfig {
+        baud: 115_200,
+        parity: UartParity::None,
+        stop_bits: UartStopBits::One,
+        invert_rx: false,
+    }
 }
 
 #[cfg(feature = "sdmmc")]
