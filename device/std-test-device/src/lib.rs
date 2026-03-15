@@ -18,7 +18,7 @@ pub mod lockstep;
 pub mod resources;
 
 #[cfg(feature = "rerun")]
-pub mod logger;
+pub mod rerun_logger;
 
 pub static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
     let runtime = Runtime::new().expect("Unable to create tokio Runtime");
@@ -36,6 +36,8 @@ pub struct Args {
     pub config: String,
 }
 
+const SIM_FREQUENCY: u64 = 500;
+
 pub fn test_entry(
     limit_seconds: u64,
     #[allow(unused)]
@@ -47,11 +49,9 @@ pub fn test_entry(
     let config = holsatus_sim::config::load_from_file_path(&args.config)?;
     let (r, sitl) = holsatus_sim::initialize(config.clone())?;
 
-    // Start simulation thread and crate dummy resources
+    // Setup logging to run at 50 Hz
     #[cfg(feature = "rerun")]
-    let mut logger = resources::setup_logging(sitl.clone(), test_name)?;
-    #[cfg(feature = "rerun")]
-    let mut counter = 0;
+    let mut logger = rerun_logger::setup(sitl.clone(), 10, test_name)?;
 
     // Sometimes rerun can take a split second to start receiving
     #[cfg(feature = "rerun")]
@@ -61,19 +61,12 @@ pub fn test_entry(
     lockstep::lockstep_with(
         move |spawner| firmware_entry(spawner, r, fw_sitl),
         move || {
-            // reduce logging rate
-            #[cfg(feature = "rerun")] {
-                counter += 1;
-                if counter == 1 {
-                    logger.log().unwrap();
-                } else if counter >= 10 {
-                    counter = 0;
-                }
-            }
+            #[cfg(feature = "rerun")]
+            logger.log_subsampled().unwrap();
 
             assert!(Instant::now().as_secs() < limit_seconds);
 
-            let step_size = embassy_time::Duration::from_hz(500);
+            let step_size = embassy_time::Duration::from_hz(SIM_FREQUENCY);
             sitl.step(step_size.as_micros() as f32 * 1e-6);
             RUNNING.load(Ordering::Relaxed).then_some(step_size)
         },
@@ -89,7 +82,7 @@ pub fn test_entry(
 fn firmware_entry(spawner: Spawner, r: Resources, sim: SimHandle) {
     log::debug!("Firmware entry started");
 
-    common::signals::CONTROL_FREQUENCY.store(500, Ordering::Relaxed);
+    common::signals::CONTROL_FREQUENCY.store(SIM_FREQUENCY as u16, Ordering::Relaxed);
 
     // Might as well start the parameter storage module to get things loaded
     spawner.spawn(resources::param_storage(r.flash).unwrap());

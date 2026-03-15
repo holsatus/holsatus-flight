@@ -4,17 +4,34 @@ use embassy_time::Instant;
 use holsatus_sim::{Sim, SimHandle};
 use rerun::{Arrows3D, Color, LineStrips3D, Points3D, RecordingStream, Scalars, Vec3D};
 
+pub fn setup(
+    handle: SimHandle,
+    subsample: usize,
+    test_name: &str,
+) -> Result<RerunLogger, Box<dyn std::error::Error>> {
+    let rec = rerun::RecordingStreamBuilder::new(test_name).spawn()?;
+
+    rerun::Logger::new(rec.clone())
+        .with_filter("off, common=debug, holsatus_sim=debug, std_device=debug")
+        .init()?;
+
+    RerunLogger::new(rec, handle, subsample)
+}
+
 pub struct RerunLogger {
     pub rec: RecordingStream,
     pos_trail: VecDeque<Vec3D>,
     trail_len: usize,
     handle: SimHandle,
+    subsample_cfg: usize,
+    subsample_count: usize,
 }
 
 impl RerunLogger {
     pub fn new(
         rec: RecordingStream,
         handle: SimHandle,
+        subsample: usize
     ) -> Result<Self, Box<dyn std::error::Error>> {
         rec.set_time("embassy-time", std::time::Duration::from_nanos(0));
 
@@ -27,13 +44,26 @@ impl RerunLogger {
             pos_trail: VecDeque::with_capacity(1000),
             trail_len: 1000,
             handle,
+            subsample_cfg: subsample,
+            subsample_count: 0,
         })
     }
 
-    pub fn log(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Load 3D file for drone visualization
-        let state = self.handle.vehicle_state();
+    pub fn log_subsampled(&mut self) -> Result<(), Box<dyn std::error::Error>> {
 
+        self.subsample_count += 1;
+        if self.subsample_count < self.subsample_cfg {
+            return Ok(())
+        }
+        self.subsample_count = 0;
+
+        self.log_now()
+    }
+
+
+    pub fn log_now(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+
+        let state = self.handle.vehicle_state();
         let pos = state.position;
         let rot = state.rotation;
 

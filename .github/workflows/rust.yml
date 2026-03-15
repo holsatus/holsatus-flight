@@ -29,7 +29,7 @@ jobs:
     - name: Add thumbv7m-none-eabihf target
       run: rustup target add thumbv7em-none-eabihf
   
-    - name: Install dependencies
+    - name: Install flip-link linker dependency
       run: cargo install flip-link
 
     - name: Build base Holsatus Flight "common" library
