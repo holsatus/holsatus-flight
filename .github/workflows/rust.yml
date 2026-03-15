@@ -58,8 +58,7 @@ jobs:
         export CARGO_HOME=$(pwd)/device/stm32f405-dev/.cargo
         cargo build --manifest-path device/stm32f405-dev/Cargo.toml --verbose
 
-    # Temporarily disabled
-    # - name: Build binary for rp2040-dev target
-    #   run: |
-    #     export CARGO_HOME=$(pwd)/device/rp2040-dev/.cargo
-    #     cargo build --manifest-path device/rp2040-dev/Cargo.toml --verbose
+    - name: Build binary for rp2040-dev target
+      run: |
+        export CARGO_HOME=$(pwd)/device/rp2040-dev/.cargo
+        cargo build --manifest-path device/rp2040-dev/Cargo.toml --verbose

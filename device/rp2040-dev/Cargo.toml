@@ -3,7 +3,12 @@ name = "rp2040-dev"
 version = "0.1.0"
 edition = "2021"
 
+
 [features]
+default = ["gnss", "usb"]
+
+gnss = ["common/gnss"]
+usb = ["common/usb"]
 
 [dependencies]
 cortex-m = "0.7.7"
@@ -11,25 +16,26 @@ cortex-m-rt = "0.7.3"
 embedded-hal = "1.0.0"
 embedded-hal-async = "1.0.0"
 
-defmt = "0.3.4"
-defmt-rtt = "0.4.0"
-panic-probe = { version = "0.3", features = ["print-defmt"] }
+defmt = "1.0.1"
+defmt-rtt = "1.1.0"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 
 common = { path = "../../common", default-features = false, features = [
     "portable-atomic-critical-section",
     "arch-cortex-m",
-    "mavlink",
+    # "mavlink", // mavio currently depends on atomic ops incompatible with the rp2040
     "defmt",
+    "gnss",
+    "usb",
 ] }
 
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", features = [
-    "task-arena-size-65536",
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633", features = [
     "executor-interrupt",
     "executor-thread",
     "arch-cortex-m",
 ] }
 
-embassy-rp = { git = "https://github.com/embassy-rs/embassy", features = [
+embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633", features = [
     "critical-section-impl",
     "rom-v2-intrinsics",
     "unstable-pac",
@@ -38,11 +44,14 @@ embassy-rp = { git = "https://github.com/embassy-rs/embassy", features = [
     "rp2040"
 ] }
 
-dshot-pio = { git = "https://github.com/peterkrull/dshot-pio", features = ["embassy-rp"] }
+dshot-encoder = { git = "https://github.com/peterkrull/dshot-encoder" }
 
-assign-resources = "0.4.1"
+assign-resources = "0.5.0"
 static_cell = "2.1.0"   # Used to allocate buffers and interrupt executors
 portable-atomic = { version = "1.10.0", features = ["critical-section"] }
+paste = "1.0.15"
+pio-proc = "0.3.0"
+pio = "0.3.0"
 
 # cargo build/run --release
 [profile.release]

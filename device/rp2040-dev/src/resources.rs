@@ -1,14 +1,14 @@
 use assign_resources::assign_resources;
 use common::{
-    drivers::imu::ImuConfig, embassy_usb::driver::Driver, hw_abstraction::FourMotors, types::{config::{DshotConfig, I2cConfig, UartConfig}, device::HardwareInfo}
+    drivers::imu::ImuConfig,
+    embedded_io,
+    errors::adapter::embedded_io::EmbeddedIoError,
+    hw_abstraction::OutputGroup,
+    serial::IoStreamRaw,
+    types::config::{DshotConfig, I2cConfig, UartConfig},
 };
-use dshot_pio::DshotPioTrait;
-use embassy_rp::{
-    bind_interrupts, peripherals,
-};
+use embassy_rp::{bind_interrupts, peripherals, Peri, Peripherals};
 use embedded_hal_async::i2c::I2c;
-
-use crate::config::gen_default_cfg;
 
 /// Define the clock configuration for the board.
 pub(crate) fn config() -> embassy_rp::config::Config {
@@ -62,30 +62,28 @@ assign_resources! {
     }
 }
 
+pub fn split(p: Peripherals) -> AssignedResources {
+    split_resources!(p)
+}
+
 // ----------------------------------------------------------
 // -------------------- Main IMU I2C ------------------------
 // ----------------------------------------------------------
 
 impl I2c0 {
-    pub fn setup(self, cfg: &I2cConfig) -> impl I2c {
+    pub fn setup(self, cfg: I2cConfig) -> impl I2c {
         bind_interrupts!(struct I2c0Irq {
             I2C0_IRQ => embassy_rp::i2c::InterruptHandler<peripherals::I2C0>;
         });
 
         let mut config = embassy_rp::i2c::Config::default();
         config.frequency = cfg.frequency;
-        embassy_rp::i2c::I2c::new_async(
-            self.periph,
-            self.scl,
-            self.sda,
-            I2c0Irq,
-            config,
-        )
+        embassy_rp::i2c::I2c::new_async(self.periph, self.scl, self.sda, I2c0Irq, config)
     }
 }
 
 #[embassy_executor::task]
-pub(crate) async fn imu_reader_6dof(i2c: I2c0, i2c_cfg: &'static I2cConfig, imu_cfg: &'static ImuConfig) -> ! {
+pub(crate) async fn imu_reader(i2c: I2c0, i2c_cfg: I2cConfig, imu_cfg: ImuConfig) -> ! {
     let i2c = i2c.setup(i2c_cfg);
     common::tasks::imu_reader::main_6dof_i2c(i2c, imu_cfg, Some(0x69)).await
 }
@@ -100,11 +98,10 @@ impl Flash {
     }
 }
 
-
 #[embassy_executor::task]
-pub(crate) async fn configurator(flash: Flash) -> ! {
+pub(crate) async fn param_storage(flash: Flash) -> ! {
     let flash = flash.setup();
-    common::tasks::configurator::main(flash, 0..{2 * 1024 * 1024}, gen_default_cfg).await
+    common::tasks::param_storage::entry(flash, 0..{ 2 * 1024 * 1024 }).await
 }
 
 // ----------------------------------------------------------
@@ -112,20 +109,23 @@ pub(crate) async fn configurator(flash: Flash) -> ! {
 // ----------------------------------------------------------
 
 struct PioMotors<'a, PIO: embassy_rp::pio::Instance> {
-    inner: dshot_pio::dshot_embassy_rp::DshotPio<'a, 4, PIO>
+    inner: crate::dshot_pio::DshotPio<'a, 4, PIO>,
 }
 
-impl <'a, PIO: embassy_rp::pio::Instance> FourMotors for PioMotors<'a, PIO> {
+impl<'a, PIO: embassy_rp::pio::Instance> OutputGroup for PioMotors<'a, PIO> {
     async fn set_motor_speeds(&mut self, speeds: [u16; 4]) {
-        self.inner.throttle_clamp(speeds);
+        self.inner
+            .command(speeds.map(|speed| dshot_encoder::throttle_clamp(speed, false)));
     }
 
     async fn set_motor_speeds_min(&mut self) {
-        self.inner.throttle_minimum();
+        self.inner
+            .command([dshot_encoder::throttle_minimum(false); 4]);
     }
 
     async fn set_reverse_dir(&mut self, rev: [bool; 4]) {
-        self.inner.reverse(rev);
+        self.inner
+            .command(rev.map(|rev| dshot_encoder::reverse(rev)));
     }
 
     async fn make_beep(&mut self) {
@@ -134,25 +134,27 @@ impl <'a, PIO: embassy_rp::pio::Instance> FourMotors for PioMotors<'a, PIO> {
 }
 
 impl MotorDriver {
-    pub fn setup(self, _dshot: &DshotConfig) -> impl FourMotors {
+    pub fn setup(self, _dshot: DshotConfig) -> impl OutputGroup {
         bind_interrupts!( struct Pio0Irqs {
             PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<peripherals::PIO0>;
         });
 
-        PioMotors{ inner: dshot_pio::dshot_embassy_rp::DshotPio::<4, _>::new(
-            self.pio,
-            Pio0Irqs,
-            self.pin_1,
-            self.pin_2,
-            self.pin_3,
-            self.pin_4,
-            (52, 0)
-        )}
+        PioMotors {
+            inner: crate::dshot_pio::DshotPio::<4, _>::new(
+                self.pio,
+                Pio0Irqs,
+                self.pin_1,
+                self.pin_2,
+                self.pin_3,
+                self.pin_4,
+                (52, 0), // eh..
+            ),
+        }
     }
 }
 
 #[embassy_executor::task]
-pub(crate) async fn motor_governor(motors: MotorDriver, dshot_cfg: &'static DshotConfig) -> ! {
+pub(crate) async fn motor_governor(motors: MotorDriver, dshot_cfg: DshotConfig) -> ! {
     let motors = motors.setup(dshot_cfg);
     common::tasks::motor_governor::main(motors).await
 }
@@ -162,10 +164,10 @@ pub(crate) async fn motor_governor(motors: MotorDriver, dshot_cfg: &'static Dsho
 // ----------------------------------------------------------
 
 macro_rules! impl_ring_buffered_usart_setup {
-    ($UsartX:ident, $USARTX_IRQ:ident, $USARTX:ident, $tx_size:literal, $rx_size:literal) => {
+    ($fn_name:ident, $UsartX:ident, $USARTX_IRQ:ident, $USARTX:ident, $tx_size:literal, $rx_size:literal, $buf_rx:path, $buf_tx:path) => {
         #[allow(unused)]
         impl $UsartX {
-            pub fn setup<'d>(self, uart_cfg: &UartConfig) -> embassy_rp::uart::BufferedUart<'d, peripherals::$USARTX> {
+            pub fn setup<'d>(self, uart_cfg: UartConfig) -> embassy_rp::uart::BufferedUart {
                 bind_interrupts!(struct UsartIrq {
                     $USARTX_IRQ => embassy_rp::uart::BufferedInterruptHandler<peripherals::$USARTX>;
                 });
@@ -180,9 +182,9 @@ macro_rules! impl_ring_buffered_usart_setup {
 
                 let usart = embassy_rp::uart::BufferedUart::new(
                     self.periph,
-                    UsartIrq,
                     self.tx_pin,
                     self.rx_pin,
+                    UsartIrq,
                     TX_BUF.init([0; $tx_size]),
                     RX_BUF.init([0; $rx_size]),
                     config,
@@ -191,43 +193,74 @@ macro_rules! impl_ring_buffered_usart_setup {
                 usart
             }
         }
+
+        #[embassy_executor::task]
+        pub(crate) async fn $fn_name(usart: $UsartX, uart_cfg: UartConfig, serial_id: &'static str) {
+            let usart = usart.setup(uart_cfg);
+
+            let (tx, rx) = usart.split();
+
+            let (mut dev_prod, app_cons) = $buf_tx.claim_reader();
+            let (mut dev_cons, app_prod) = $buf_rx.claim_writer();
+
+            let io_stream_raw = IoStreamRaw::new(serial_id, app_cons, app_prod);
+
+            static IO_STREAM_RAW: StaticCell<IoStreamRaw<'static>> = StaticCell::new();
+            let io_stream_ref = IO_STREAM_RAW.init(io_stream_raw);
+
+            common::serial::insert(io_stream_ref).unwrap();
+
+            let map_err = |error: embassy_rp::uart::Error| {
+                <embassy_rp::uart::Error as embedded_io::Error>::kind(&error).into()
+            };
+
+            common::embassy_futures::join::join(
+                dev_prod.embedded_io_connect_mapped(rx, map_err),
+                dev_cons.embedded_io_connect_mapped(tx, map_err),
+            ).await;
+
+            defmt::warn!("[{}] Stream disconnected unexpectedly", serial_id)
+        }
     };
 }
 
-impl_ring_buffered_usart_setup!(Uart0, UART0_IRQ, UART0, 32, 128);
-impl_ring_buffered_usart_setup!(Uart1, UART1_IRQ, UART1, 32, 128);
+use common::grantable_io::GrantableIo;
+use static_cell::StaticCell;
 
-// RC controls (e.g. sbus/crsf)
-#[embassy_executor::task]
-pub(crate) async fn rc_serial_read(usart: Uart0, uart_cfg: &'static UartConfig) -> ! {
-    let usart = usart.setup(uart_cfg);
-    let (_tx, mut rx) = usart.split();
-    common::tasks::rc_reader::main(&mut rx).await
-}
+static BUF_TX0: GrantableIo<256, EmbeddedIoError> = GrantableIo::new();
+static BUF_RX0: GrantableIo<512, EmbeddedIoError> = GrantableIo::new();
 
-// GNSS module (ubx protocol)
-#[embassy_executor::task]
-pub(crate) async fn gnss_serial_read(usart: Uart1, uart_cfg: &'static UartConfig) -> ! {
-    let usart = usart.setup(uart_cfg);
-    let (_tx, mut rx) = usart.split();
-    common::tasks::gnss_reader::main(&mut rx).await
-}
+static BUF_TX1: GrantableIo<256, EmbeddedIoError> = GrantableIo::new();
+static BUF_RX1: GrantableIo<512, EmbeddedIoError> = GrantableIo::new();
+
+impl_ring_buffered_usart_setup!(run_uart0, Uart0, UART0_IRQ, UART0, 32, 128, BUF_RX0, BUF_TX0);
+impl_ring_buffered_usart_setup!(run_uart1, Uart1, UART1_IRQ, UART1, 32, 128, BUF_RX1, BUF_TX1);
 
 // ----------------------------------------------------------
 // --------------- USB for PC-FW connection -----------------
 // ----------------------------------------------------------
 
-impl Usb {
-    pub fn setup(self) -> impl Driver<'static> {
-        bind_interrupts!(pub struct UsbIrq {
-            USBCTRL_IRQ => embassy_rp::usb::InterruptHandler<embassy_rp::peripherals::USB>;
-        });
-        embassy_rp::usb::Driver::new(self.usb, UsbIrq)
-    }
-}
+#[cfg(feature = "usb")]
+pub mod usb {
 
-#[embassy_executor::task]
-pub(crate) async fn usb_handler(usb: Usb, info: &'static HardwareInfo) -> ! {
-    let usb = usb.setup();
-    common::tasks::usb_manager::main(usb, info).await
+    use common::embassy_usb::driver::Driver;
+    use common::types::device::HardwareInfo;
+    use embassy_rp::bind_interrupts;
+
+    use crate::resources::Usb;
+
+    impl Usb {
+        pub fn setup(self) -> impl Driver<'static> {
+            bind_interrupts!(pub struct UsbIrq {
+                USBCTRL_IRQ => embassy_rp::usb::InterruptHandler<embassy_rp::peripherals::USB>;
+            });
+            embassy_rp::usb::Driver::new(self.usb, UsbIrq)
+        }
+    }
+
+    #[embassy_executor::task]
+    pub(crate) async fn runner(usb: Usb, info: HardwareInfo) -> ! {
+        let usb = usb.setup();
+        common::tasks::usb_manager::main(usb, info).await
+    }
 }

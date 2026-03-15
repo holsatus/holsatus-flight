@@ -1,15 +1,20 @@
 #![no_std]
 #![no_main]
 
+use core::sync::atomic::Ordering;
+
 use defmt_rtt as _;
 use panic_probe as _;
 
-mod resource_setup;
-use resource_setup::*;
+mod resources;
 
 mod config;
+mod dshot_pio;
 
-defmt::timestamp!("{=u64:us}", common::embassy_time::Instant::now().as_micros());
+defmt::timestamp!(
+    "{=u64:us}",
+    common::embassy_time::Instant::now().as_micros()
+);
 
 /// Helper macro to create interrupt executors.
 macro_rules! interrupt_executor {
@@ -34,78 +39,68 @@ macro_rules! interrupt_executor {
 
 #[embassy_executor::main]
 async fn main(level_t_spawner: embassy_executor::Spawner) {
-    const ID: &str = "rp2040_main";
-
     // ---------------------- early setup -----------------------
 
     // Initialize the chip and split the resources
-    let p = embassy_rp::init(resource_setup::config());
-    let r = split_resources!(p);
-    
-    defmt::info!("{}: clocks initialized, starting tasks", ID);
+    let p = embassy_rp::init(resources::config());
+    let r = resources::split(p);
+    common::embassy_time::Timer::after_millis(10).await;
+
+    defmt::info!("[rp2040-dev]: clocks initialized, starting tasks");
+
+    // The native sampling time of the ICM20948
+    common::signals::CONTROL_FREQUENCY.store(1125, Ordering::Relaxed);
 
     // Create interrupt executors
     let level_0_spawner = interrupt_executor!(SWI_IRQ_0, P1);
     let level_1_spawner = interrupt_executor!(SWI_IRQ_1, P2);
 
-    // We must spawn the configurator first to obtain the boot-config
-    level_t_spawner.must_spawn(configurator(r.flash));
-    let config = common::signals::BOOT_CONFIG.get().await;
+    // Might as well start the parameter storage module to get things loaded
+    level_t_spawner.spawn(resources::param_storage(r.flash).unwrap());
+
+    // Give special priority to the serial port used as primary RC input
+    level_0_spawner.spawn(resources::run_uart0(r.uart_0, config::uart0(), "uart0").unwrap());
+    level_1_spawner.spawn(resources::run_uart1(r.uart_1, config::uart1(), "uart1").unwrap());
+
+    // The peripheral must run at a higher priority than the shell task
+    #[cfg(feature = "usb")]
+    {
+        // Note: We run the peripheral at a higher priority because the shell
+        // parser operates on a blocking Write implementation. This way the
+        // code will nenver truly block, since the write results in an interrupt.
+        level_1_spawner.spawn(resources::usb::runner(r.usb, config::hw_info()).unwrap());
+        level_t_spawner.spawn(common::shell::main("usb").unwrap());
+    }
 
     // ------------------ high-priority tasks -------------------
 
-    if let (Some(i2c_cfg), Some(imu_cfg)) = (&config.i2c1, &config.imu0) {
-        level_0_spawner.must_spawn(imu_reader_6dof(r.i2c_0, i2c_cfg, imu_cfg));
-    } else {
-        defmt::error!("{}: No I2C1 and/or IMU0 config found", ID);
-    }
+    level_0_spawner.spawn(resources::imu_reader(r.i2c_0, config::i2c1(), config::imu()).unwrap());
+    level_0_spawner.spawn(resources::motor_governor(r.motors, config::dshot()).unwrap());
 
-    if let Some(uart_cfg) = &config.uart1 {
-        level_0_spawner.must_spawn(rc_serial_read(r.uart_0, uart_cfg));
-    } else {
-        defmt::error!("{}: No USART1 config found", ID);
-    }
-
-    if let Some(motor_cfg) = &config.motors {
-        level_0_spawner.must_spawn(motor_governor(r.motors, motor_cfg));
-    } else {
-        defmt::error!("{}: No motor protocol config found", ID)
-    }
-
-    level_0_spawner.must_spawn(common::tasks::signal_router::main());
-    level_0_spawner.must_spawn(common::tasks::imu_manager::main());
-    level_0_spawner.must_spawn(common::tasks::rate_loop::main());
+    level_0_spawner.spawn(common::tasks::rc_reader::main("uart0").unwrap());
+    level_0_spawner.spawn(common::tasks::rc_binder::main().unwrap());
+    level_0_spawner.spawn(common::tasks::signal_router::main().unwrap());
+    level_0_spawner.spawn(common::tasks::controller_rate::main().unwrap());
 
     // ----------------- medium-priority tasks ------------------
-    
-    if let Some(uart_cfg) = &config.uart2 {
-        level_1_spawner.must_spawn(gnss_serial_read(r.uart_1, uart_cfg));
-    } else {
-        defmt::error!("{}: No USART2 config found", ID);
-    }
 
-    level_1_spawner.must_spawn(common::tasks::commander::main());
-    level_1_spawner.must_spawn(common::tasks::att_estimator::main());
-    level_1_spawner.must_spawn(common::tasks::angle_loop::main());
+    #[cfg(feature = "gnss")]
+    level_1_spawner.spawn(common::tasks::gnss_reader::main("uart1").unwrap());
+    level_1_spawner.spawn(common::tasks::commander::main().unwrap());
+    level_1_spawner.spawn(common::tasks::controller_angle::main().unwrap());
 
     // ------------------- Low-priority tasks -------------------
 
-    // TODO 
-    // if let Some(sdmmc_cfg) = &config.sdmmc {
-    //     level_t_spawner.must_spawn(blackbox_fat(r.sdcard, sdmmc_cfg));
-    // } else {
-    //     defmt::error!("{}: No SDMMC config found", ID);
-    // }
-
-    // A valid config always exists for the usb-handler otherwise
-    // the user will not be able to interface with the system.
-    level_t_spawner.must_spawn(usb_handler(r.usb, &config.info));
-
-    level_t_spawner.must_spawn(common::tasks::calibrator::main());
-    level_t_spawner.must_spawn(common::tasks::arm_blocker::main());
-    level_t_spawner.must_spawn(common::tasks::signal_stats::main());
+    level_t_spawner.spawn(common::tasks::calibrator::main().unwrap());
+    level_t_spawner.spawn(common::tasks::arm_blocker::main().unwrap());
+    level_t_spawner.spawn(common::tasks::eskf::main().unwrap());
+    level_t_spawner.spawn(common::tasks::in_flight_estimator::main().unwrap());
 
     // -------------------------- fin ---------------------------
+    common::embassy_time::Timer::after_secs(1).await;
 
-    defmt::info!("{}: setup finished!", ID);
+    loop {
+        defmt::debug!("[rp2040-dev] thread-mode execution operating as intended");
+        common::embassy_time::Timer::after_secs(10).await;
+    }
 }
