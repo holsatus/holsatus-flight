@@ -94,7 +94,11 @@ pub(crate) async fn imu_reader(i2c: I2c0, i2c_cfg: I2cConfig, imu_cfg: ImuConfig
 
 impl Flash {
     pub fn setup<'d>(self) -> impl common::embedded_storage_async::nor_flash::NorFlash {
-        embassy_rp::flash::Flash::<_, _, { 2 * 1024 * 1024 }>::new(self.periph, self.dma)
+        bind_interrupts!(struct Irqs {
+            DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<peripherals::DMA_CH0>;
+        });
+
+        embassy_rp::flash::Flash::<_, _, { 2 * 1024 * 1024 }>::new(self.periph, self.dma, Irqs)
     }
 }
 
@@ -215,8 +219,8 @@ macro_rules! impl_ring_buffered_usart_setup {
             };
 
             common::embassy_futures::join::join(
-                dev_prod.embedded_io_connect_mapped(rx, map_err),
-                dev_cons.embedded_io_connect_mapped(tx, map_err),
+                dev_prod.embedded_io_connect(rx, map_err),
+                dev_cons.embedded_io_connect(tx, map_err),
             ).await;
 
             defmt::warn!("[{}] Stream disconnected unexpectedly", serial_id)

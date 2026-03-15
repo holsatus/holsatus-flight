@@ -22,20 +22,19 @@ panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 
 common = { path = "../../common", default-features = false, features = [
     "portable-atomic-critical-section",
-    "arch-cortex-m",
-    # "mavlink", // mavio currently depends on atomic ops incompatible with the rp2040
+    "mavlink",
     "defmt",
     "gnss",
     "usb",
 ] }
 
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633", features = [
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf", features = [
     "executor-interrupt",
     "executor-thread",
-    "arch-cortex-m",
+    "platform-cortex-m",
 ] }
 
-embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633", features = [
+embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf", features = [
     "critical-section-impl",
     "rom-v2-intrinsics",
     "unstable-pac",
@@ -46,9 +45,9 @@ embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633", f
 
 dshot-encoder = { git = "https://github.com/peterkrull/dshot-encoder" }
 
+portable-atomic = { version = "1", features = ["critical-section"] }
 assign-resources = "0.5.0"
-static_cell = "2.1.0"   # Used to allocate buffers and interrupt executors
-portable-atomic = { version = "1.10.0", features = ["critical-section"] }
+static_cell = "2.1.0"
 paste = "1.0.15"
 pio-proc = "0.3.0"
 pio = "0.3.0"

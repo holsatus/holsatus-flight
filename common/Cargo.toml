@@ -5,11 +5,11 @@ edition = "2021"
 
 [features]
 default = [
-    "arch-cortex-m",
     "defmt",
     "mpc",
     "mavlink",
     "gnss",
+    "usb",
 ]
 
 usb = ["dep:embassy-usb"]
@@ -26,16 +26,15 @@ log = ["dep:log", "dep:env_logger"]
 defmt = [
     "dep:defmt",
     "embassy-usb?/defmt",
-    "embedded-io-async/defmt-03",
     "embassy-time/defmt",
 ]
-arch-cortex-m = ["embassy-executor/arch-cortex-m"]
-arch-std = [
+
+std = [
     "postcard/use-std",
     "critical-section/std",
     "embedded-io/std",
     "embedded-io-async/std",
-    "embassy-executor/arch-std",
+    "embassy-executor/platform-std",
     "embassy-executor/log",
     "embassy-time/log",
     "embassy-time/std",
@@ -45,12 +44,11 @@ arch-std = [
 ]
 
 [dependencies]
-embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633", optional = true }
-
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633" }
-embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633" }
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf", optional = true }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf" }
 
 # Logging, embedded and std environments
 defmt = { version = "1.0.1", optional = true }
@@ -60,8 +58,13 @@ env_logger = { version = "0.11.8", optional = true }
 # Embedded HAL/IO traits
 embedded-hal-async = "1.0.0"
 embedded-hal = "1.0.0"
-embedded-io-async = "0.6.1"
-embedded-io = "0.6.1"
+
+embedded-io-async = "0.7.0"
+embedded-io = "0.7.1"
+
+# Some crates are out dated
+embedded-io-061 = { package = "embedded-io", version = "0.6.1" }
+embedded-io-async-061 = { package = "embedded-io-async", version = "0.6.1" }
 
 static_cell = "2"
 static_assertions = "1.1.0"
@@ -138,9 +141,9 @@ thiserror = { version = "2.0.7", default-features = false }
 
 mav-param = { git = "https://github.com/holsatus/mav-param", features = ["defmt", "serde"]}
 
-mavio = { git = "https://gitlab.com/peterkrull/mavio/", branch = "frame-parser", optional = true, default-features = false, features = ["dlct-common", "embedded-io-async"] }
+mavio = { git = "https://gitlab.com/peterkrull/mavio/", branch = "holsatus-branch", optional = true, default-features = false, features = ["dlct-common", "embedded-io-async"] }
 
-grantable-io = { git = "https://github.com/holsatus/grantable-io", rev = "cb22c68", default-features = false, features = ["embedded-io-async-061"]}
+grantable-io = { git = "https://github.com/holsatus/grantable-io", rev = "956cea8", default-features = false, features = ["embedded-io-async-070"]}
 
 tinympc-rs = { git = "https://github.com/peterkrull/tinympc-rs", branch = "main", optional = true, default-features = false }
 

@@ -28,7 +28,7 @@ pub mod shell;
 pub mod errors;
 
 #[allow(unused)]
-#[cfg(not(feature = "arch-std"))]
+#[cfg(not(feature = "std"))]
 use num_traits::Float as _;
 
 // Re-exported for implementors

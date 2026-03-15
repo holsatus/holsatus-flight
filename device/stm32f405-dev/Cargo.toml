@@ -39,22 +39,21 @@ aligned = "0.4.2"   # Used to implement BlockDevice on wrapper type
 path = "../../common"
 default-features = false
 features = [
-    "arch-cortex-m",
     "defmt",
 ]
 
 [dependencies.embassy-executor]
 git = "https://github.com/embassy-rs/embassy"
-rev = "4d67633"
+rev = "d22f3bf"
 features = [
     "executor-interrupt",
     "executor-thread",
-    "arch-cortex-m",
+    "platform-cortex-m",
 ]
 
 [dependencies.embassy-stm32]
 git = "https://github.com/embassy-rs/embassy"
-rev = "4d67633"
+rev = "d22f3bf"
 features = [
     "time-driver-tim2",
     "stm32f405rg",

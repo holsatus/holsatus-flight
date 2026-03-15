@@ -104,7 +104,12 @@ pub fn split(p: Peripherals) -> AssignedResources {
 
 impl IntPin {
     pub fn _setup(self) -> impl embedded_hal_async::digital::Wait {
-        ExtiInput::new(self.pin, self.exti, embassy_stm32::gpio::Pull::Up)
+
+        bind_interrupts!(struct Irqs{
+            EXTI15_10 => embassy_stm32::exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI15_10>;
+        });
+
+        ExtiInput::new(self.pin, self.exti, embassy_stm32::gpio::Pull::Up, Irqs)
     }
 }
 
@@ -113,6 +118,8 @@ impl I2c1 {
         bind_interrupts!(struct I2c1Irq {
             I2C1_EV => embassy_stm32::i2c::EventInterruptHandler<peripherals::I2C1>;
             I2C1_ER => embassy_stm32::i2c::ErrorInterruptHandler<peripherals::I2C1>;
+            DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH0>;
+            DMA1_STREAM7 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH7>;
         });
 
         let mut config = embassy_stm32::i2c::Config::default();
@@ -123,9 +130,9 @@ impl I2c1 {
             self.periph,
             self.scl,
             self.sda,
-            I2c1Irq,
             self.tx_dma,
             self.rx_dma,
+            I2c1Irq,
             config,
         )
     }
@@ -143,6 +150,12 @@ pub(crate) async fn imu_reader(i2c: I2c1, i2c_cfg: I2cConfig, imu_cfg: ImuConfig
 
 impl Spi1 {
     pub fn _setup(self) -> impl embedded_hal_async::spi::SpiBus {
+
+        bind_interrupts!(struct Irqs {
+            DMA2_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH0>;
+            DMA2_STREAM5 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH5>;
+        });
+
         embassy_stm32::spi::Spi::new(
             self.periph,
             self.sck,
@@ -150,6 +163,7 @@ impl Spi1 {
             self.miso,
             self.tx_dma,
             self.rx_dma,
+            Irqs,
             Default::default(),
         )
     }
@@ -295,13 +309,18 @@ pub(crate) async fn param_storage(flash: Flash, range: Range<u32>) -> ! {
 impl MotorDriver {
     pub fn setup(&mut self, dshot: DshotConfig) -> impl OutputGroup + '_ {
         use crate::dshot_pwm::{DshotDriver, UpDmaWaveform};
+
+        bind_interrupts!(struct DmaIrq {
+            DMA1_STREAM2 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH2>;
+        });
+
         DshotDriver::new(
             self.timer.reborrow(),
             self.pin_1.reborrow(),
             self.pin_2.reborrow(),
             self.pin_3.reborrow(),
             self.pin_4.reborrow(),
-            UpDmaWaveform::new(self.up_dma.reborrow()),
+            UpDmaWaveform::new(self.up_dma.reborrow(), DmaIrq),
             dshot as u32,
         )
     }
@@ -323,13 +342,15 @@ pub struct UsartBuffered<'d> {
     pub tx: embassy_stm32::usart::UartTx<'d, Async>,
 }
 
-macro_rules! impl_ring_buffered_usart_setup {
-    ($fn_name:ident, $UsartX:ident, $USARTX:ident, rb = $rb_size:literal, $buf_rx:path, $buf_tx:path) => {
+macro_rules! impl_usart_setup {
+    ($fn_name:ident, $UsartX:ident, $USARTX:ident, rb = $rb_size:literal, $buf_rx:path, $buf_tx:path, $rx_dma_str:ident, $rx_dma_ch:ident, $tx_dma_str:ident, $tx_dma_ch:ident) => {
         #[allow(unused)]
         impl $UsartX {
             pub fn setup<'d>(&'d mut self, uart_cfg: UartConfig) -> UsartBuffered<'d> {
                 bind_interrupts!(struct UsartIrq {
                     $USARTX => embassy_stm32::usart::InterruptHandler<peripherals::$USARTX>;
+                    $rx_dma_str => embassy_stm32::dma::InterruptHandler<peripherals::$rx_dma_ch>;
+                    $tx_dma_str => embassy_stm32::dma::InterruptHandler<peripherals::$tx_dma_ch>;
                 });
 
                 let mut config = embassy_stm32::usart::Config::default();
@@ -339,9 +360,9 @@ macro_rules! impl_ring_buffered_usart_setup {
                     self.periph.reborrow(),
                     self.rx_pin.reborrow(),
                     self.tx_pin.reborrow(),
-                    UsartIrq,
                     self.tx_dma.reborrow(),
                     self.rx_dma.reborrow(),
+                    UsartIrq,
                     config,
                 );
 
@@ -377,8 +398,8 @@ macro_rules! impl_ring_buffered_usart_setup {
             };
 
             common::embassy_futures::join::join(
-                dev_prod.embedded_io_connect_mapped(rx, map_err),
-                dev_cons.embedded_io_connect_mapped(tx, map_err),
+                dev_prod.embedded_io_connect(rx, map_err),
+                dev_cons.embedded_io_connect(tx, map_err),
             ).await;
 
             defmt::warn!("[{}] Stream disconnected unexpectedly", serial_id)
@@ -400,10 +421,10 @@ static BUF_TX3: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
 static BUF_RX6: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
 static BUF_TX6: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
 
-impl_ring_buffered_usart_setup!(run_usart1, Usart1, USART1, rb = 32, BUF_RX1, BUF_TX1);
-impl_ring_buffered_usart_setup!(run_usart2, Usart2, USART2, rb = 32, BUF_RX2, BUF_TX2);
-impl_ring_buffered_usart_setup!(run_usart3, Usart3, USART3, rb = 32, BUF_RX3, BUF_TX3);
-impl_ring_buffered_usart_setup!(run_usart6, Usart6, USART6, rb = 32, BUF_RX6, BUF_TX6);
+impl_usart_setup!(run_usart1, Usart1, USART1, rb = 32, BUF_RX1, BUF_TX1, DMA2_STREAM2, DMA2_CH2, DMA2_STREAM7, DMA2_CH7);
+impl_usart_setup!(run_usart2, Usart2, USART2, rb = 32, BUF_RX2, BUF_TX2, DMA1_STREAM5, DMA1_CH5, DMA1_STREAM6, DMA1_CH6);
+impl_usart_setup!(run_usart3, Usart3, USART3, rb = 32, BUF_RX3, BUF_TX3, DMA1_STREAM1, DMA1_CH1, DMA1_STREAM3, DMA1_CH3);
+impl_usart_setup!(run_usart6, Usart6, USART6, rb = 32, BUF_RX6, BUF_TX6, DMA2_STREAM1, DMA2_CH1, DMA2_STREAM6, DMA2_CH6);
 
 // ----------------------------------------------------------
 // --------------- USB for PC-FW connection -----------------

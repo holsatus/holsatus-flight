@@ -10,7 +10,7 @@ use crate::{
 };
 
 #[allow(unused)]
-#[cfg(not(feature = "arch-std"))]
+#[cfg(not(feature = "std"))]
 use num_traits::Float as _;
 
 pub const HX: usize = 50;

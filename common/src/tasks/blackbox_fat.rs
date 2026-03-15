@@ -5,7 +5,7 @@ pub use block_device_driver::slice_to_blocks_mut;
 pub use block_device_driver::BlockDevice;
 use embassy_time::Instant;
 use embedded_fatfs::{FileSystem, FsOptions};
-use embedded_io_async::Write;
+use embedded_io_async_061::Write as _;
 use heapless::{String, Vec};
 use postcard::to_slice;
 

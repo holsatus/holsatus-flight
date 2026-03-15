@@ -7,7 +7,7 @@ use embedded_cli::{cli::CliBuilder, Command};
 use embedded_io::{ErrorType, Write as SyncWrite};
 use embedded_io_async::{Read, Write};
 
-use crate::{errors::adapter::embedded_io::EmbeddedIoError, serial::IoStream};
+use crate::{utils::eio_compat::CompatSyncWriter, errors::adapter::embedded_io::EmbeddedIoError, serial::IoStream};
 
 mod commands;
 
@@ -78,13 +78,14 @@ pub async fn run_cli(serial: &mut IoStream) -> Result<(), EmbeddedIoError> {
         m_serial.write_all(HOLSATUS_GRAPHIC).await?;
     }
 
-    let mut sync_writer = SyncWriter::new(&mutexed_serial);
+    let mut sync_writer =  CompatSyncWriter(SyncWriter::new(&mutexed_serial));
     let mut cli = CliBuilder::default()
         .writer(&mut sync_writer)
         .command_buffer(command_buffer.as_mut_slice())
         .history_buffer(history_buffer.as_mut_slice())
         .prompt(CMD_PROMPT)
-        .build()?;
+        .build()
+        .map_err(|e|e.0)?;
 
     let mut buffer = [0u8; 8];
     loop {
@@ -108,7 +109,7 @@ pub async fn run_cli(serial: &mut IoStream) -> Result<(), EmbeddedIoError> {
                     parsed_command = Some(command);
                     Ok(())
                 }),
-            )?;
+            ).map_err(|e|e.0)?;
 
             if let Some(command) = parsed_command {
                 // Lock the serial port for writing (with async!)

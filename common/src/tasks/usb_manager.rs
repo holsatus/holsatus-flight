@@ -11,7 +11,7 @@ use embassy_usb::{
     driver::Driver,
     Builder, Config,
 };
-use embedded_io::ErrorKind;
+use embedded_io::{Error, ErrorKind};
 use grantable_io::GrantableIo;
 use static_cell::StaticCell;
 
@@ -85,8 +85,8 @@ pub async fn main(driver: impl Driver<'static>, info: HardwareInfo) -> ! {
     let map_err = |error: ErrorKind| error.into();
 
     join3(
-        dev_prod.embedded_io_connect_mapped(usb_reader, map_err),
-        dev_cons.embedded_io_connect_mapped(usb_writer, map_err),
+        dev_prod.embedded_io_connect(usb_reader, map_err),
+        dev_cons.embedded_io_connect(usb_writer, map_err),
         connect_runner_future(usb),
     )
     .await
@@ -147,7 +147,7 @@ impl<D: Driver<'static>> embedded_io_async::Write for UsbWriter<D> {
     }
 
     async fn flush(&mut self) -> Result<(), Self::Error> {
-        self.usb_writer.flush().await.map_err(err_map)
+        self.usb_writer.flush().await.map_err(|e|e.kind())
     }
 }
 
@@ -210,7 +210,7 @@ impl<D: Driver<'static>> embedded_io_async::Read for UsbReader<D> {
             return Err(embedded_io::ErrorKind::NotConnected);
         }
 
-        self.usb_reader.read(buf).await.map_err(err_map)
+        self.usb_reader.read(buf).await.map_err(|e|e.kind())
     }
 }
 
