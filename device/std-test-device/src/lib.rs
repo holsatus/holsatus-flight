@@ -15,8 +15,10 @@ use tokio::runtime::Runtime;
 use crate::resources::simulated_vicon;
 
 pub mod lockstep;
-pub mod logger;
 pub mod resources;
+
+#[cfg(feature = "rerun")]
+pub mod logger;
 
 pub static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
     let runtime = Runtime::new().expect("Unable to create tokio Runtime");
@@ -36,8 +38,8 @@ pub struct Args {
 
 pub fn test_entry(
     limit_seconds: u64,
+    #[allow(unused)]
     test_name: &str,
-    rerun: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _enter = RUNTIME.enter();
 
@@ -46,22 +48,21 @@ pub fn test_entry(
     let (r, sitl) = holsatus_sim::initialize(config.clone())?;
 
     // Start simulation thread and crate dummy resources
-    let mut logger = rerun
-        .then(|| resources::setup_logging(sitl.clone(), test_name).ok())
-        .flatten();
+    #[cfg(feature = "rerun")]
+    let mut logger = resources::setup_logging(sitl.clone(), test_name)?;
+    #[cfg(feature = "rerun")]
     let mut counter = 0;
 
     // Sometimes rerun can take a split second to start receiving
-    if rerun {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    #[cfg(feature = "rerun")]
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     let fw_sitl = sitl.clone();
     lockstep::lockstep_with(
         move |spawner| firmware_entry(spawner, r, fw_sitl),
         move || {
             // reduce logging rate
-            if let Some(logger) = logger.as_mut() {
+            #[cfg(feature = "rerun")] {
                 counter += 1;
                 if counter == 1 {
                     logger.log().unwrap();
@@ -79,9 +80,8 @@ pub fn test_entry(
     );
 
     // Sometimes dropping the handle early can result in lost recs
-    if rerun {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    #[cfg(feature = "rerun")]
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     Ok(())
 }

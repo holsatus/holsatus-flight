@@ -3,6 +3,9 @@ name = "std-device"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+rerun = ["dep:rerun"]
+
 [dependencies]
 common = { path = "../../common", default-features = false, features = ["log", "mpc", "mavlink"] }
 holsatus-sim = { path = "../../holsatus-sim" }
@@ -11,7 +14,7 @@ static_cell = "2"
 
 log = { version = "0.4.22" }
 env_logger = { version = "0.11.5" }
-rerun = { version = "0.30.2" }
+rerun = { version = "0.30.2", optional = true }
 
 toml = "0.9.8"
 

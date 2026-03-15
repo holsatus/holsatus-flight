@@ -1,14 +1,15 @@
+#[cfg(feature = "rerun")]
 pub fn setup_logging(
     mock: SimHandle,
     test_name: &str,
-) -> Result<RerunLogger, Box<dyn std::error::Error>> {
+) -> Result<crate::logger::RerunLogger, Box<dyn std::error::Error>> {
     let rec = rerun::RecordingStreamBuilder::new(test_name).spawn()?;
 
     rerun::Logger::new(rec.clone())
         .with_filter("off, common=debug, holsatus_sim=debug, std_device=debug")
         .init()?;
 
-    RerunLogger::new(rec, mock)
+    crate::logger::RerunLogger::new(rec, mock)
 }
 
 use common::hw_abstraction::Imu6Dof;
@@ -26,8 +27,6 @@ use rand_distr::Distribution as _;
 use rand_distr::Normal;
 use rapier3d::na::SMatrix;
 use rapier3d::na::SVector;
-
-use crate::logger::RerunLogger;
 
 #[embassy_executor::task]
 pub async fn imu_reader(imu: SimulatedImu) {
