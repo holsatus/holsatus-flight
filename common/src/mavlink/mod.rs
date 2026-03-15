@@ -1,582 +1,733 @@
-mod mission;
+use core::num::{NonZeroU16, Wrapping};
 
-mod generator;
-mod handler;
-#[cfg(feature = "mavlink-osd")]
-mod osd;
-mod peers;
+use embassy_executor::SendSpawner;
+use maitake_sync::WaitMap;
 
-use core::{cell::RefCell, num::NonZeroU16, sync::atomic::Ordering};
-
-use embassy_futures::{
-    join,
-    select::{select, Either},
-};
-use embassy_sync::{
-    blocking_mutex::{
-        raw::{CriticalSectionRawMutex, NoopRawMutex},
-        NoopMutex,
-    },
-    channel::Channel,
-    mutex::{MappedMutexGuard, Mutex, MutexGuard},
-    signal::Signal,
-};
-use embassy_time::{Duration, Instant, Ticker, Timer};
+use crate::errors::Debounce;
+use crate::mavlink::handler::Handler;
+use crate::sync::channel::Channel;
+use crate::{errors::adapter::embedded_io::EmbeddedIoError, mavlink::messages::Generator};
+use embassy_futures::select::{select, select3, select_array, Either, Either3};
+use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::{Read, Write};
-use generator::Generator;
+use heapless::Vec;
 use mavio::{
-    dialects::common::enums::MavModeFlag as MavModeInner,
-    dialects::common::enums::MavState as MavStateInner,
-    error::IoError,
-    io::{AsyncReceiver, AsyncSender, EmbeddedIoAsyncReader, EmbeddedIoAsyncWriter},
-    prelude::V2,
-    protocol::FrameBuilder,
-    Frame, Message,
+    prelude::{Versioned, V2},
+    protocol::FrameParser,
+    Frame,
 };
-use portable_atomic::AtomicU8;
 
-use serde::{Deserialize, Serialize};
-use static_cell::StaticCell;
+use params::{Identity, Parameters};
 
-use crate::errors::{Debounce, MavlinkError};
+use crate::serial::{IoStream, StreamId};
 
-// pub mod params;
+mod handler;
+pub mod mav_mode;
+pub mod mav_state;
+mod messages;
+mod microservice;
+pub mod params;
 
-pub struct MavMode {
-    mode: AtomicU8,
-}
+/// Maximum number of ports/IO this MAVLink instance may use
+const MAX_NUM_INTERFACES: usize = 2;
 
-impl MavMode {
-    pub const fn new() -> Self {
-        Self {
-            mode: AtomicU8::new(0),
-        }
-    }
+/// Maximum number of peers each port may remember.
+const MAX_NUM_PEERS: usize = 4;
 
-    pub fn modify(&self, func: impl Fn(&mut MavModeInner)) {
-        _ = self
-            .mode
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |raw_flag| {
-                let mut mav_mode = MavModeInner::from_bits_truncate(raw_flag);
+/// Maximum number of data streamers that can be active
+const MAX_NUM_STREAMS: usize = 8;
 
-                func(&mut mav_mode);
-
-                (raw_flag != mav_mode.bits()).then(|| {
-                    try_make_request(Request::Single {
-                        generator: Generator::Heartbeat,
-                    });
-                    mav_mode.bits()
-                })
-            });
-    }
-
-    pub fn get(&self) -> MavModeInner {
-        let raw_flag = self.mode.load(Ordering::Relaxed);
-        MavModeInner::from_bits_truncate(raw_flag)
-    }
-}
-
-pub struct MavState {
-    state: AtomicU8,
-}
-
-impl MavState {
-    pub const fn new() -> Self {
-        Self {
-            state: AtomicU8::new(0),
-        }
-    }
-
-    pub fn modify(&self, func: impl Fn(&mut MavStateInner)) {
-        _ = self
-            .state
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |raw_flag| {
-                let mut mav_mode = MavStateInner::try_from(raw_flag).unwrap();
-
-                func(&mut mav_mode);
-                try_make_request(Request::Single {
-                    generator: Generator::Heartbeat,
-                });
-                Some(mav_mode as u8)
-            });
-    }
-
-    pub fn get(&self) -> MavStateInner {
-        let raw_flag = self.state.load(Ordering::Relaxed);
-        MavStateInner::try_from(raw_flag).unwrap()
-    }
-}
-
-pub static MAV_STATE: MavState = MavState::new();
-
-const NUM_STREAMERS: usize = 10;
-const MAX_SERIAL: usize = 2;
-
-pub async fn make_request(request: impl Into<Request>) {
-    MAV_REQUEST.send(request.into()).await;
-}
-
-pub fn try_make_request(request: impl Into<Request>) {
-    _ = MAV_REQUEST.try_send(request.into());
-}
-
-pub enum Request {
-    /// Send a single message instance using the provided generator. Some messages
-    /// may support sending all or a single instance, e.g. multiple sensors.
-    Single {
-        generator: Generator,
-    },
-    /// Start streaming messages of the type defined [`Generator`] at a specified
-    /// interval defined by the `period_ms` parameter.
-    StartStream {
-        generator: Generator,
-        period_ms: NonZeroU16,
-    },
-    /// Stop streaming the message specified by the [`Generator`] identifier.
-    StopStream {
-        generator: Generator,
-    },
-    SetSystemId {
-        id: u8,
-    },
-    SetComponentId {
-        id: u8,
-    },
-}
-
-pub static MAV_MODE: MavMode = MavMode::new();
-
-pub fn mav_set_armed(armed: bool) {
-    MAV_MODE.modify(|mode| {
-        mode.set(MavModeInner::SAFETY_ARMED, armed);
-    });
-}
-
-pub fn get_mav_mode() -> MavModeInner {
-    MAV_MODE.get()
-}
-
-type M = NoopRawMutex;
-struct ServerInner {
-    /// The configuration of the streamer tasks.
-    pub streams: [Signal<M, Option<StreamCfg>>; NUM_STREAMERS],
-
-    /// The buffer used to serialize MAVLink messages into. The MutexGuard is
-    /// passed to the `serialized signal` to notify the writer task that the
-    /// buffer is ready to be written to the serial port. This also ensures that
-    /// the serialized message cannot be overwritten before it is written out.
-    pub out_buffer: Mutex<M, Option<Frame<V2>>>,
-    pub serialized: Signal<M, MappedMutexGuard<'static, M, Frame<V2>>>,
-
-    /// Peers known to this server. The instant is the peer closest to being
-    /// timed out.
-    pub peer_manager: NoopMutex<RefCell<peers::PeerManager>>,
-    pub peer_manager_refresh: Signal<M, ()>,
-
-    /// The configuration of the MAVLink server
-    pub config: Mutex<M, NonZeroU16>,
-
-    pub peer_timeout_ms: u32,
-
-    /// The sequence number of the MAVLink messages
-    pub sequence: AtomicU8,
-
-    /// The system ID of the MAVLink messages sent from this server
-    pub system_id: AtomicU8,
-
-    /// The component ID of the MAVLink messages sent from this server
-    pub component_id: AtomicU8,
-}
-
-#[derive(Clone, Copy)]
-pub struct MavServer {
-    inner: &'static ServerInner,
-}
-
-#[derive(Clone, Copy, Serialize, Deserialize)]
-pub struct StreamCfg {
-    pub period_ms: NonZeroU16,
-    pub generator: Generator,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct StreamCfgBundle {
-    pub streams: [Option<StreamCfg>; NUM_STREAMERS],
-}
-
-impl Default for StreamCfgBundle {
-    fn default() -> Self {
-        let mut streams = [None; NUM_STREAMERS];
-
-        streams[0] = Some(StreamCfg {
-            period_ms: NonZeroU16::new(1000).unwrap(),
-            generator: Generator::Heartbeat,
-        });
-
-        streams[1] = Some(StreamCfg {
-            period_ms: NonZeroU16::new(100).unwrap(),
-            generator: Generator::ServoOutputRaw,
-        });
-
-        streams[2] = Some(StreamCfg {
-            period_ms: NonZeroU16::new(50).unwrap(),
-            generator: Generator::AttitudeQuaternion,
-        });
-
-        streams[3] = Some(StreamCfg {
-            period_ms: NonZeroU16::new(200).unwrap(),
-            generator: Generator::GpsRawInt,
-        });
-
-        StreamCfgBundle { streams }
-    }
-}
-
-struct MavReader<R: Read> {
-    receiver: AsyncReceiver<IoError, EmbeddedIoAsyncReader<R>, V2>,
-}
-
-impl<R: Read> MavReader<R> {
-    pub fn new(reader: R) -> Self {
-        Self {
-            receiver: AsyncReceiver::new::<V2>(EmbeddedIoAsyncReader::new(reader)),
-        }
-    }
-}
-
-struct MavSender<W: Write> {
-    sender: AsyncSender<IoError, EmbeddedIoAsyncWriter<W>, V2>,
-}
-
-impl<W: Write> MavSender<W> {
-    pub fn new(writer: W) -> Self {
-        Self {
-            sender: AsyncSender::new::<V2>(EmbeddedIoAsyncWriter::new(writer)),
-        }
-    }
-}
-
-pub static MAV_REQUEST: Channel<CriticalSectionRawMutex, Request, 2> = Channel::new();
-
-pub type GenFn = fn(&MavServer) -> Result<Frame<V2>, MavlinkError>;
-
-#[cfg(feature = "mavlink")]
-impl MavServer {
-    pub fn new() -> Self {
-        const SIGNAL: Signal<NoopRawMutex, Option<StreamCfg>> = Signal::new();
-        static STATIC: StaticCell<ServerInner> = StaticCell::new();
-
-        Self {
-            inner: STATIC.init(ServerInner {
-                streams: [SIGNAL; NUM_STREAMERS],
-                out_buffer: Mutex::new(None),
-                serialized: Signal::new(),
-                peer_manager: NoopMutex::new(RefCell::new(peers::PeerManager::new())),
-                peer_manager_refresh: Signal::new(),
-                config: Mutex::new(NonZeroU16::new(1_000).unwrap()),
-                peer_timeout_ms: 5_000,
-                sequence: AtomicU8::new(0),
-                system_id: AtomicU8::new(1),
-                component_id: AtomicU8::new(1),
-            }),
-        }
-    }
-
-    /// This function is designed to be wrapped in an embassy task!
-    pub async fn main(&self, reader: impl Read, writer: impl Write) -> ! {
-        join::join4(
-            self.main_reader(reader),
-            self.main_writer(writer),
-            self.request_handler(),
-            self.microservice_heartbeat(),
-        )
-        .await
-        .0
-    }
-
-    /// This function is designed to be wrapped in an embassy task!
-    pub async fn main_reader(&self, reader: impl Read) -> ! {
-        info!("Starting MAVLink reader task");
-
-        let mut debounce = Debounce::new(Duration::from_secs(1));
-        let mut reader = MavReader::new(reader);
-
-        loop {
-            if let Err(error) = self.reader_inner(&mut reader).await {
-                if let Some(error) = debounce.evaluate(error) {
-                    error!("Mavlink reader error: {:?}", error);
-                    crate::signals::register_error(error);
-                }
-            }
-        }
-    }
-
-    async fn microservice_heartbeat(&self) -> ! {
-        loop {
-            let time = self
-                .inner
-                .peer_manager
-                .lock(|locked| locked.borrow().find_first_timeout());
-
-            match select(
-                Timer::at(time.unwrap_or(Instant::MAX)),
-                self.inner.peer_manager_refresh.wait(),
-            )
-            .await
-            {
-                Either::First(()) => {
-                    self.inner.peer_manager.lock(|state| {
-                        let mut peer_manager = state.borrow_mut();
-                        for peer in peer_manager.iter_timeouts() {
-                            warn!("Peer timed out: {}", peer.identity())
-                        }
-
-                        info!("Down to {} peers", peer_manager.num_peers());
-                    });
-                }
-                Either::Second(()) => continue,
-            }
-        }
-    }
-
-    fn evaluate_with_peer_manager(&self, frame: &Frame<V2>) {
-        self.inner.peer_manager.lock(|manager| {
-            let mut manager = manager.borrow_mut();
-            match manager.evaluate_mav_id(frame.into(), Instant::now()) {
-                Ok(true) => {
-                    self.inner.peer_manager_refresh.signal(());
-                    info!(
-                        "Added new peer: ({}, {})",
-                        frame.system_id(),
-                        frame.component_id()
-                    )
-                }
-                Ok(false) => {
-                    trace!("New message from peer")
-                }
-                Err(error) => {
-                    self.inner.peer_manager_refresh.signal(());
-                    crate::signals::register_error(error);
-                    error!(
-                        "Unable to add another peer: ({}, {})",
-                        frame.system_id(),
-                        frame.component_id()
-                    )
-                }
-            }
-        })
-    }
-
-    async fn reader_inner<R: Read>(&self, reader: &mut MavReader<R>) -> Result<(), MavlinkError> {
-        // Read a raw MAVLink message from the serial port
-        let frame = reader.receiver.recv().await?;
-        self.evaluate_with_peer_manager(&frame);
-
-        // Macro to implement match statement
-        macro_rules! dispatch_handler {
-            ($($type:ident),+ $(,)?) => {
-                use $crate::mavlink::handler::message::MessageHandler;
-                match frame.message_id() {
-                    $(
-                        ::mavio::dialects::common::messages::$type::ID =>
-                        ::mavio::dialects::common::messages::$type::handler(self, frame).await?,
-                    )+
-                    id => warn!("No handler for message ID {}", id),
-                }
-            };
-        }
-
-        dispatch_handler!(
-            Heartbeat,
-            Ping,
-            RcChannelsOverride,
-            CommandInt,
-            CommandLong,
-            Tunnel,
-            MissionItemInt,
-        );
-
-        Ok(())
-    }
-
-    /// This function is designed to be wrapped in an embassy task!
-    pub async fn main_writer(&self, writer: impl Write) -> ! {
-        let mut writer = MavSender::new(writer);
-
-        info!("Starting MAVLink writer task");
-
-        let mut debounce = Debounce::new(Duration::from_secs(1));
-
-        loop {
-            let buffer = self.inner.serialized.wait().await;
-            let result = writer.sender.send(&*buffer).await;
-
-            if let Err(error) = result.map_err(MavlinkError::from) {
-                if let Some(error) = debounce.evaluate(error) {
-                    error!("Mavlink writer error: {:?}", error);
-                    crate::signals::register_error(error);
-                }
-            }
-        }
-    }
-
-    pub async fn request_handler(&self) -> ! {
-        // Spawn all worker (streamers) tasks
-        let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
-        (0..NUM_STREAMERS)
-            .into_iter()
-            .for_each(|index| spawner.spawn(streamer_worker(*self, index).unwrap()));
-
-        let mut state = [None; NUM_STREAMERS];
-        let mut debounce = Debounce::new(Duration::from_secs(1));
-
-        loop {
-            if let Err(error) = self.request_handler_inner(&mut state).await {
-                if let Some(error) = debounce.evaluate(error) {
-                    error!("Mavlink writer error: {:?}", error);
-                    crate::signals::register_error(error);
-                }
-            }
-        }
-    }
-
-    async fn request_handler_inner(
-        &self,
-        state: &mut [Option<StreamCfg>; NUM_STREAMERS],
-    ) -> Result<(), MavlinkError> {
-        match MAV_REQUEST.receive().await {
-            Request::StartStream {
-                period_ms,
-                generator,
-            } => {
-                // First check if we are already streaming this ID, if not, find a free slot
-                let Some(worker_idx) = state
-                    .iter()
-                    .position(|&x| x.is_some_and(|i| i.generator == generator))
-                    .or_else(|| state.iter().position(|&x| x.is_none()))
-                else {
-                    error!("No more free streamer tasks (max {})", NUM_STREAMERS);
-                    Err(MavlinkError::MaxStreamers)?
-                };
-
-                // Update state and start the streamer task
-                state[worker_idx] = Some(StreamCfg {
-                    period_ms,
-                    generator,
-                });
-                self.inner.streams[worker_idx].signal(state[worker_idx]);
-            }
-            Request::StopStream { generator } => {
-                let Some(worker_idx) = state
-                    .iter()
-                    .position(|&x| x.is_some_and(|i| i.generator == generator))
-                else {
-                    warn!(
-                        "Streamer task for MAVLink index {:?} not running",
-                        generator
-                    );
-                    return Ok(()); // Should this be an error?
-                };
-
-                state[worker_idx] = None;
-                self.inner.streams[worker_idx].signal(None);
-
-                return Ok(());
-            }
-            Request::Single { generator } => {
-                self.write_gen_fn(generator.generator()).await?;
-            }
-            Request::SetSystemId { id } => {
-                self.inner.system_id.store(id, Ordering::Relaxed);
-            }
-            Request::SetComponentId { id } => {
-                self.inner.component_id.store(id, Ordering::Relaxed);
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn write_gen_fn(&self, gen_fn: GenFn) -> Result<(), MavlinkError> {
-        self.write_message_inner(|| gen_fn(self)).await
-    }
-
-    async fn write_message(&self, message: &dyn Message) -> Result<(), MavlinkError> {
-        self.write_message_inner(|| self.build_frame(message)).await
-    }
-
-    async fn write_message_inner(
-        &self,
-        make: impl Fn() -> Result<Frame<V2>, MavlinkError>,
-    ) -> Result<(), MavlinkError> {
-        // Lock the out-buffer
-        let guard = self.inner.out_buffer.lock().await;
-
-        let frame = make()?;
-        let mapped = MutexGuard::map(guard, |buffer| buffer.insert(frame));
-
-        self.inner.serialized.signal(mapped);
-        Ok(())
-    }
-
-    /// Construct a new header for outgoing MAVLink messages
-    fn build_frame(&self, msg: &dyn Message) -> Result<mavio::Frame<V2>, MavlinkError> {
-        let frame = FrameBuilder::new()
-            .system_id(self.inner.system_id.load(Ordering::Relaxed))
-            .component_id(self.inner.component_id.load(Ordering::Relaxed))
-            .sequence(self.inner.sequence.fetch_add(1, Ordering::Relaxed))
-            .version(V2)
-            .message(msg)?
-            .build();
-
-        Ok(frame)
-    }
-}
-
-#[embassy_executor::task(pool_size = NUM_STREAMERS)]
-pub async fn streamer_worker(server: MavServer, idx: usize) -> ! {
-    let signal = &server.inner.streams[idx];
-
-    'infinite: loop {
-        // Receive initial message
-        let Some(mut cfg) = signal.wait().await else {
-            continue 'infinite;
+macro_rules! enforce_mav_target {
+    ($self:ident, $msg:ident) => {
+        let target_id = Identity {
+            sys: $msg.target_system,
+            com: $msg.target_component,
         };
 
-        debug!(
-            "Starting streaming of {:?} at {} Hz",
-            cfg.generator,
-            1e3 / cfg.period_ms.get() as f32
-        );
+        if $self.param.id != target_id {
+            return Ok(());
+        }
+    };
+}
 
-        // Create a ticker for keeping a stable frequency
-        let mut ticker = Ticker::every(Duration::from_millis(cfg.period_ms.get() as u64));
+// The tasks state and saved parameters
+struct MavlinkServer {
+    param: Parameters,
+    interfaces: MultiInterface,
+    next_peer_timeout: Option<(Identity, Instant)>,
+}
 
-        'streaming: loop {
-            match select(signal.wait(), ticker.next()).await {
-                // Configuration is None, go back and wait on updated configuration
-                Either::First(None) => {
-                    debug!("Stopping streaming of {:?}", cfg.generator);
-                    break 'streaming;
+#[derive(Debug)]
+struct Interface {
+    stream: IoStream,
+    stream_id: StreamId,
+    parser: FrameParser<V2>,
+    sequence: Wrapping<u8>,
+    peers: Vec<Peer, MAX_NUM_PEERS>,
+}
+
+impl Interface {
+    fn new(stream: IoStream) -> Self {
+        Self {
+            stream_id: stream.name().id(),
+            stream,
+            parser: FrameParser::new(),
+            sequence: Wrapping(0),
+            peers: Vec::new(),
+        }
+    }
+
+    pub fn has_peer(&self, peer_id: &Identity) -> bool {
+        self.peers.iter().any(|p| p.identity == *peer_id)
+    }
+
+    pub async fn send_frame(
+        &mut self,
+        message: &dyn mavio::Message,
+        param: &Parameters,
+    ) -> Result<(), Error> {
+        let frame = build_frame::<V2>(param, message, self.sequence.0)?;
+
+        let mut buffer = [0u8; 280];
+        let bytes = frame.serialize(&mut buffer)?;
+        let slice = &buffer[..bytes];
+
+        self.stream.write_all(slice).await.map_err(self.map_err())?;
+
+        self.sequence += 1;
+
+        Ok(())
+    }
+
+    /// Slightly crusty function to add an identifier to the io error.
+    fn map_err(&self) -> impl Fn(EmbeddedIoError) -> Error + use<'_> {
+        |err: EmbeddedIoError| Error::Io {
+            err,
+            stream_id: self.stream_id,
+        }
+    }
+}
+
+/// Handle multiple interfaces
+struct MultiInterface([Option<Interface>; MAX_NUM_INTERFACES]);
+
+impl MultiInterface {
+    pub fn new() -> Self {
+        Self([const { None }; MAX_NUM_INTERFACES])
+    }
+
+    pub fn _is_full(&self) -> bool {
+        self.0.iter().all(|elem| elem.is_some())
+    }
+
+    pub fn push(&mut self, port: Interface) -> Result<(), Interface> {
+        let mut index = 0;
+        loop {
+            match self.0.get_mut(index) {
+                Some(port_opt) => {
+                    if port_opt.is_none() {
+                        *port_opt = Some(port);
+                        return Ok(());
+                    } else {
+                        index += 1;
+                        continue;
+                    }
                 }
+                None => return Err(port),
+            }
+        }
+    }
 
-                // New configuration is Some, update the ticker and configuration
-                Either::First(Some(new_cfg)) => {
-                    cfg = new_cfg;
-                    debug!(
-                        "Setting streaming of {:?} at {} Hz",
-                        cfg.generator,
-                        1e3 / cfg.period_ms.get() as f32
-                    );
-                    ticker = Ticker::every(Duration::from_millis(cfg.period_ms.get() as u64));
+    /// Remove peers with the `peer_id` from all ports
+    fn _remove_peer_all(&mut self, identity: Identity) {
+        for port in self.iter_mut() {
+            port.peers.retain(|peer| peer.identity != identity);
+        }
+    }
+
+    /// Remove a peer from the specified port. This may be used when a peer
+    /// has timed out or is no longer reachable on the specified port.
+    fn _remove_peer(&mut self, stream_id: StreamId, peer_id: Identity) {
+        if let Some(port) = self
+            .iter_mut()
+            .find(|port| port.stream.name().id() == stream_id)
+        {
+            port.peers.retain(|peer| peer.identity != peer_id);
+        }
+    }
+
+    /// Find the next peer to timeout.
+    ///
+    /// This is used to determine when the server should check for
+    /// inactive peers and remove them.
+    fn find_next_peer_timeout(&mut self) -> Option<(Identity, Instant)> {
+        let mut soonest_timeout = (Identity::default(), Instant::MAX);
+        for port in self.iter() {
+            if let Some(peer) = port.peers.iter().min_by_key(|p| p.last_seen) {
+                if peer.last_seen < soonest_timeout.1 {
+                    soonest_timeout = (peer.identity, peer.last_seen);
                 }
+            }
+        }
 
-                // Ticker has elapsed, fetch and send the MAVLink message
-                Either::Second(()) => {
-                    // TODO - Handle errors in streamer tasks
-                    _ = server.write_gen_fn(cfg.generator.generator()).await;
+        (soonest_timeout.1 != Instant::MAX).then_some(soonest_timeout)
+    }
+
+    pub async fn recv_frame(&mut self) -> (Result<Frame<V2>, EmbeddedIoError>, StreamId) {
+        let (result, index) = select_array(self.0.each_mut().map(|port_opt| async {
+            match port_opt.as_mut() {
+                Some(port) => loop {
+                    let buf = port.parser.buffer_to_fill();
+                    let bytes = port.stream.read(buf).await?;
+
+                    if bytes == 0 {
+                        return Err(EmbeddedIoError::UnexpectedEof);
+                    }
+
+                    if let Some(frame) = port.parser.commit_bytes(bytes) {
+                        return Ok(frame);
+                    }
+                },
+                None => core::future::pending().await,
+            }
+        }))
+        .await;
+
+        // This is not a very pretty way of getting the port_id
+        (
+            result,
+            self.0
+                .get(index)
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .stream
+                .name()
+                .id(),
+        )
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Interface> {
+        self.0.iter_mut().flatten()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Interface> {
+        self.0.iter().flatten()
+    }
+}
+
+/// Propagate message stream configuration to runner tasks
+static STREAM_MAP: WaitMap<u8, Option<params::Stream>> = WaitMap::new();
+
+#[embassy_executor::task(pool_size = MAX_NUM_STREAMS)]
+async fn stream_runner(id: u8) {
+    let mut opt_stream = None;
+    loop {
+        match select(STREAM_MAP.wait(id), async {
+            match opt_stream {
+                // Send the generator for broadcast and wait the duration.
+                // Waiting the duration is not as precise timing-wise
+                // as using a ticker, but it does degrade more gracefully
+                // during high throughput.
+                Some((generator, duration)) => loop {
+                    CHANNEL
+                        .send(Message::SendGenerator {
+                            generator,
+                            target: Target::Broadcast,
+                        })
+                        .await;
+                    Timer::after(duration).await;
+                },
+                // We are not configured  to do anything, pend forever
+                None => core::future::pending::<()>().await,
+            }
+        })
+        .await
+        {
+            Either::First(Ok(new_stream)) => {
+                // Map the message into something more useful
+                opt_stream = new_stream.and_then(|stream| {
+                    Some((
+                        Generator::from_id(stream.message_id)?,
+                        Duration::from_millis(stream.interval_ms as u64),
+                    ))
+                });
+            }
+            _ => (),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Peer {
+    /// The Mavlink ID of the peer
+    identity: Identity,
+    /// The last time a message was seen from this peer
+    last_seen: Instant,
+    /// Number of messages received from this peer
+    num_received: usize,
+}
+
+// Errors this task may produce
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum Error {
+    #[error("Received unsupported message ID: {id}")]
+    UnsupportedMsg { id: u32 },
+    #[error("Maximum number of peers ({max}) reached for {stream_id:?}")]
+    MaxNumberPeers { max: u8, stream_id: StreamId },
+    #[error("Maximum number of ports reached, max of {MAX_NUM_INTERFACES}")]
+    MaxNumberPorts,
+    #[error("Error on interface {err:?}: {stream_id:?}")]
+    Io {
+        err: EmbeddedIoError,
+        stream_id: StreamId,
+    },
+    #[error("Reached EOF on interface {port_id:?}")]
+    InterfaceEof { port_id: StreamId },
+    #[error("Mavio spec error: {0:?}")]
+    SpecError(mavio::error::SpecError),
+    #[error("Mavio frame error: {0:?}")]
+    FrameError(mavio::error::FrameError),
+}
+
+impl From<mavio::error::FrameError> for Error {
+    fn from(error: mavio::error::FrameError) -> Self {
+        Error::FrameError(error)
+    }
+}
+
+impl From<mavio::error::SpecError> for Error {
+    fn from(error: mavio::error::SpecError) -> Self {
+        Error::SpecError(error)
+    }
+}
+
+impl From<mavio::error::Error> for Error {
+    fn from(error: mavio::error::Error) -> Self {
+        match error {
+            mavio::Error::Io(_) => unreachable!("We do not use mavio Io"),
+            mavio::Error::Frame(frame_error) => Error::FrameError(frame_error),
+            mavio::Error::Spec(spec_error) => Error::SpecError(spec_error),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Target {
+    /// Send the message on all ports
+    Broadcast,
+    /// Send the message on all ports
+    /// that are connected to the given peers
+    /// (identified by their MavlinkId)
+    Peers(Vec<Identity, MAX_NUM_PEERS>),
+    /// Send the message on the given ports
+    Ports(Vec<StreamId, MAX_NUM_INTERFACES>),
+}
+
+impl From<Identity> for Target {
+    fn from(value: Identity) -> Self {
+        Target::Peers(Vec::from_slice(&[value]).unwrap())
+    }
+}
+
+impl From<StreamId> for Target {
+    fn from(value: StreamId) -> Self {
+        Target::Ports(Vec::from_slice(&[value]).unwrap())
+    }
+}
+
+// Messages other tasks can send this task
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Message {
+    SendGenerator {
+        generator: messages::Generator,
+        target: Target,
+    },
+    StreamGenerator {
+        generator: messages::Generator,
+        period_ms: GeneratorPeriod,
+    },
+    Foo,
+}
+
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum GeneratorPeriod {
+    Disable,
+    Default,
+    Millis(NonZeroU16),
+}
+
+static CHANNEL: Channel<Message, 5> = Channel::new();
+
+pub async fn send(message: Message) {
+    CHANNEL.send(message).await
+}
+
+#[embassy_executor::task]
+pub async fn main(stream_id: &'static str) -> ! {
+    MavlinkServer::new(stream_id).await.run().await
+}
+
+impl MavlinkServer {
+    async fn new(stream_id: &'static str) -> Self {
+        let spawner = SendSpawner::for_current_executor().await;
+
+        // Spawn all streamer runners and yield once so they are guaranteed
+        // to be ready ready once the parameters are loaded.
+        for id in 0..MAX_NUM_STREAMS as u8 {
+            spawner.spawn(stream_runner(id as u8).unwrap());
+            embassy_futures::yield_now().await;
+        }
+
+        // The hearbeat microservice makes basic info available to others
+        spawner.spawn(microservice::heartbeat::service_heartbeat().unwrap());
+
+        // Request and wait for the parameter table to be loaded
+        let param = params::TABLE.read().await.clone();
+
+        // Propagate all stream configurations to the streamer tasks
+        for (id, stream) in param.stream.iter().enumerate() {
+            STREAM_MAP.wake(&(id as u8), *stream);
+        }
+
+        // Claim a serial port to be used
+        let io_stream = crate::serial::claim(stream_id).unwrap();
+        let mut ports = MultiInterface::new();
+        ports.push(Interface::new(io_stream)).unwrap();
+
+        Self {
+            param,
+            interfaces: ports,
+            next_peer_timeout: None,
+        }
+    }
+
+    async fn run(&mut self) -> ! {
+        let mut debounce = Debounce::new(Duration::from_secs(1));
+        loop {
+            if let Err(_error) = self.run_inner().await {
+                if let Some(_) = debounce.evaluate(0u8) {
+                    error!("[mavlink] Error logged");
+                    // broadcast_error(error);
                 }
             }
         }
     }
+
+    async fn run_inner(&mut self) -> Result<(), Error> {
+        // Returns a [`Timer`] future that expires at the soonest peer timeout.
+        // If there is no such peer timeout, this future will be pending forever.
+        let next_peer_timeout = async {
+            match self.next_peer_timeout {
+                Some((_, timeout)) => Timer::at(timeout).await,
+                None => core::future::pending().await,
+            }
+        };
+
+        match select3(
+            CHANNEL.receive(),
+            next_peer_timeout,
+            self.interfaces.recv_frame(),
+        )
+        .await
+        {
+            // TODO We "block" receiving until a message is done sending. This can add major delays.
+            Either3::First(message) => self.handle_message(message).await?,
+            Either3::Second(()) => {
+                warn!("[mavlink] A peer timed out, refreshing peer list");
+                self.on_peer_timeout();
+            }
+            Either3::Third((Ok(frame), port_id)) => {
+                self.handle_mav_frame(frame, port_id).await?;
+            }
+            Either3::Third((Err(error), port_id)) => {
+                error!(
+                    "[mavlink] Encountered an error reading from port: {:?}",
+                    port_id
+                );
+                return Err(Error::Io {
+                    err: error.into(),
+                    stream_id: port_id,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_message(&mut self, message: Message) -> Result<(), Error> {
+        match message {
+            Message::Foo => todo!(),
+            Message::SendGenerator { generator, target } => {
+                let message = generator.generate()?;
+                self.send_mav_message(&message, target).await?;
+            }
+            Message::StreamGenerator { .. } => {
+
+                /* There are several cases that need to be handled here.
+                - If there is already a task streaming the message_id, update it
+                - If there is an inactive streamer task, run it
+                - If the requested period is Default, re-fetch the parameters
+                for (id, stream) in self.param.stream.iter().enumerate() {
+                    if stream.is_some_and(|stream|stream.message_id == generator as u32) {
+                        STREAM_MAP.wake(&id, val)
+                    }
+                }
+                */
+                warn!("[mavlink] TODO: Implement StreamGenerator")
+            }
+        }
+        Ok(())
+    }
+
+    #[inline(never)]
+    async fn send_mav_message(
+        &mut self,
+        message: &dyn mavio::Message,
+        target: Target,
+    ) -> Result<(), Error> {
+        let send_target = target.into();
+        match send_target {
+            Target::Broadcast => {
+                for port in self.interfaces.iter_mut() {
+                    port.send_frame(message, &self.param).await?;
+                }
+            }
+            Target::Peers(peer_ids) => {
+                for peer_id in peer_ids.iter() {
+                    for port in self.interfaces.iter_mut().filter(|l| l.has_peer(peer_id)) {
+                        port.send_frame(message, &self.param).await?;
+                    }
+                }
+            }
+            Target::Ports(link_ids) => {
+                for stream_id in link_ids.iter() {
+                    if let Some(port) = self
+                        .interfaces
+                        .iter_mut()
+                        .find(|l| l.stream.name().id() == *stream_id)
+                    {
+                        port.send_frame(message, &self.param).await?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_mav_frame(&mut self, frame: Frame<V2>, port_id: StreamId) -> Result<(), Error> {
+        // Register the frame with the link ID, updating the peer list
+        self.register_frame(&frame, port_id)?;
+
+        use mavio::default_dialect::messages as m;
+        match frame.message_id() {
+            m::Heartbeat::ID => {
+                let _msg = frame.decode_message::<m::Heartbeat>()?;
+                let id = Identity::from(&frame);
+                trace!("[mavlink] Got heartbeat from {:?}", id);
+            }
+
+            m::Ping::ID => {
+                let mut msg = frame.decode_message::<m::Ping>()?;
+
+                // If the target is non-zero, this is not a ping request
+                if msg.target_system != 0 || msg.target_component != 0 {
+                    return Ok(());
+                }
+
+                msg.target_system = frame.header().system_id();
+                msg.target_component = frame.header().component_id();
+
+                let target = Identity {
+                    sys: frame.system_id(),
+                    com: frame.component_id(),
+                };
+
+                self.send_mav_message(&msg, target.into()).await?;
+            }
+
+            // TODO: SetGpsGlobalOrigin::ID => (right click menu in QGroundControl)
+
+            // Parameter-protocol related messages
+            m::ParamRequestRead::ID => m::ParamRequestRead::handle(self, frame).await?,
+            m::ParamRequestList::ID => m::ParamRequestList::handle(self, frame).await?,
+            m::ParamSet::ID => m::ParamSet::handle(self, frame).await?,
+
+            m::CommandInt::ID => {
+                let msg = frame.decode_message::<m::CommandInt>()?;
+                enforce_mav_target!(self, msg);
+                m::CommandInt::handle(self, frame).await?;
+            }
+            m::CommandLong::ID => {
+                let msg = frame.decode_message::<m::CommandLong>()?;
+                enforce_mav_target!(self, msg);
+                m::CommandLong::handle(self, frame).await?;
+            }
+
+            m::ViconPositionEstimate::ID => {
+                let msg = frame.decode_message::<m::ViconPositionEstimate>()?;
+
+                // The covariance matrices are bogus since they do not
+                // seem to exist for the Vicon tracker my Uni uses..
+                // Also, DO NOT use UnitQUaternion::from_euler_angles(..)
+                // with the attitude provided here, since it uses a different
+                // rotation order.
+                let vicon_data = crate::types::measurements::ViconData {
+                    timestamp_us: msg.usec,
+                    position: [msg.x, msg.y, msg.z],
+                    pos_var: [[0.001, 0.0, 0.0], [0.0, 0.001, 0.0], [0.0, 0.0, 0.001]],
+                    attitude: [msg.roll, msg.pitch, msg.yaw],
+                    att_var: [[0.01, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]],
+                };
+
+                crate::signals::VICON_POSITION_ESTIMATE.send(vicon_data);
+            }
+
+            id => {
+                warn!("[mavlink] Cannot handle unsupported message id: {}", id);
+                return Err(Error::UnsupportedMsg { id });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn register_frame(&mut self, frame: &Frame<V2>, stream_id: StreamId) -> Result<(), Error> {
+        let frame_seen = Instant::now();
+        let frame_identity = Identity::from(frame);
+
+        // TODO: Maybe spacial behavior for heartbeats?
+        // let is_heartbeat = frame.message_id() == Heartbeat::ID;
+
+        if let Some(interface) = self
+            .interfaces
+            .iter_mut()
+            .find(|i| i.stream_id == stream_id)
+        {
+            match interface
+                .peers
+                .iter_mut()
+                .find(|peer| peer.identity == frame_identity)
+            {
+                Some(existing_peer) => {
+                    existing_peer.last_seen = frame_seen;
+                    existing_peer.num_received += 1;
+                }
+                None => {
+                    interface
+                        .peers
+                        .push(Peer {
+                            identity: frame_identity,
+                            last_seen: frame_seen,
+                            num_received: 0,
+                        })
+                        .map_err(|_| {
+                            error!(
+                                "[mavlink] Too many peers registered for link {:?}",
+                                stream_id
+                            );
+                            Error::MaxNumberPeers {
+                                max: MAX_NUM_PEERS as u8,
+                                stream_id,
+                            }
+                        })?;
+                }
+            }
+        } else {
+            error!("[mavlink] Invalid link ID: {:?}", stream_id);
+        }
+
+        if self.next_peer_timeout.is_some_and(|(peer, _)| peer == frame_identity) {
+            self.update_next_peer_timeout();
+        } else if self.next_peer_timeout.is_none() {
+            self.next_peer_timeout = Some((
+                frame_identity,
+                frame_seen + self.param.timeout()
+            ))
+        }
+
+        match self.next_peer_timeout {
+            Some((id, _)) if id == frame_identity => {
+                self.update_next_peer_timeout();
+            },
+            None => {
+                self.next_peer_timeout = Some((
+                    frame_identity,
+                    frame_seen + self.param.timeout()
+                ))
+            },
+            _ => ()
+        }
+
+        if self.next_peer_timeout.is_none() {
+            self.next_peer_timeout = Some((
+                frame_identity,
+                frame_seen + self.param.timeout()
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn on_peer_timeout(&mut self) {
+        self.retain_active_peers();
+        self.update_next_peer_timeout();
+    }
+
+    /// Remove all peers that have not been seen for a while.
+    ///
+    /// Peers will only be removed from the links they timed out on.
+    fn retain_active_peers(&mut self) {
+        let now = Instant::now();
+        for interface in self.interfaces.iter_mut() {
+            interface.peers.retain(|peer| {
+                let retain = peer.last_seen + self.param.timeout() > now;
+                if !retain {
+                    debug!(
+                        "[mavlink] Peer {:?} timed out on stream {:?}",
+                        peer.identity, interface.stream_id
+                    );
+                }
+                retain
+            });
+        }
+    }
+
+    /// Find the next peer to timeout.
+    ///
+    /// This is used to determine when the server should check for
+    /// inactive peers and remove them.
+    fn update_next_peer_timeout(&mut self) {
+        self.next_peer_timeout = self
+            .interfaces
+            .find_next_peer_timeout()
+            .map(|(identity, instant)| (identity, instant + self.param.timeout()))
+    }
+}
+
+/// Build a MAVLink frame from the given parameters and message.
+/// The sequence number is incremented after building the frame.
+fn build_frame<V: Versioned>(
+    param: &Parameters,
+    message: &dyn mavio::Message,
+    sequence: u8,
+) -> Result<Frame<V>, Error> {
+    let message = mavio::Frame::builder()
+        .system_id(param.id.sys)
+        .component_id(param.id.com)
+        .sequence(sequence)
+        .version(V::v())
+        .message(message)
+        .map_err(|e| match e {
+            mavio::Error::Spec(spec_error) => spec_error,
+            _ => unreachable!("This always produces a spec_error"),
+        })?
+        .build();
+
+    Ok(message)
 }

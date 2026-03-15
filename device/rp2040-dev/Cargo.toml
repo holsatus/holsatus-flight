@@ -13,8 +13,6 @@ usb = ["common/usb"]
 [dependencies]
 cortex-m = "0.7.7"
 cortex-m-rt = "0.7.3"
-embedded-hal = "1.0.0"
-embedded-hal-async = "1.0.0"
 
 defmt = "1.0.1"
 defmt-rtt = "1.1.0"

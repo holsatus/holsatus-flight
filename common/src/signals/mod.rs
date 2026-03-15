@@ -154,4 +154,4 @@ multi_watch!(CAL_MULTI_MAG_DATA, [f32; 3], NUM_MAG, 2);
 pub static IMU_MODES: Watch<[Mode; NUM_IMU]> = Watch::new();
 
 #[cfg(feature = "mavlink")]
-pub use crate::mavlink2::Message;
+pub use crate::mavlink::Message;

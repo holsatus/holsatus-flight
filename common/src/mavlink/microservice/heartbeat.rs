@@ -1,5 +1,5 @@
 use super::super::{params::TABLE, Message, CHANNEL};
-use crate::mavlink2::{messages::Generator, Target};
+use crate::mavlink::{messages::Generator, Target};
 use embassy_time::{Duration, Ticker};
 
 #[embassy_executor::task]

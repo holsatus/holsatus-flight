@@ -3,7 +3,7 @@ use nalgebra::SMatrix;
 use num_traits::Zero;
 
 use crate::{
-    mavlink2::MavlinkServer, signals::VICON_POSITION_ESTIMATE, types::measurements::ViconData,
+    mavlink::MavlinkServer, signals::VICON_POSITION_ESTIMATE, types::measurements::ViconData,
 };
 
 impl<V: MaybeVersioned> super::Handler<V> for ViconPositionEstimate {
@@ -11,7 +11,7 @@ impl<V: MaybeVersioned> super::Handler<V> for ViconPositionEstimate {
         self,
         _server: &mut MavlinkServer,
         _: Frame<V>,
-    ) -> Result<(), crate::mavlink2::Error> {
+    ) -> Result<(), crate::mavlink::Error> {
         // TODO Refer to read-out implementation on XPS
 
         debug!("[mavlink] Received Vicon position estimate");

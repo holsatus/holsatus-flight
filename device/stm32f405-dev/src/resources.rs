@@ -103,8 +103,7 @@ pub fn split(p: Peripherals) -> AssignedResources {
 // ----------------------------------------------------------
 
 impl IntPin {
-    pub fn _setup(self) -> impl embedded_hal_async::digital::Wait {
-
+    pub fn _setup(self) -> impl common::embedded_hal_async::digital::Wait {
         bind_interrupts!(struct Irqs{
             EXTI15_10 => embassy_stm32::exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI15_10>;
         });
@@ -114,7 +113,7 @@ impl IntPin {
 }
 
 impl I2c1 {
-    pub fn setup(self, cfg: I2cConfig) -> impl embedded_hal_async::i2c::I2c {
+    pub fn setup(self, cfg: I2cConfig) -> impl common::embedded_hal_async::i2c::I2c {
         bind_interrupts!(struct I2c1Irq {
             I2C1_EV => embassy_stm32::i2c::EventInterruptHandler<peripherals::I2C1>;
             I2C1_ER => embassy_stm32::i2c::ErrorInterruptHandler<peripherals::I2C1>;
@@ -149,8 +148,7 @@ pub(crate) async fn imu_reader(i2c: I2c1, i2c_cfg: I2cConfig, imu_cfg: ImuConfig
 // ----------------------------------------------------------
 
 impl Spi1 {
-    pub fn _setup(self) -> impl embedded_hal_async::spi::SpiBus {
-
+    pub fn _setup(self) -> impl common::embedded_hal_async::spi::SpiBus {
         bind_interrupts!(struct Irqs {
             DMA2_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH0>;
             DMA2_STREAM5 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH5>;
@@ -308,12 +306,11 @@ pub(crate) async fn param_storage(flash: Flash, range: Range<u32>) -> ! {
 
 impl MotorDriver {
     pub fn setup(&mut self, dshot: DshotConfig) -> impl OutputGroup + '_ {
-        use crate::dshot_pwm::{DshotDriver, UpDmaWaveform};
-
         bind_interrupts!(struct DmaIrq {
             DMA1_STREAM2 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH2>;
         });
-
+        
+        use crate::dshot_pwm::{DshotDriver, UpDmaWaveform};
         DshotDriver::new(
             self.timer.reborrow(),
             self.pin_1.reborrow(),

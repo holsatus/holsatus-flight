@@ -112,7 +112,7 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
     snd_motors_state.send(MotorsState::Disarmed(DisarmReason::Uninitialized));
     'disarmed: loop {
         #[cfg(feature = "mavlink")]
-        crate::mavlink2::mav_mode::set(MavModeFlag::SAFETY_ARMED, false);
+        crate::mavlink::mav_mode::set(MavModeFlag::SAFETY_ARMED, false);
 
         // Await arming command
         rcv_comand_arm.changed_and(|&arm| arm == true).await;
@@ -148,7 +148,7 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
         // TODO - Ask the commander whether we are still clear to arm?
 
         #[cfg(feature = "mavlink")]
-        crate::mavlink2::mav_mode::set(MavModeFlag::SAFETY_ARMED, true);
+        crate::mavlink::mav_mode::set(MavModeFlag::SAFETY_ARMED, true);
         snd_motors_state.send(MotorsState::ArmedIdle);
 
         info!("{}: Entering main loop", ID);

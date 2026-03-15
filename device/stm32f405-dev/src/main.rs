@@ -95,7 +95,7 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     // ------------------- Low-priority tasks -------------------
 
     #[cfg(feature = "mavlink")]
-    level_t_spawner.spawn(common::mavlink2::main("usart3").unwrap());
+    level_t_spawner.spawn(common::mavlink::main("usart3").unwrap());
 
     level_t_spawner.spawn(common::tasks::calibrator::main().unwrap());
     level_t_spawner.spawn(common::tasks::arm_blocker::main().unwrap());
@@ -147,7 +147,7 @@ mod auto_program {
     }
 
     pub async fn side_to_side() {
-        use common::tasks::commander::{message::ArmDisarm, Origin, Request, Response, PROCEDURE};
+        use common::tasks::commander::{message::Command, Origin, Request, Response, PROCEDURE};
         use common::tasks::controller_mpc::{Message, CHANNEL};
 
         let mut motors_state = common::signals::MOTORS_STATE.receiver();
@@ -156,11 +156,10 @@ mod auto_program {
         // Request the arming the vehicle, doing all checks
         let res = PROCEDURE
             .request(Request {
-                command: ArmDisarm {
+                command: Command::ArmDisarm {
                     arm: true,
                     force: false,
-                }
-                .into(),
+                },
                 origin: Origin::Automatic,
             })
             .await;
@@ -232,11 +231,10 @@ mod auto_program {
         // Request the arming the vehicle, doing all checks
         PROCEDURE
             .request(Request {
-                command: ArmDisarm {
+                command: Command::ArmDisarm {
                     arm: false,
                     force: false,
-                }
-                .into(),
+                },
                 origin: Origin::Automatic,
             })
             .await;

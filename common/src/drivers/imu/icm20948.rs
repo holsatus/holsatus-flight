@@ -15,14 +15,12 @@ where
         self.read_acc()
             .await
             .map_err(|e| DeviceError::I2c(e.into()))
-            .map(|x| x.into())
     }
 
     async fn read_gyr(&mut self) -> Result<[f32; 3], DeviceError> {
         self.read_gyr()
             .await
             .map_err(|e| DeviceError::I2c(e.into()))
-            .map(|x| x.into())
     }
 
     async fn read_acc_gyr(&mut self) -> Result<Imu6DofData<f32>, DeviceError> {
@@ -31,8 +29,8 @@ where
             .map_err(|e| DeviceError::I2c(e.into()))
             .map(|raw| Imu6DofData {
                 timestamp_us: Instant::now().as_micros(),
-                gyr: raw.gyr.into(),
-                acc: raw.acc.into(),
+                gyr: raw.gyr,
+                acc: raw.acc,
             })
     }
 }
@@ -45,7 +43,6 @@ where
         self.read_mag()
             .await
             .map_err(|e| DeviceError::I2c(e.into()))
-            .map(|x| x.into())
     }
 
     async fn read_acc_gyr_mag(
@@ -56,9 +53,9 @@ where
             .map_err(|e| DeviceError::I2c(e.into()))
             .map(|raw| Imu9DofData {
                 timestamp_us: Instant::now().as_micros(),
-                gyr: raw.gyr.into(),
-                acc: raw.acc.into(),
-                mag: raw.mag.into(),
+                gyr: raw.gyr,
+                acc: raw.acc,
+                mag: raw.mag,
             })
     }
 }
@@ -72,14 +69,12 @@ where
         self.read_acc()
             .await
             .map_err(|e| DeviceError::Spi(e.into()))
-            .map(|x| x.into())
     }
 
     async fn read_gyr(&mut self) -> Result<[f32; 3], DeviceError> {
         self.read_gyr()
             .await
             .map_err(|e| DeviceError::Spi(e.into()))
-            .map(|x| x.into())
     }
 
     async fn read_acc_gyr(&mut self) -> Result<Imu6DofData<f32>, DeviceError> {
@@ -102,7 +97,6 @@ where
         self.read_mag()
             .await
             .map_err(|e| DeviceError::Spi(e.into()))
-            .map(|x| x.into())
     }
 
     async fn read_acc_gyr_mag(

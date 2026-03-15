@@ -130,7 +130,7 @@ async fn flight_test_task() {
     log::warn!("Sending arming command");
     PROCEDURE
         .send(Request {
-            command: message::ArmDisarm {
+            command: Command::ArmDisarm {
                 arm: true,
                 force: true,
             }
@@ -142,7 +142,7 @@ async fn flight_test_task() {
     log::warn!("Sending control mode command");
     PROCEDURE
         .send(Request {
-            command: message::SetControlMode::Autonomous.into(),
+            command: Command::SetControlMode(ControlMode::Autonomous),
             origin: Origin::Automatic,
         })
         .await;
@@ -250,7 +250,7 @@ async fn flight_test_task() {
     log::warn!("Sending disarm command");
     PROCEDURE
         .send(Request {
-            command: message::ArmDisarm {
+            command: Command::ArmDisarm {
                 arm: false,
                 force: true,
             }

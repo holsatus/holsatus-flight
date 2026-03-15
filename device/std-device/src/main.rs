@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     level_t_spawner.spawn(common::tasks::arm_blocker::main().unwrap());
     level_t_spawner.spawn(common::tasks::eskf::main().unwrap());
     level_t_spawner.spawn(common::tasks::controller_mpc::main().unwrap());
-    level_t_spawner.spawn(common::mavlink2::main("tcp-serial1").unwrap());
+    level_t_spawner.spawn(common::mavlink::main("tcp-serial1").unwrap());
 
     level_t_spawner.spawn(autonomous_flight_speedloop().unwrap());
 
@@ -89,11 +89,10 @@ async fn autonomous_flight_speedloop() {
     // Arm the vehicle and wait for it to be armed
     PROCEDURE
         .send(Request {
-            command: message::ArmDisarm {
+            command: Command::ArmDisarm {
                 arm: true,
                 force: true,
-            }
-            .into(),
+            },
             origin: Origin::Automatic,
         })
         .await;
@@ -103,7 +102,7 @@ async fn autonomous_flight_speedloop() {
     // Set the flight mode to autonomous to enable MPC to take control
     PROCEDURE
         .send(Request {
-            command: message::SetControlMode::Autonomous.into(),
+            command: Command::SetControlMode(ControlMode::Autonomous),
             origin: Origin::Automatic,
         })
         .await;
@@ -206,11 +205,10 @@ async fn autonomous_flight_speedloop() {
     // Disarm
     PROCEDURE
         .send(Request {
-            command: message::ArmDisarm {
+            command: Command::ArmDisarm {
                 arm: false,
                 force: true,
-            }
-            .into(),
+            },
             origin: Origin::Automatic,
         })
         .await;

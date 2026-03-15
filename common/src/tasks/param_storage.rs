@@ -1,11 +1,12 @@
 use core::ops::Range;
 
+use sequential_storage::map::{MapStorage, MapConfig, PostcardValue};
 use embedded_storage_async::nor_flash::NorFlash;
 use maitake_sync::{blocking::Mutex, RwLock, RwLockReadGuard, WaitQueue};
 use mav_param::{Ident, Value};
 use sequential_storage::{
     cache::{KeyCacheImpl, NoCache},
-    map::{MapItemIter, SerializationError},
+    map::{MapItemIter},
 };
 
 use crate::{errors::adapter::sequential_storage::SequentialError, sync::procedure::Procedure};
@@ -13,11 +14,9 @@ use crate::{errors::adapter::sequential_storage::SequentialError, sync::procedur
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Request {
-    /// Save all parameters for the `Table` with the given name
     SaveParam(Ident),
     SaveTable(&'static str),
     SaveAllTables,
-
     LoadTable(&'static str),
 }
 
@@ -77,7 +76,7 @@ impl<T: mav_param::Node + 'static> Table<T> {
 
     pub const fn default(name: &'static str) -> Self
     where
-        T: crate::ConstDefault,
+        T: crate::utils::const_default::ConstDefault,
     {
         Self::new(name, T::DEFAULT)
     }
@@ -98,15 +97,15 @@ impl Table<dyn mav_param::Node> {
     }
 }
 
-pub struct TableSet<const N: usize> {
+pub struct TableCollection<const N: usize> {
     pub tables: Mutex<heapless::Vec<&'static Table<dyn mav_param::Node>, N>>,
 }
 
-pub static TABLES: TableSet<10> = TableSet::new();
+pub static TABLES: TableCollection<10> = TableCollection::new();
 
-impl<const N: usize> TableSet<N> {
-    pub const fn new() -> TableSet<N> {
-        TableSet {
+impl<const N: usize> TableCollection<N> {
+    pub const fn new() -> TableCollection<N> {
+        TableCollection {
             tables: Mutex::new(heapless::Vec::new()),
         }
     }
@@ -127,7 +126,7 @@ impl<const N: usize> TableSet<N> {
             }
 
             if tables.push(table).is_err() {
-                error!("[configurator] No more room to add table {}", table.name);
+                error!("[param_storage] No more room to add table {}", table.name);
                 false
             } else {
                 true
@@ -301,41 +300,18 @@ pub async fn entry<F: NorFlash>(flash: F, range: Range<u32>) -> ! {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct WrappedValue(Value);
 
-impl sequential_storage::map::Value<'_> for WrappedValue {
-    fn serialize_into(&self, buffer: &mut [u8]) -> Result<usize, SerializationError> {
-        match postcard::to_slice(self, buffer) {
-            Ok(bytes) => return Ok(bytes.len()),
-            Err(error) => Err(match error {
-                postcard::Error::SerializeBufferFull => SerializationError::BufferTooSmall,
-                _ => SerializationError::InvalidData,
-            }),
-        }
-    }
+impl PostcardValue<'_> for WrappedValue {}
 
-    fn deserialize_from(buffer: &'_ [u8]) -> Result<Self, SerializationError>
-    where
-        Self: Sized,
-    {
-        match postcard::from_bytes(buffer) {
-            Ok(param) => return Ok(param),
-            _ => Err(SerializationError::InvalidFormat),
-        }
-    }
-}
-
-pub struct InnerStorage<FLASH, CACHE, const N: usize> {
-    flash: FLASH,
-    cache: CACHE,
-    range: Range<u32>,
+pub struct InnerStorage<S: NorFlash, C: KeyCacheImpl<[u8; 16]>, const N: usize> {
+    storage: MapStorage<[u8; 16], S, C>,
     buffer: [u8; N],
 }
 
-impl<FLASH: NorFlash, CACHE: KeyCacheImpl<[u8; 16]>, const N: usize> InnerStorage<FLASH, CACHE, N> {
-    pub fn new(flash: FLASH, cache: CACHE, range: Range<u32>) -> Self {
+impl<S: NorFlash, C: KeyCacheImpl<[u8; 16]>, const N: usize> InnerStorage<S, C, N> {
+    pub fn new(storage: S, cache: C, range: Range<u32>) -> Self {
+        let config = MapConfig::new(range);
         InnerStorage {
-            flash,
-            cache,
-            range,
+            storage: MapStorage::new(storage, config, cache),
             buffer: [0u8; N],
         }
     }
@@ -343,47 +319,21 @@ impl<FLASH: NorFlash, CACHE: KeyCacheImpl<[u8; 16]>, const N: usize> InnerStorag
     // TODO - Will be used for loading individual parameters.
     // However, after we load all into ram on boot is it even needed?
     async fn _load(&mut self, key: Ident) -> Result<Option<WrappedValue>, SequentialError> {
-        use sequential_storage::{cache::NoCache, map::fetch_item};
-        let ret = fetch_item::<[u8; 16], WrappedValue, _>(
-            &mut self.flash,
-            self.range.clone(),
-            &mut NoCache::new(),
-            self.buffer.as_mut(),
-            key.as_raw(),
-        )
-        .await?;
-
+        let ret = self.storage.fetch_item(self.buffer.as_mut(), key.as_raw()).await?;
         Ok(ret)
     }
 
     async fn save(&mut self, key: Ident, data: Value) -> Result<(), SequentialError> {
         let data = WrappedValue(data);
-        use sequential_storage::map::store_item;
-        let ret = store_item::<[u8; 16], WrappedValue, _>(
-            &mut self.flash,
-            self.range.clone(),
-            &mut self.cache,
-            self.buffer.as_mut(),
-            key.as_raw(),
-            &data,
-        )
-        .await?;
+        self.storage.store_item(self.buffer.as_mut(), key.as_raw(), &data).await?;
 
-        Ok(ret)
+        Ok(())
     }
 
     async fn load_iter(
         &mut self,
-    ) -> Result<MapItemIter<'_, '_, [u8; 16], FLASH, CACHE>, SequentialError> {
-        use sequential_storage::map::fetch_all_items;
-        let ret = fetch_all_items::<[u8; 16], _, _>(
-            &mut self.flash,
-            self.range.clone(),
-            &mut self.cache,
-            self.buffer.as_mut(),
-        )
-        .await?;
-
+    ) -> Result<MapItemIter<'_, [u8; 16], S, C>, SequentialError> {
+        let ret = self.storage.fetch_all_items(self.buffer.as_mut()).await?;
         Ok(ret)
     }
 }

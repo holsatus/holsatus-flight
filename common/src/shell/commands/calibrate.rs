@@ -92,11 +92,10 @@ impl super::CommandHandler for CalibrateCommand {
                     .await?;
                 PROCEDURE
                     .request(Request {
-                        command: DoCalibration {
+                        command: Command::DoCalibration {
                             sensor_id: None,
                             sensor_type: SensorType::Accelerometer,
-                        }
-                        .into(),
+                        },
                         origin: Origin::Unspecified,
                     })
                     .await;
@@ -151,11 +150,10 @@ impl super::CommandHandler for CalibrateCommand {
                     .await?;
                 PROCEDURE
                     .request(Request {
-                        command: DoCalibration {
+                        command: Command::DoCalibration {
                             sensor_id: None,
                             sensor_type: SensorType::Gyroscope,
-                        }
-                        .into(),
+                        },
                         origin: Origin::Unspecified,
                     })
                     .await;
@@ -210,11 +208,10 @@ impl super::CommandHandler for CalibrateCommand {
                     .await?;
                 PROCEDURE
                     .request(Request {
-                        command: DoCalibration {
+                        command: Command::DoCalibration {
                             sensor_id: None,
                             sensor_type: SensorType::Magnetometer,
-                        }
-                        .into(),
+                        },
                         origin: Origin::Unspecified,
                     })
                     .await;

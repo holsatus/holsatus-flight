@@ -1,4 +1,3 @@
-use assign_resources::assign_resources;
 use common::{
     drivers::imu::ImuConfig,
     embedded_io,
@@ -7,8 +6,8 @@ use common::{
     serial::IoStreamRaw,
     types::config::{DshotConfig, I2cConfig, UartConfig},
 };
+
 use embassy_rp::{bind_interrupts, peripherals, Peri, Peripherals};
-use embedded_hal_async::i2c::I2c;
 
 /// Define the clock configuration for the board.
 pub(crate) fn config() -> embassy_rp::config::Config {
@@ -22,7 +21,7 @@ pub(crate) fn config() -> embassy_rp::config::Config {
     config
 }
 
-assign_resources! {
+assign_resources::assign_resources! {
     i2c_0: I2c0 {
         periph: I2C0,
         sda: PIN_16,
@@ -71,7 +70,7 @@ pub fn split(p: Peripherals) -> AssignedResources {
 // ----------------------------------------------------------
 
 impl I2c0 {
-    pub fn setup(self, cfg: I2cConfig) -> impl I2c {
+    pub fn setup(self, cfg: I2cConfig) -> impl common::embedded_hal_async::i2c::I2c {
         bind_interrupts!(struct I2c0Irq {
             I2C0_IRQ => embassy_rp::i2c::InterruptHandler<peripherals::I2C0>;
         });
