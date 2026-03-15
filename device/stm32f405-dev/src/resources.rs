@@ -142,7 +142,7 @@ pub(crate) async fn imu_reader(i2c: I2c1, i2c_cfg: I2cConfig, imu_cfg: ImuConfig
 // ----------------------------------------------------------
 
 impl Spi1 {
-    pub fn setup(self) -> impl embedded_hal_async::spi::SpiBus {
+    pub fn _setup(self) -> impl embedded_hal_async::spi::SpiBus {
         embassy_stm32::spi::Spi::new(
             self.periph,
             self.sck,
@@ -157,7 +157,7 @@ impl Spi1 {
 
 #[embassy_executor::task]
 pub(crate) async fn spi_reader(spi: Spi1) -> ! {
-    let spi = spi.setup();
+    let _spi = spi._setup();
     todo!("Not implemented yet")
 }
 

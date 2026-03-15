@@ -183,6 +183,7 @@ where
     }
 }
 
+#[allow(unused)]
 pub struct QuadDmaWaveform<'d, T, DMA1, DMA2, DMA3, DMA4>
 where
     T: GeneralInstance4Channel,
@@ -206,6 +207,7 @@ where
     DMA3: Dma<T, Ch3>,
     DMA4: Dma<T, Ch4>,
 {
+    #[allow(unused)]
     pub fn new(
         dma1: Peri<'d, DMA1>,
         dma2: Peri<'d, DMA2>,

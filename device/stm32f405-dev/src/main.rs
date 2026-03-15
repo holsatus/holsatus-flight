@@ -132,7 +132,7 @@ async fn auto_program_entry() -> ! {
         // Run the program to completion, or, until the mode changes
         common::embassy_futures::select::select(
             rcv_flight_mode.changed_and(|mode| !matches!(mode, ControlMode::Autonomous)),
-            auto_program::autonomous_intercept(),
+            auto_program::side_to_side(),
         )
         .await;
     }
@@ -172,10 +172,6 @@ mod auto_program {
 
         // Wait for the arming sequence to be complete
         motors_state.changed_and(|motors| motors.is_armed()).await;
-
-        fn millis_in_future(millis: u32) -> Instant {
-            Instant::now() + Duration::from_millis(millis as u64)
-        }
 
         // In one second we should be 25 cm in the air (NED)
         CHANNEL
@@ -244,163 +240,5 @@ mod auto_program {
                 origin: Origin::Automatic,
             })
             .await;
-    }
-
-    pub async fn hover_minute() {
-        use common::tasks::commander::{message::ArmDisarm, Origin, Request, Response, PROCEDURE};
-        use common::tasks::controller_mpc::{Message, CHANNEL};
-
-        let mut motors_state = common::signals::MOTORS_STATE.receiver();
-        let mut eskf_estimate = common::signals::ESKF_ESTIMATE.receiver();
-
-        // Request the arming the vehicle, doing all checks
-        let res = PROCEDURE
-            .request(Request {
-                command: ArmDisarm {
-                    arm: true,
-                    force: false,
-                }
-                .into(),
-                origin: Origin::Automatic,
-            })
-            .await;
-
-        if res.is_none_or(|res| res != Response::Accepted) {
-            warn!("[auto] Arming request was not accepted");
-            return;
-        }
-
-        // Wait for the arming sequence to be complete
-        motors_state.changed_and(|motors| motors.is_armed()).await;
-
-        // In 2 seconds we should be 5 meters cm in the air (NED)
-        CHANNEL
-            .send(Message::SetPositionAt(
-                [0.0, 0.0, -5.0],
-                millis_in_future(2000),
-            ))
-            .await;
-
-        // Hover for a minute
-        Timer::after_secs(60).await;
-
-        // Get in for an (approximate) landing
-        CHANNEL
-            .send(Message::SetPositionAt(
-                [0.0, 0.0, -1.0],
-                millis_in_future(4500),
-            ))
-            .await;
-
-        Timer::after_secs(5).await;
-
-        // Get in for a landing
-        CHANNEL
-            .send(Message::SetPositionAt(
-                [0.0, 0.0, 0.0],
-                millis_in_future(4500),
-            ))
-            .await;
-
-        // Wait for the drone to be close to the ground before turning off the motors
-        eskf_estimate.changed_and(|est| est.pos[2] > -0.15).await;
-
-        // Request arming the vehicle, doing all checks
-        PROCEDURE
-            .request(Request {
-                command: ArmDisarm {
-                    arm: false,
-                    force: false,
-                }
-                .into(),
-                origin: Origin::Automatic,
-            })
-            .await;
-    }
-
-
-    pub async fn autonomous_intercept() {
-        use common::tasks::commander::*;
-        use common::tasks::controller_mpc::{CHANNEL, Message};
-
-        common::embassy_time::Timer::after_secs(1).await;
-
-        PROCEDURE
-            .send(Request {
-                command: message::ArmDisarm {
-                    arm: true,
-                    force: true,
-                }
-                .into(),
-                origin: Origin::Automatic,
-            })
-            .await;
-
-        PROCEDURE
-            .send(Request {
-                command: message::SetControlMode::Autonomous.into(),
-                origin: Origin::Automatic,
-            })
-            .await;
-
-        let mut rcv_motors_state = common::signals::MOTORS_STATE.receiver();
-        rcv_motors_state.get_and(|state| state.is_armed()).await;
-
-        CHANNEL.send(Message::ClearInterseptPoint).await;
-
-        // Return to origin
-        CHANNEL.send(Message::SetPositionAt(
-            [0.0, 0.0, -10.0],
-            millis_in_future(2000),
-        )).await;
-
-        common::embassy_time::Timer::after_secs(4).await;
-
-        const INTERCEPT_POINT: [f32; 3] = [-30.0, 100.0, -30.0];
-
-        CHANNEL.send(Message::SetInterseptPoint(
-            INTERCEPT_POINT,
-            millis_in_future(5000),
-        )).await;
-
-        common::embassy_time::Timer::after_millis(5000).await;
-
-        CHANNEL.send(Message::ClearInterseptPoint).await;
-        
-        // Return to origin
-        CHANNEL.send(Message::SetPositionAt(
-            INTERCEPT_POINT,
-            millis_in_future(1000),
-        )).await;
-
-        // Return to origin
-        CHANNEL.send(Message::SetPositionAt(
-            [0.0, 0.0, -20.0],
-            millis_in_future(6000),
-        )).await;
-
-        common::embassy_time::Timer::after_secs(3).await;
-
-        CHANNEL.send(Message::SetPositionAt(
-            [0.0, 0.0, -2.0],
-            millis_in_future(7000),
-        )).await;
-        CHANNEL.send(Message::SetPositionAt(
-            [0.0, 0.0, -1.0],
-            millis_in_future(9900),
-        )).await;
-        
-        common::embassy_time::Timer::after_secs(12).await;
-
-        // Request the arming the vehicle, doing all checks
-        PROCEDURE.request(Request {
-            command: message::ArmDisarm {
-                arm: false,
-                force: false,
-                }.into(),
-            origin: Origin::Automatic,
-        }).await;
-
-        common::embassy_time::Timer::after_secs(120).await;
     }
 }
