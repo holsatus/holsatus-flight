@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 /// Simple model to linearize the command -> thrust curve of a motor.
 pub struct MotorLin {
     a: f32,
