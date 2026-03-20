@@ -1,0 +1,41 @@
+name: Building for embedded targets
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Install embedded targets
+      run: |
+        rustup target add thumbv6m-none-eabi
+        rustup target add thumbv7em-none-eabihf
+        cargo install flip-link
+
+    - name: Build binary for stm32f405-dev target
+      run: |
+        export CARGO_HOME=$(pwd)/device/stm32f405-dev/.cargo
+        cargo build --manifest-path device/stm32f405-dev/Cargo.toml --no-default-features --verbose
+        # cargo build --manifest-path device/stm32f405-dev/Cargo.toml --all-features --verbose
+
+    - name: Build binary for rp2040-dev target
+      run: |
+        export CARGO_HOME=$(pwd)/device/rp2040-dev/.cargo
+        cargo build --manifest-path device/rp2040-dev/Cargo.toml --no-default-features --verbose
+        cargo build --manifest-path device/rp2040-dev/Cargo.toml --all-features --verbose
