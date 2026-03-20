@@ -1,15 +1,15 @@
 [package]
 name = "common"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [features]
 default = [
-    "arch-cortex-m",
     "defmt",
     "mpc",
     "mavlink",
     "gnss",
+    "usb",
 ]
 
 usb = ["dep:embassy-usb"]
@@ -17,51 +17,43 @@ mavlink = ["dep:mavio"]
 mpc = ["dep:tinympc-rs"]
 gnss = ["dep:ublox"]
 
-portable-atomic-critical-section = ["portable-atomic/critical-section"]
-portable-atomic-unsafe-assume-single-core = [
-    "portable-atomic/unsafe-assume-single-core",
-]
-
-log = ["dep:log", "dep:env_logger"]
+log = ["dep:log"]
 defmt = [
     "dep:defmt",
     "embassy-usb?/defmt",
-    "embedded-io-async/defmt-03",
     "embassy-time/defmt",
 ]
-arch-cortex-m = ["embassy-executor/arch-cortex-m"]
-arch-std = [
-    "postcard/use-std",
+
+std = [
     "critical-section/std",
     "embedded-io/std",
     "embedded-io-async/std",
-    "embassy-executor/arch-std",
-    "embassy-executor/log",
-    "embassy-time/log",
+    "embassy-executor/platform-std",
     "embassy-time/std",
     "embassy-sync/std",
-    "dep:env_logger",
     "dep:log",
 ]
 
 [dependencies]
-embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633", optional = true }
-
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633" }
-embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633" }
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "4d67633" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", optional = true }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
 
 # Logging, embedded and std environments
 defmt = { version = "1.0.1", optional = true }
 log = { version = "0.4.28", optional = true }
-env_logger = { version = "0.11.8", optional = true }
 
 # Embedded HAL/IO traits
 embedded-hal-async = "1.0.0"
 embedded-hal = "1.0.0"
-embedded-io-async = "0.6.1"
-embedded-io = "0.6.1"
+
+embedded-io-async = "0.7.0"
+embedded-io = "0.7.1"
+
+# For compatibility with embedded_fatfs which still runs on eio 0.6.1
+embedded-io-async-061 = { package = "embedded-io-async", version = "0.6.1" }
 
 static_cell = "2"
 static_assertions = "1.1.0"
@@ -69,17 +61,16 @@ static_assertions = "1.1.0"
 num-traits = { version = "0.2.19", default-features = false, features = [
     "libm",
 ] }
-num_enum = { version = "0.7.3", default-features = false }
+num_enum = { version = "0.7.6", default-features = false }
 
-bitflags = { version = "2.6.0", default-features = false }
+bitflags = { version = "2.11.0", default-features = false }
 
 critical-section = { version = "1.1", default-features = false }
 mutex = { version = "1.0", features = ["impl-critical-section"] }
 
-heapless = { version = "0.8.0", features = [
+heapless = { version = "0.9.2", features = [
     "serde",
-    "portable-atomic",
-    "defmt-03",
+    "defmt",
 ] }
 
 nalgebra = { version = "0.34.0", default-features = false, features = [
@@ -98,7 +89,7 @@ futures = { version = "0.3.31", default-features = false, features = [
 ] }
 
 # Data storage and FAT filesystem for logging.
-sequential-storage = "5.0.1"
+sequential-storage = { version = "7.1.0", features = ["postcard"] }
 embedded-storage-async = "0.4.1"
 embedded-fatfs = { git = "https://github.com/MabezDev/embedded-fatfs", rev = "428ad03", default-features = false, features = [
     "defmt",
@@ -107,13 +98,12 @@ block-device-adapters = { version = "0.2.0", features = ["defmt"] }
 block-device-driver = { version = "0.2.0" }
 
 # IMU/MAG drivers
-icm20948-async = { git = "https://github.com/peterkrull/icm20948-async/", rev = "eb0b537", features = [
+icm20948-async = { version = "0.6.0", features = [
     "align-mag",
     "serde",
 ] }
 
 ahrs = { git = "https://github.com/jmagnuson/ahrs-rs", rev = "4a4fb76", default-features = false }
-kalman_filter = { git = "https://github.com/peterkrull/kalman-filter-rs" }
 mag-calibrator-rs = { git = "https://github.com/peterkrull/mag-calibrator-rs" }
 
 maitake-sync = { git = "https://github.com/hawkw/mycelium", rev = "fba1499", default-features = false, features = [
@@ -124,30 +114,36 @@ cordyceps = { git = "https://github.com/hawkw/mycelium", rev = "fba1499", defaul
     "no-cache-pad",
 ] }
 
-embedded-cli = { git = "https://github.com/funbiscuit/embedded-cli-rs", rev = "643cd6c" }
+embedded-cli = { git = "https://github.com/funbiscuit/embedded-cli-rs", rev = "45597c3" }
 ufmt = "0.2.0"
 
 # Efficient serialization
 postcard = { version = "1.0.10" }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 
-ublox = { version = "0.7.0", features = ["ubx_proto23"], optional = true, default-features = false }
+ublox = { version = "0.10.0", features = ["ubx_proto23"], optional = true, default-features = false }
 portable-atomic = "1.9"
 approx = "0.5"
-thiserror = { version = "2.0.7", default-features = false }
+thiserror = { version = "2.0.18", default-features = false }
 
-mav-param = { git = "https://github.com/holsatus/mav-param", features = ["defmt", "serde"]}
-
-mavio = { git = "https://gitlab.com/peterkrull/mavio/", branch = "frame-parser", optional = true, default-features = false, features = ["dlct-common", "embedded-io-async"] }
-
-grantable-io = { git = "https://github.com/holsatus/grantable-io", rev = "cb22c68", default-features = false, features = ["embedded-io-async-061"]}
-
+mav-param = { git = "https://github.com/holsatus/mav-param", features = ["defmt", "serde"] }
 tinympc-rs = { git = "https://github.com/peterkrull/tinympc-rs", optional = true, default-features = false }
 
-[profile.release.package.tinympc-rs]
-opt-level = 3
+tinympc-rs = { git = "https://github.com/peterkrull/tinympc-rs", optional = true, default-features = false }
+[dependencies.grantable-io]
+git = "https://github.com/holsatus/grantable-io"
+rev = "956cea8"
+default-features = false
+features = ["embedded-io-async-070"]
+
+[dependencies.mavio]
+git = "https://gitlab.com/peterkrull/mavio/"
+branch = "holsatus-branch"
+optional = true
+default-features = false
+features = ["dlct-common", "embedded-io-async"]
 
 [dev-dependencies]
 futures-executor = { version = "0.3.31", features = ["thread-pool"] }
-hex-literal = "0.4.1"
+hex-literal = "1.1.0"
 futures-test = "0.3"

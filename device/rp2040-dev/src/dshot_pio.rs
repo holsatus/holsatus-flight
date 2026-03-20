@@ -1,11 +1,13 @@
-pub use super::DshotPioTrait;
 use dshot_encoder as dshot;
-use paste::paste;
+use pastey::paste;
 
 use embassy_rp::{
     interrupt::typelevel::Binding,
-    pio::{Config, Instance, InterruptHandler, Pio, PioPin, ShiftConfig, ShiftDirection::{Right, Left}},
-    Peripheral,
+    pio::{
+        Config, Instance, InterruptHandler, Pio, PioPin, ShiftConfig,
+        ShiftDirection::{Left, Right},
+    },
+    Peri,
 };
 #[allow(dead_code)]
 pub struct DshotPio<'a, const N: usize, PIO: Instance> {
@@ -13,12 +15,12 @@ pub struct DshotPio<'a, const N: usize, PIO: Instance> {
 }
 
 fn configure_pio_instance<'a, PIO: Instance>(
-    pio: impl Peripheral<P = PIO> + 'a,
+    pio: Peri<'a, PIO>,
     irq: impl Binding<PIO::Interrupt, InterruptHandler<PIO>>,
     clk_div: (u16, u8),
 ) -> (Config<'a, PIO>, Pio<'a, PIO>) {
     // Define program
-    let dshot_pio_program = pio_proc::pio_asm!(
+    let dshot_pio_program = pio::pio_asm!(
         "set pindirs, 1",
         "entry:"
         "   pull"
@@ -71,9 +73,9 @@ macro_rules! impl_dshot_pio_new {
             impl<'a, PIO: Instance> DshotPio<'a, $num, PIO> {
                 /// Construct a new DshotPio instance
                 pub fn new(
-                    pio: impl Peripheral<P = PIO> + 'a,
+                    pio: Peri<'a, PIO>,
                     irq: impl Binding<PIO::Interrupt, InterruptHandler<PIO>>,
-                    $([<pin $sm>]: impl PioPin),+,
+                    $([<pin $sm>]: Peri<'a, impl PioPin>),+,
                     clk_div: (u16, u8),
                 ) -> DshotPio<'a, $num, PIO> {
                     let (mut cfg, mut pio) = configure_pio_instance(pio, irq, clk_div);
@@ -91,9 +93,9 @@ macro_rules! impl_dshot_pio_new {
                 }
             }
 
-            impl<'d, PIO: Instance> super::DshotPioTrait<$num> for DshotPio<'d, $num, PIO> {
+            impl<'d, PIO: Instance> DshotPio<'d, $num, PIO> {
                 /// Send any valid DShot value to the ESC.
-                fn command(&mut self, command: [u16; $num]) {
+                pub fn command(&mut self, command: [u16; $num]) {
                     $(
                         self.pio_instance.[<sm $sm>].tx().push(command[$sm].min(dshot::THROTTLE_MAX) as u32);
                     )+
@@ -104,7 +106,8 @@ macro_rules! impl_dshot_pio_new {
     };
 }
 
-impl_dshot_pio_new!(1: {0});
-impl_dshot_pio_new!(2: {0, 1});
-impl_dshot_pio_new!(3: {0, 1, 2});
+// Uncommented, not used here
+// impl_dshot_pio_new!(1: {0});
+// impl_dshot_pio_new!(2: {0, 1});
+// impl_dshot_pio_new!(3: {0, 1, 2});
 impl_dshot_pio_new!(4: {0, 1, 2, 3});

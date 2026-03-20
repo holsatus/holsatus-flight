@@ -1,5 +1,5 @@
 use embassy_time::Instant;
-use icm20948_async::{self, BusI2c, BusSpi, Icm20948, MagEnabled, SetupError};
+use icm20948_async::{self, I2cDevice, SpiDevice, Icm20948, MagEnabled, SetupError};
 
 use crate::{
     errors::DeviceError,
@@ -7,7 +7,7 @@ use crate::{
     types::measurements::{Imu6DofData, Imu9DofData},
 };
 
-impl<BUS, MAG> Imu6Dof for Icm20948<BusI2c<BUS>, MAG>
+impl<BUS, MAG> Imu6Dof for Icm20948<I2cDevice<BUS>, MAG>
 where
     BUS: embedded_hal_async::i2c::I2c,
 {
@@ -15,14 +15,12 @@ where
         self.read_acc()
             .await
             .map_err(|e| DeviceError::I2c(e.into()))
-            .map(|x| x.into())
     }
 
     async fn read_gyr(&mut self) -> Result<[f32; 3], DeviceError> {
         self.read_gyr()
             .await
             .map_err(|e| DeviceError::I2c(e.into()))
-            .map(|x| x.into())
     }
 
     async fn read_acc_gyr(&mut self) -> Result<Imu6DofData<f32>, DeviceError> {
@@ -31,13 +29,13 @@ where
             .map_err(|e| DeviceError::I2c(e.into()))
             .map(|raw| Imu6DofData {
                 timestamp_us: Instant::now().as_micros(),
-                gyr: raw.gyr.into(),
-                acc: raw.acc.into(),
+                gyr: raw.gyr,
+                acc: raw.acc,
             })
     }
 }
 
-impl<BUS> Imu9Dof for Icm20948<BusI2c<BUS>, MagEnabled>
+impl<BUS> Imu9Dof for Icm20948<I2cDevice<BUS>, MagEnabled>
 where
     BUS: embedded_hal_async::i2c::I2c,
 {
@@ -45,7 +43,6 @@ where
         self.read_mag()
             .await
             .map_err(|e| DeviceError::I2c(e.into()))
-            .map(|x| x.into())
     }
 
     async fn read_acc_gyr_mag(
@@ -56,14 +53,14 @@ where
             .map_err(|e| DeviceError::I2c(e.into()))
             .map(|raw| Imu9DofData {
                 timestamp_us: Instant::now().as_micros(),
-                gyr: raw.gyr.into(),
-                acc: raw.acc.into(),
-                mag: raw.mag.into(),
+                gyr: raw.gyr,
+                acc: raw.acc,
+                mag: raw.mag,
             })
     }
 }
 
-impl<BUS, MAG> Imu6Dof for Icm20948<BusSpi<BUS>, MAG>
+impl<BUS, MAG> Imu6Dof for Icm20948<SpiDevice<BUS>, MAG>
 where
     BUS: embedded_hal_async::spi::SpiDevice,
     BUS::Error: embedded_hal::spi::Error,
@@ -72,14 +69,12 @@ where
         self.read_acc()
             .await
             .map_err(|e| DeviceError::Spi(e.into()))
-            .map(|x| x.into())
     }
 
     async fn read_gyr(&mut self) -> Result<[f32; 3], DeviceError> {
         self.read_gyr()
             .await
             .map_err(|e| DeviceError::Spi(e.into()))
-            .map(|x| x.into())
     }
 
     async fn read_acc_gyr(&mut self) -> Result<Imu6DofData<f32>, DeviceError> {
@@ -94,7 +89,7 @@ where
     }
 }
 
-impl<BUS> Imu9Dof for Icm20948<BusSpi<BUS>, MagEnabled>
+impl<BUS> Imu9Dof for Icm20948<SpiDevice<BUS>, MagEnabled>
 where
     BUS: embedded_hal_async::spi::SpiDevice,
 {
@@ -102,7 +97,6 @@ where
         self.read_mag()
             .await
             .map_err(|e| DeviceError::Spi(e.into()))
-            .map(|x| x.into())
     }
 
     async fn read_acc_gyr_mag(
@@ -122,7 +116,7 @@ where
 
 pub fn from_i2c_err<E: embedded_hal::i2c::Error>(value: SetupError<E>) -> DeviceError {
     match value {
-        SetupError::Bus(bus_err) => DeviceError::I2c(bus_err.into()),
+        SetupError::Transport(e) => DeviceError::I2c(e.into()),
         SetupError::ImuWhoAmI(_) => DeviceError::IdentificationError,
         SetupError::MagWhoAmI(_) => DeviceError::IdentificationError,
     }
@@ -130,7 +124,7 @@ pub fn from_i2c_err<E: embedded_hal::i2c::Error>(value: SetupError<E>) -> Device
 
 pub fn from_spi_err<E: embedded_hal::spi::Error>(value: SetupError<E>) -> DeviceError {
     match value {
-        SetupError::Bus(bus_err) => DeviceError::Spi(bus_err.into()),
+        SetupError::Transport(e) => DeviceError::Spi(e.into()),
         SetupError::ImuWhoAmI(_) => DeviceError::IdentificationError,
         SetupError::MagWhoAmI(_) => DeviceError::IdentificationError,
     }

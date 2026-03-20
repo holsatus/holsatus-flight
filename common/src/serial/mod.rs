@@ -6,7 +6,6 @@ use maitake_sync::{blocking, Mutex, MutexGuard};
 pub mod params;
 use params::fnv1a_hash_u32;
 
-use embedded_io_async::BufRead;
 use heapless::Vec;
 
 use crate::{

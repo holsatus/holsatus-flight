@@ -1,35 +1,101 @@
 use embassy_time::Duration;
 use mavio::{prelude::MaybeVersioned, protocol::Frame};
 
-use crate::{mavlink::messages::Generator, param_storage::Table};
+use crate::{mavlink::messages::Generator, tasks::param_storage::Table};
 
-#[derive(mav_param::Tree, Default, Clone)]
+#[derive(mav_param::Tree, Clone)]
 pub struct Parameters {
+    /// The MAVLink identity of this system + component
+    pub id: Identity,
+    /// Duration of time with no messages before a peer is considered timedo ut.
     pub timeout_ms: u16,
+    /// Duration of time (interval) between sending heartbeat messages.
     pub hb_dur_ms: u16,
-    pub id: PeerId,
-    pub stream: [Option<Stream>; 8],
+    /// Set of pre-configured stream configurations
+    pub stream: [Option<Stream>; super::MAX_NUM_STREAMS],
 }
 
-#[derive(mav_param::Tree, Debug, Clone, Default, PartialEq)]
+const fn arr_opt_from_slice<T: Copy, const N: usize>(slice: &[T]) -> [Option<T>; N] {
+    let mut array = [const { None }; N];
+
+    let mut count = 0;
+    while count < slice.len() {
+        array[count] = Some(slice[count]);
+        count += 1;
+    }
+
+    array
+}
+
+crate::const_default!(
+    Parameters => {
+        timeout_ms: 3000,
+        hb_dur_ms: 1000,
+        id: Identity { sys: 1, com: 1 },
+        stream: arr_opt_from_slice(&[
+            Stream {
+                message_id: Generator::ScaledImu as u32,
+                interval_ms: 100,
+            },
+            Stream {
+                message_id: Generator::ServoOutputRaw as u32,
+                interval_ms: 100,
+            },
+            Stream {
+                message_id: Generator::LocalPositionNed as u32,
+                interval_ms: 50,
+            },
+            Stream {
+                message_id: Generator::AttitudeQuaternion as u32,
+                interval_ms: 50,
+            },
+            Stream {
+                message_id: Generator::LocalPositionNedSystemGlobalOffset as u32,
+                interval_ms: 500,
+            },
+            Stream {
+                message_id: Generator::GpsRawInt as u32,
+                interval_ms: 200,
+            }
+        ])
+    }
+);
+
+#[derive(mav_param::Tree, Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct PeerId {
+pub struct Identity {
     pub sys: u8,
     pub com: u8,
 }
 
-#[derive(Debug, Clone, mav_param::Tree, Default)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct Stream {
-    #[param(rename = "gen")]
-    generator: Generator,
-    #[param(rename = "ms")]
-    interval_ms: u16,
+impl Identity {
+    /// Returns `true` if the identity of `self` is the target of `msg_target`
+    /// 
+    /// This includes both a total match, i.e. `self == msg_target` but also if
+    /// the `msg_target` is a broadcast address. 
+    pub fn is_target_of(&self, msg_target: Identity) -> bool {
+        let sys_match = (msg_target.sys == 0) || (msg_target.sys == self.sys);
+        let com_match = (msg_target.com == 0) || (msg_target.com == self.com);
+        sys_match && com_match
+    }
+
+    pub fn is_global_broadcast(&self) -> bool {
+        self.sys == 0 && self.com == 0
+    }
 }
 
-impl<V: MaybeVersioned> From<&Frame<V>> for PeerId {
+#[derive(Debug, Clone, Copy, mav_param::Tree, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Stream {
+    #[param(rename = "id")]
+    pub message_id: u32,
+    #[param(rename = "ms")]
+    pub interval_ms: u16,
+}
+
+impl<V: MaybeVersioned> From<&Frame<V>> for Identity {
     fn from(frame: &Frame<V>) -> Self {
-        PeerId {
+        Identity {
             sys: frame.system_id(),
             com: frame.component_id(),
         }
@@ -37,37 +103,13 @@ impl<V: MaybeVersioned> From<&Frame<V>> for PeerId {
 }
 
 impl Parameters {
-    pub const fn const_default() -> Parameters {
-        Parameters {
-            timeout_ms: 3000,
-            hb_dur_ms: 500,
-            id: PeerId { sys: 1, com: 1 },
-            stream: [
-                Some(Stream {
-                    generator: Generator::Heartbeat,
-                    interval_ms: 1000,
-                }),
-                Some(Stream {
-                    generator: Generator::ScaledImu,
-                    interval_ms: 100,
-                }),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            ],
-        }
-    }
-
     pub const fn timeout(&self) -> Duration {
         Duration::from_millis(self.timeout_ms as u64)
     }
 
     pub fn streams(&self) -> impl Iterator<Item = &Stream> {
-        self.stream.iter().filter_map(|e| e.as_ref())
+        self.stream.iter().flatten()
     }
 }
 
-pub static TABLE: Table<Parameters> = Table::new("mav", Parameters::const_default());
+pub static TABLE: Table<Parameters> = Table::default("mav");

@@ -3,6 +3,7 @@
 
 // Export the logging macros for either defmt or log
 #[macro_use]
+
 #[macro_export]
 pub mod logging;
 
@@ -28,7 +29,7 @@ pub mod shell;
 pub mod errors;
 
 #[allow(unused)]
-#[cfg(not(feature = "arch-std"))]
+#[cfg(not(feature = "std"))]
 use num_traits::Float as _;
 
 // Re-exported for implementors
@@ -37,6 +38,8 @@ pub use embassy_sync;
 pub use embassy_time;
 pub use embedded_io;
 pub use embedded_io_async;
+pub use embedded_hal;
+pub use embedded_hal_async;
 pub use embedded_storage_async;
 pub use grantable_io;
 pub use heapless;
@@ -47,7 +50,7 @@ pub use nalgebra;
 pub use embassy_usb;
 
 #[cfg(feature = "mavlink")]
-pub mod mavlink2;
+pub mod mavlink;
 
 const DSHOT_MIN: u16 = 48;
 const DSHOT_MAX: u16 = 2047;
@@ -56,61 +59,3 @@ const NUM_IMU: usize = 2;
 const NUM_MAG: usize = 2;
 
 const MAX_IO_STREAMS: usize = 6;
-
-#[macro_export]
-macro_rules! get_or_warn {
-    ($rcv:ident) => {
-        async {
-            loop {
-                use embassy_time::{with_timeout, Duration};
-                match with_timeout(Duration::from_secs(1), $rcv.get()).await {
-                    Ok(value) => break value,
-                    Err(_) => trace!("{}: Awaiting value for <{}>", ID, stringify!($rcv)),
-                }
-            }
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! const_default {
-    ($type:ty => { $($token:tt)+ } ) => {
-        impl $crate::ConstDefault for $type {
-            const DEFAULT: Self = Self::const_default();
-        }
-
-        impl $type {
-            #[allow(unused)]
-            pub const fn const_default() -> Self {
-                Self { $($token)+ }
-            }
-        }
-
-        impl Default for $type {
-            fn default() -> Self {
-                Self::const_default()
-            }
-        }
-    };
-    ($type:ty => $($token:tt)+ ) => {
-        impl $crate::ConstDefault for $type {
-            const DEFAULT: Self = Self::const_default();
-        }
-
-        impl $type {
-            pub const fn const_default() -> Self {
-                $($token)+
-            }
-        }
-
-        impl Default for $type {
-            fn default() -> Self {
-                Self::const_default()
-            }
-        }
-    };
-}
-
-pub trait ConstDefault {
-    const DEFAULT: Self;
-}

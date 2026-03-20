@@ -1,5 +1,4 @@
 use embassy_time::{Duration, Instant};
-use embedded_io::Error;
 use embedded_io_async::BufRead;
 
 use crate::{
@@ -70,7 +69,7 @@ pub async fn main(serial_id: &'static str) -> ! {
             Err(err) => {
                 if err_debounce.elapsed() > Duration::from_millis(50) {
                     err_debounce = Instant::now();
-                    error!("{}: Failed to read serial data: {:?}", ID, err.kind());
+                    error!("{}: Failed to read serial data: {:?}", ID, err);
                 }
                 continue 'reading;
             }

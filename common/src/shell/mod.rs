@@ -84,7 +84,7 @@ pub async fn run_cli(serial: &mut IoStream) -> Result<(), EmbeddedIoError> {
         m_serial.write_all(CMD_PROMPT.as_bytes()).await?;
     }
 
-    let mut sync_writer = SyncWriter::new(&mutexed_serial);
+    let mut sync_writer =  SyncWriter::new(&mutexed_serial);
     let mut cli = CliBuilder::default()
         .writer(&mut sync_writer)
         .command_buffer(command_buffer.as_mut_slice())

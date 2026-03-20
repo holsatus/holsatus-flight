@@ -1,5 +1,5 @@
 ///! Module for interacting with the systems MAV_MODE bitflag.
-use core::sync::atomic::{AtomicU8, Ordering};
+use portable_atomic::{AtomicU8, Ordering};
 use mavio::default_dialect::enums::MavModeFlag;
 
 pub struct MavMode {

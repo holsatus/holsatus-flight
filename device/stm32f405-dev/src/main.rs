@@ -114,12 +114,9 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     // level_t_spawner.spawn(common::tasks::eskf::main().unwrap());
 
     #[cfg(feature = "mpc")]
-    {
-        level_t_spawner.spawn(common::tasks::controller_mpc::main().unwrap());
-    }
+    level_t_spawner.spawn(common::tasks::controller_mpc::main().unwrap());
 
     level_t_spawner.spawn(common::tasks::in_flight_estimator::main().unwrap());
-    level_t_spawner.spawn(auto_program_entry().unwrap());
 
     // -------------------------- fin ---------------------------
     common::embassy_time::Timer::after_secs(5).await;

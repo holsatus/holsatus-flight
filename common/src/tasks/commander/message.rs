@@ -2,7 +2,10 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Command {
-    ArmDisarm(ArmDisarm),
+    ArmDisarm{
+        arm: bool,
+        force: bool,
+    },
 
     /// Start the calibration of the accelerometer(s)
     /// If `sensor_id` is `None`, all accelerometers will be calibrated
@@ -12,7 +15,10 @@ pub enum Command {
     /// response will be `Response::Accepted` if the calibration was started
     /// successfully. The completion of the calibration will be indicated by
     /// a value produced by the calibrator.
-    DoCalibration(DoCalibration),
+    DoCalibration {
+        sensor_id: Option<u8>,
+        sensor_type: SensorType,
+    },
     SetActuators {
         group: u8,
         values: [f32; 4],
@@ -20,49 +26,19 @@ pub enum Command {
     SetActuatorOverride {
         active: bool,
     },
-    SetControlMode(SetControlMode),
+    SetControlMode(ControlMode),
     RunArmChecks,
     EskfResetOrigin,
 }
 
-macro_rules! impl_command_from {
-    ($command:ident) => {
-        impl From<$command> for super::Command {
-            fn from(value: $command) -> Self {
-                super::Command::$command(value)
-            }
-        }
-    };
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct ArmDisarm {
-    pub arm: bool,
-    pub force: bool,
-}
-
-impl_command_from!(ArmDisarm);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct DoCalibration {
-    pub sensor_id: Option<u8>,
-    pub sensor_type: SensorType,
-}
-
-impl_command_from!(DoCalibration);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum SetControlMode {
+pub enum ControlMode {
     Rate,
     Angle,
     Velocity,
     Autonomous,
 }
-
-impl_command_from!(SetControlMode);
 
 /// A request to the [`Commander`](crate::commander::Commander)
 #[derive(Debug, Clone, Copy, PartialEq)]

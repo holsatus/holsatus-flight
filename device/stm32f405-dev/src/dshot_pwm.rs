@@ -3,6 +3,7 @@ use core::marker::PhantomData;
 ///! Dshot driver for the stm32f405 using a timer-backed PWM
 use dshot_encoder;
 
+use embassy_stm32::interrupt::typelevel::Binding;
 #[rustfmt::skip]
 use embassy_stm32::{
     Peri,
@@ -234,28 +235,33 @@ pub struct UpDmaWaveform<'d, T, DMA>
 where
     T: GeneralInstance4Channel,
     DMA: UpDma<T>,
+    BIND: Binding<DMA::Interrupt, embassy_stm32::dma::InterruptHandler<DMA>>
 {
     dma: Peri<'d, DMA>,
+    irq_bind:  BIND,
     _p: PhantomData<T>,
 }
 
-impl<'d, T, DMA> UpDmaWaveform<'d, T, DMA>
+impl<'d, T, DMA, BIND> UpDmaWaveform<'d, T, DMA, BIND>
 where
     T: GeneralInstance4Channel,
     DMA: UpDma<T>,
+    BIND: Binding<DMA::Interrupt, embassy_stm32::dma::InterruptHandler<DMA>>
 {
-    pub fn new(dma: Peri<'d, DMA>) -> Self {
+    pub fn new(dma: Peri<'d, DMA>, irq_bind: BIND) -> Self {
         Self {
             dma,
+            irq_bind,
             _p: PhantomData,
         }
     }
 }
 
-impl<'d, T, DMA> WaveformGenerator for UpDmaWaveform<'d, T, DMA>
+impl<'d, T, DMA, BIND> WaveformGenerator for UpDmaWaveform<'d, T, DMA, BIND>
 where
     T: GeneralInstance4Channel,
     DMA: UpDma<T>,
+    BIND: Binding<DMA::Interrupt, embassy_stm32::dma::InterruptHandler<DMA>>
 {
     type Timer = T;
     async fn run_waveform(&mut self, pwm: &mut SimplePwm<'_, T>, cmd: [[u16; TRANSMIT_SIZE]; 4]) {
@@ -269,6 +275,7 @@ where
 
         pwm.waveform_up_multi_channel(
             self.dma.reborrow(),
+            self.irq_bind,
             Channel::Ch1,
             Channel::Ch4,
             &interleaved,
@@ -334,10 +341,14 @@ where
     dma2: Peri<'d, DMA2>,
     dma3: Peri<'d, DMA3>,
     dma4: Peri<'d, DMA4>,
+    irq1: BIND1,
+    irq2: BIND2,
+    irq3: BIND3,
+    irq4: BIND4,
     _p: PhantomData<T>,
 }
 
-impl<'d, T, DMA1, DMA2, DMA3, DMA4> QuadDmaWaveform<'d, T, DMA1, DMA2, DMA3, DMA4>
+impl<'d, T, DMA1, DMA2, DMA3, DMA4, BIND1, BIND2, BIND3, BIND4> QuadDmaWaveform<'d, T, DMA1, DMA2, DMA3, DMA4, BIND1, BIND2, BIND3, BIND4>
 where
     T: GeneralInstance4Channel,
     DMA1: Dma<T, Ch1>,
@@ -345,36 +356,49 @@ where
     DMA3: Dma<T, Ch3>,
     DMA4: Dma<T, Ch4>,
 {
+    #[allow(unused)]
     pub fn new(
         dma1: Peri<'d, DMA1>,
         dma2: Peri<'d, DMA2>,
         dma3: Peri<'d, DMA3>,
         dma4: Peri<'d, DMA4>,
+        irq1: BIND1,
+        irq2: BIND2,
+        irq3: BIND3,
+        irq4: BIND4,
     ) -> Self {
         Self {
             dma1,
             dma2,
             dma3,
             dma4,
+            irq1,
+            irq2,
+            irq3,
+            irq4,
             _p: PhantomData,
         }
     }
 }
 
-impl<'d, T, DMA1, DMA2, DMA3, DMA4> WaveformGenerator
-    for QuadDmaWaveform<'d, T, DMA1, DMA2, DMA3, DMA4>
+impl<'d, T, DMA1, DMA2, DMA3, DMA4, BIND1, BIND2, BIND3, BIND4> WaveformGenerator
+    for QuadDmaWaveform<'d, T, DMA1, DMA2, DMA3, DMA4, BIND1, BIND2, BIND3, BIND4>
 where
     T: GeneralInstance4Channel,
     DMA1: Dma<T, Ch1>,
     DMA2: Dma<T, Ch2>,
     DMA3: Dma<T, Ch3>,
     DMA4: Dma<T, Ch4>,
+    BIND1: Binding<DMA1::Interrupt, embassy_stm32::dma::InterruptHandler<DMA1>>,
+    BIND2: Binding<DMA2::Interrupt, embassy_stm32::dma::InterruptHandler<DMA2>>,
+    BIND3: Binding<DMA3::Interrupt, embassy_stm32::dma::InterruptHandler<DMA3>>,
+    BIND4: Binding<DMA4::Interrupt, embassy_stm32::dma::InterruptHandler<DMA4>>,
 {
     type Timer = T;
     async fn run_waveform(&mut self, pwm: &mut SimplePwm<'_, T>, cmd: [[u16; TRANSMIT_SIZE]; 4]) {
-        pwm.waveform(self.dma1.reborrow(), cmd[0].as_slice()).await;
-        pwm.waveform(self.dma2.reborrow(), cmd[1].as_slice()).await;
-        pwm.waveform(self.dma3.reborrow(), cmd[2].as_slice()).await;
-        pwm.waveform(self.dma4.reborrow(), cmd[3].as_slice()).await;
+        pwm.waveform(self.dma1.reborrow(), self.irq1, Channel::Ch1, cmd[0].as_slice()).await;
+        pwm.waveform(self.dma2.reborrow(), self.irq2, Channel::Ch2, cmd[1].as_slice()).await;
+        pwm.waveform(self.dma3.reborrow(), self.irq3, Channel::Ch3, cmd[2].as_slice()).await;
+        pwm.waveform(self.dma4.reborrow(), self.irq4, Channel::Ch4, cmd[3].as_slice()).await;
     }
 }

@@ -4,7 +4,7 @@
 
 use crate::signals as s;
 
-use crate::types::control::ControlMode;
+use crate::types::control;
 use crate::{
     signals::{CALIBRATOR_STATE, CMD_CALIBRATE},
     sync::{procedure::Procedure, watch::Watch},
@@ -16,7 +16,7 @@ use embassy_time::{Duration, Instant, Ticker};
 const CHANNEL_LEN: usize = 4;
 
 pub mod message;
-pub use message::{Command, Origin, Request, Response};
+pub use message::*;
 
 /// Channel for sending commands to the [`Commander`] task
 ///
@@ -127,11 +127,11 @@ impl Commander {
     fn handle_command(&mut self, request: Request) -> Response {
         trace!("[{}] Handling command: {:?}", self.name, request);
         match request.command {
-            Command::ArmDisarm(cmd) => match cmd.arm {
-                true => self.arm_vehicle(cmd.force),
-                false => self.disarm_vehicle(cmd.force, request.origin),
+            Command::ArmDisarm { arm, force } => match arm {
+                true => self.arm_vehicle(force),
+                false => self.disarm_vehicle(force, request.origin),
             },
-            Command::DoCalibration(cmd) => {
+            Command::DoCalibration { sensor_id, sensor_type }=> {
                 use crate::calibration::{AccCalib, Calibrate, GyrCalib};
 
                 if COMMAD_ARM_VEHICLE.partial_eq(&true) {
@@ -144,13 +144,13 @@ impl Commander {
                     return Response::Rejected;
                 }
 
-                match cmd.sensor_type {
+                match sensor_type {
                     message::SensorType::Accelerometer => {
-                        CMD_CALIBRATE.send(Calibrate::Acc(AccCalib::default(), cmd.sensor_id));
+                        CMD_CALIBRATE.send(Calibrate::Acc(AccCalib::default(), sensor_id));
                         return Response::Accepted;
                     }
                     message::SensorType::Gyroscope => {
-                        CMD_CALIBRATE.send(Calibrate::Gyr(GyrCalib::default(), cmd.sensor_id));
+                        CMD_CALIBRATE.send(Calibrate::Gyr(GyrCalib::default(), sensor_id));
                         return Response::Accepted;
                     }
                     message::SensorType::Magnetometer => todo!("Not yet implemented"),
@@ -200,15 +200,15 @@ impl Commander {
             },
             Command::SetControlMode(requested_mode) => {
                 let mode = match requested_mode {
-                    message::SetControlMode::Rate => ControlMode::Rate,
-                    message::SetControlMode::Angle => ControlMode::Angle,
-                    message::SetControlMode::Velocity => {
+                    message::ControlMode::Rate => control::ControlMode::Rate,
+                    message::ControlMode::Angle => control::ControlMode::Angle,
+                    message::ControlMode::Velocity => {
                         // TODO Ensure valid velocity estimate
-                        ControlMode::Velocity
+                        control::ControlMode::Velocity
                     }
-                    message::SetControlMode::Autonomous => {
+                    message::ControlMode::Autonomous => {
                         // TODO Ensure valid position estimate
-                        ControlMode::Autonomous
+                        control::ControlMode::Autonomous
                     }
                 };
 
@@ -360,7 +360,7 @@ pub static CMD_RATE_REF: Watch<&'static Watch<[f32; 4]>> = Watch::new();
 pub static IMU_PRIM_CAL: Watch<&'static Watch<[f32; 3]>> = Watch::new();
 
 /// Select the currently active control mode
-pub static CMD_CONTROL_MODE: Watch<ControlMode> = Watch::new();
+pub static CMD_CONTROL_MODE: Watch<control::ControlMode> = Watch::new();
 
 const NUM_OUT_GROUPS: usize = 4;
 pub static CMD_ACTUATOR_OVERRIDE: [Watch<Option<[f32; 4]>>; NUM_OUT_GROUPS] = {
@@ -370,8 +370,6 @@ pub static CMD_ACTUATOR_OVERRIDE: [Watch<Option<[f32; 4]>>; NUM_OUT_GROUPS] = {
 
 #[cfg(test)]
 mod tests {
-    use crate::tasks::commander::message::*;
-
     use super::*;
 
     // #[test]
@@ -404,13 +402,12 @@ mod tests {
         STATUS_ON_GROUND.send(false); // In air
 
         let request = (
-            ArmDisarm {
+            Command::ArmDisarm {
                 arm: true,
                 force: false,
             },
             Origin::Unspecified,
-        )
-            .into();
+        ).into();
 
         let response = commander.handle_command(request);
         assert_eq!(response, Response::Rejected);
@@ -425,13 +422,12 @@ mod tests {
         STATUS_ON_GROUND.send(false);
 
         let request = (
-            ArmDisarm {
+            Command::ArmDisarm {
                 arm: true,
                 force: false,
             },
             Origin::RemoteControl,
-        )
-            .into();
+        ).into();
 
         let response = commander.handle_command(request);
         assert_eq!(response, Response::Unchanged);

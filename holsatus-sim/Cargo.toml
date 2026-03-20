@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-common = { path = "../common", default-features = false, features = ["arch-std"]}
+common = { path = "../common", default-features = false }
 
 nalgebra = "0.34.0"
 rapier3d = "0.29.0"

@@ -1,7 +1,7 @@
 use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Instant, Ticker, Timer};
-use nalgebra::{SMatrix, SVector, SVectorView, SVectorViewMut, UnitQuaternion, Vector3, matrix, vector};
-use tinympc_rs::{AntiSphere, Box, CircularCone, ProjectMulti, ProjectMultiExt as _, ProjectSingleExt as _, Solver, Sphere, policy::FixedPolicy};
+use nalgebra::{SMatrix, SVector, SVectorView, SVectorViewMut, UnitQuaternion, matrix, vector};
+use tinympc_rs::{AntiSphere, ProjectMulti, ProjectMultiExt as _, ProjectSingleExt as _, Solver, Sphere, policy::FixedPolicy};
 
 use crate::{
     consts::GRAVITY,
@@ -10,10 +10,10 @@ use crate::{
 };
 
 #[allow(unused)]
-#[cfg(not(feature = "arch-std"))]
+#[cfg(not(feature = "std"))]
 use num_traits::Float as _;
 
-pub const HX: usize = 100;
+pub const HX: usize = 50;
 const HU: usize = HX - 5;
 const NX: usize = 9;
 const NU: usize = 3;
@@ -59,8 +59,8 @@ fn system(mut xnext: SVectorViewMut<f32, NX>, x: SVectorView<f32, NX>, u: SVecto
 
 mod ax {
     pub const POS_X: usize = 0;
-    pub const POS_Y: usize = 1;
-    pub const POS_Z: usize = 2;
+    pub const _POS_Y: usize = 1;
+    pub const _POS_Z: usize = 2;
     pub const VEL_X: usize = 3;
     pub const VEL_Y: usize = 4;
     pub const VEL_Z: usize = 5;
@@ -72,8 +72,6 @@ mod ax {
 pub enum Message {
     /// The the reference position for some point in time and forward.
     SetPositionAt([f32; 3], Instant),
-    SetInterseptPoint([f32; 3], Instant),
-    ClearInterseptPoint,
 }
 
 pub static CHANNEL: Channel<Message, 2> = Channel::new();
@@ -99,18 +97,18 @@ mod params {
 
     crate::const_default!(
         Parameters => {
-            rho: 8.0,
+            rho: 2.0,
             cost_pos: Vec3 {
-                x: 0.5, y: 0.5, z: 0.5,
+                x: 15.0, y: 15.0, z: 2.0,
             },
             cost_vel: Vec3 {
-                x: 0.5, y: 0.5, z: 0.2,
+                x: 0.1, y: 0.1, z: 0.1,
             },
             cost_act: Vec3 {
-                x: 0.5, y: 0.5, z: 0.5,
+                x: 0.0, y: 0.0, z: 0.0,
             },
             cost_dact: Vec3 {
-                x: 1.0, y: 1.0, z: 1.0,
+                x: 0.5, y: 0.5, z: 0.5,
             }
         }
     );
@@ -118,15 +116,6 @@ mod params {
     pub static TABLE: Table<Parameters> = Table::default("mpc");
 }
 
-pub const CONE_VERTEX: [f32; 3] = [100.0, 0.0, -50.0];
-pub const CONE0_AXIS: [f32; 3] = [-2.0, 0.0, 1.0];
-pub const CONE1_AXIS: [f32; 3] = [2.0, 0.0, -1.0];
-pub const CONE_MU: f32 = 0.1;
-
-struct InterceptPoint {
-    point: Vector3<f32>,
-    time: Instant,
-}
 
 /// Shifts all columns such that `column[i] <- column[i + 1]` with the last two being identical.
 #[inline(always)]
@@ -175,41 +164,16 @@ pub async fn main() -> ! {
     let mut mpc = Solver::new(A, B, cache).with_sys(system);
 
     mpc.config.relaxation = 1.0;
-    mpc.config.max_iter = 1;
+    mpc.config.max_iter = 5;
 
     let mut rcv_eskf_estimate = ESKF_ESTIMATE.receiver();
-
-    // Positional entry cone for target interception
-    let x_projector_cone0 = CircularCone::new()
-        .vertex(CONE_VERTEX)
-        .axis(CONE0_AXIS)
-        .mu(CONE_MU)
-        .dim_lift::<NX>([ax::POS_X, ax::POS_Y, ax::POS_Z]);
-
-    // Positional exit cone for taget interception
-    let x_projector_cone1 = CircularCone::new()
-        .vertex(CONE_VERTEX)
-        .axis(CONE1_AXIS)
-        .mu(CONE_MU)
-        .dim_lift::<NX>([ax::POS_X, ax::POS_Y, ax::POS_Z]);
-    
-    // Models the floor, prevents the drone from slamming into it
-    let x_projector_floor = Box {
-        lower: vector![f32::NEG_INFINITY],
-        upper: vector![-1.0],
-    }.dim_lift::<NX>([ax::POS_Z]);
 
     // Limit the velocity magnitude to 200 m/s
     let x_projector_speed = Sphere {
         center: vector![0.0, 0.0, 0.0],
-        radius: 250.0,
+        radius: 10.0,
     }.dim_lift::<NX>([ax::VEL_X, ax::VEL_Y, ax::VEL_Z]);
 
-    // Each motor is able to produce 6.7 N. The vehicle weighs 630 grams.
-    // So, four motors can accelerate with (6.73 [N] * 4) / 0.630 [g] = 42.5 [m/s²]
-    // Limit the magnitude of total acceleration to 42 m/s²
-    // Also have a keep-out constraint around gravity singularity.
-    
     let x_projector_accel = (
         Sphere {
             center: vector![0.0, 0.0, GRAVITY],
@@ -223,16 +187,14 @@ pub async fn main() -> ! {
     
     // Combine projectors and extend throughout entire horizon
     let x_projector_bundle = (
-        (x_projector_floor, x_projector_speed, &x_projector_accel).time_fixed(),
-        x_projector_cone0.time_ranged(0..HX),
-        x_projector_cone1.time_ranged(HX..HX)
+        (x_projector_speed, &x_projector_accel).time_fixed(),
     );
 
     let mut x_con: [tinympc_rs::Constraint<f32, _, NX, HX>; 1] = [x_projector_bundle.constraint_owned()];
 
     let u_projector_sphere = Sphere {
         center: vector![0.0, 0.0, 0.0],
-        radius: GRAVITY * 0.5,
+        radius: GRAVITY,
     };
 
     let u_projector_bundle = (u_projector_sphere,).time_fixed();
@@ -245,11 +207,6 @@ pub async fn main() -> ! {
     Timer::after_millis(3500).await;
 
     info!("[mpc] Entering main loop");
-
-    let mut intercept = Some(InterceptPoint {
-        point: vector![0.0, 0.0, -100.0],
-        time: Instant::MAX,
-    });
 
     let mut ticker = Ticker::every(Duration::from_micros((DT * 1e6) as u64));
     loop {
@@ -268,69 +225,15 @@ pub async fn main() -> ! {
                         position_ref.set_column(i, &SVector::from(position));
                     }
                 },
-                Message::SetInterseptPoint(position, timestamp) => {
-                    MPC_INTERCEPT_POS.send(Some(position));
-                    intercept = Some(InterceptPoint {
-                        point: position.into(),
-                        time: timestamp,
-                    });
-                }
-                Message::ClearInterseptPoint => {
-                    info!("[controller_mpc] Clearing intercept point");
-                    MPC_INTERCEPT_POS.send(None);
-                    intercept = None;
-                }
             }
 
             // Ensure channel is depleted before next tick
             continue;
         }
 
+        shift_columns_left(&mut x_ref);
+
         let estimate = rcv_eskf_estimate.get().await;
-
-        // Update and prepare intercept projectors and reference
-        if let Some(intercept) = intercept.as_ref() {
-            let projector = x_con[0].projector_mut();
-
-            let split_idx = match intercept.time.checked_duration_since(Instant::now()) {
-                Some(duration) => {
-                    let num_secs = duration.as_micros() as f32 / 1e6;
-                    ((num_secs / DT).round() as usize).min(HX - 1)
-                }
-                None => 0, // Timestamp in the past, update everything regardless
-            };
-
-            let axis = estimate.pos - intercept.point;
-
-            // Correct the range of both cones (time)
-            projector.1.range = 0..split_idx;
-            projector.2.range = split_idx..HX;
-
-            // Set the vertex position of both cones (where)
-            projector.1.projector.projector.mut_vertex(intercept.point);
-            projector.2.projector.projector.mut_vertex(intercept.point);
-
-            // Set the axis of both cones (direction)
-            projector.1.projector.projector.mut_axis(axis);
-            projector.2.projector.projector.mut_axis(-axis);
-
-            if split_idx != 0 {
-                let ref_step_size = axis.unscale(-(split_idx as f32));
-                // info!("Step size: {:?}", ref_step_size);
-                
-                for (idx, mut ref_col) in x_ref.column_iter_mut().enumerate() {
-                    let coord = estimate.pos + ref_step_size.scale(idx as f32);
-                    ref_col.fixed_view_mut::<3, 1>(0,0).copy_from(&coord);
-                }
-            }
-        } else {
-            let projector = x_con[0].projector_mut();
-
-            // Effectively disable cones using empty range
-            projector.1.range = HX..HX;
-            projector.2.range = HX..HX;
-            shift_columns_left(&mut x_ref);
-        }
 
         x_con[0].projector_mut().project_multi(&mut x_ref);
 

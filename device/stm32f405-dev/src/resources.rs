@@ -106,8 +106,12 @@ pub fn split(p: Peripherals) -> AssignedResources {
 // ----------------------------------------------------------
 
 impl IntPin {
-    pub fn _setup(self) -> impl embedded_hal_async::digital::Wait {
-        ExtiInput::new(self.pin, self.exti, embassy_stm32::gpio::Pull::Up)
+    pub fn _setup(self) -> impl common::embedded_hal_async::digital::Wait {
+        bind_interrupts!(struct Irqs{
+            EXTI15_10 => embassy_stm32::exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI15_10>;
+        });
+
+        ExtiInput::new(self.pin, self.exti, embassy_stm32::gpio::Pull::Up, Irqs)
     }
 }
 
@@ -116,6 +120,8 @@ impl I2c1 {
         bind_interrupts!(struct I2c1Irq {
             I2C1_EV => embassy_stm32::i2c::EventInterruptHandler<peripherals::I2C1>;
             I2C1_ER => embassy_stm32::i2c::ErrorInterruptHandler<peripherals::I2C1>;
+            DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH0>;
+            DMA1_STREAM7 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH7>;
         });
 
         self.recover_bus();
@@ -129,9 +135,9 @@ impl I2c1 {
             self.periph,
             self.scl,
             self.sda,
-            I2c1Irq,
             self.tx_dma,
             self.rx_dma,
+            I2c1Irq,
             config,
         )
     }
@@ -182,7 +188,12 @@ pub(crate) async fn imu_reader(i2c: I2c1, i2c_cfg: I2cConfig, imu_cfg: ImuConfig
 // ----------------------------------------------------------
 
 impl Spi1 {
-    pub fn setup(self) -> impl embedded_hal_async::spi::SpiBus {
+    pub fn _setup(self) -> impl common::embedded_hal_async::spi::SpiBus {
+        bind_interrupts!(struct Irqs {
+            DMA2_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH0>;
+            DMA2_STREAM5 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH5>;
+        });
+
         embassy_stm32::spi::Spi::new(
             self.periph,
             self.sck,
@@ -190,6 +201,7 @@ impl Spi1 {
             self.miso,
             self.tx_dma,
             self.rx_dma,
+            Irqs,
             Default::default(),
         )
     }
@@ -197,7 +209,7 @@ impl Spi1 {
 
 #[embassy_executor::task]
 pub(crate) async fn spi_reader(spi: Spi1) -> ! {
-    let spi = spi.setup();
+    let _spi = spi._setup();
     todo!("Not implemented yet")
 }
 
@@ -217,12 +229,9 @@ pub(crate) mod sdmmc {
         types::config::SdmmcConfig,
     };
     use embassy_stm32::{
-        bind_interrupts,
-        sdmmc::{Error, Instance, InterruptHandler, Sdmmc},
-        time::Hertz,
+        bind_interrupts, dma, sdmmc::{self, Error, Sdmmc, sd::{Card, CmdBlock, StorageDevice}}, time::Hertz
     };
-
-    use crate::config::BLACKBOX_BUF;
+    use static_cell::StaticCell;
 
     // NOTE: There is a TODO in the embassy `Sdmmc` read/write
     // impls about handling the partition begin offset. If the SD
@@ -230,22 +239,22 @@ pub(crate) mod sdmmc {
     // please check if this has already been implemented there.
     const BOOT_SECTOR_OFFS: u32 = 2048;
 
-    pub struct SdmmcDevice<'d, T: Instance> {
-        sdmmc: Sdmmc<'d, T>,
-        frequency: Hertz,
+    pub struct SdmmcDevice<'d> {
+        storage: StorageDevice<'d, 'd, Card>,
+        freq: Hertz,
     }
 
-    impl<'d, T: Instance> ErrorType for SdmmcDevice<'d, T> {
+    impl ErrorType for SdmmcDevice<'_> {
         type Error = ErrorKind;
     }
 
-    impl<'d, T: Instance> Reset for SdmmcDevice<'d, T> {
+    impl Reset for SdmmcDevice<'_> {
         async fn reset(&mut self) -> bool {
-            self.sdmmc.init_sd_card(self.frequency).await.is_ok()
+            self.storage.reacquire(&mut CmdBlock::new(), self.freq).await.is_ok()
         }
     }
 
-    impl<'d, T: Instance> BlockDevice<512> for SdmmcDevice<'d, T> {
+    impl BlockDevice<512> for SdmmcDevice<'_> {
         type Error = Error;
         type Align = aligned::A4;
 
@@ -255,7 +264,7 @@ pub(crate) mod sdmmc {
             data: &mut [Aligned<Self::Align, [u8; 512]>],
         ) -> Result<(), Self::Error> {
             // 2048 is the offset for the boot sector.
-            self.sdmmc
+            self.storage
                 .read(BOOT_SECTOR_OFFS + block_address, data)
                 .await
         }
@@ -266,36 +275,40 @@ pub(crate) mod sdmmc {
             data: &[Aligned<Self::Align, [u8; 512]>],
         ) -> Result<(), Self::Error> {
             // 2048 is the offset for the boot sector.
-            self.sdmmc
+            self.storage
                 .write(BOOT_SECTOR_OFFS + block_address, data)
                 .await
         }
 
         async fn size(&mut self) -> Result<u64, Self::Error> {
-            self.sdmmc.size().await
+            self.storage.size().await
         }
     }
 
     impl super::Sdcard {
         pub fn setup(self, config: SdmmcConfig) -> impl BlockDevice<512> + Reset {
             bind_interrupts!(struct SdioIrq {
-                SDIO => InterruptHandler<super::peripherals::SDIO>;
+                SDIO => sdmmc::InterruptHandler<super::peripherals::SDIO>;
+                DMA2_STREAM3 => dma::InterruptHandler<super::peripherals::DMA2_CH3>;
             });
 
+            static SDMMC: StaticCell<Sdmmc<'static>> = StaticCell::new();
+            let sdmmc = SDMMC.init(Sdmmc::new_4bit(
+                self.periph,
+                self.dma,
+                SdioIrq,
+                self.clk,
+                self.cmd,
+                self.d0,
+                self.d1,
+                self.d2,
+                self.d3,
+                Default::default(),
+            ));
+
             SdmmcDevice {
-                sdmmc: Sdmmc::new_4bit(
-                    self.periph,
-                    SdioIrq,
-                    self.dma,
-                    self.clk,
-                    self.cmd,
-                    self.d0,
-                    self.d1,
-                    self.d2,
-                    self.d3,
-                    Default::default(),
-                ),
-                frequency: Hertz::hz(config.frequency),
+                storage: StorageDevice::new_uninit_sd_card(sdmmc),
+                freq: Hertz::hz(config.frequency),
             }
         }
     }
@@ -304,7 +317,7 @@ pub(crate) mod sdmmc {
     #[embassy_executor::task]
     pub(crate) async fn blackbox_fat(device: super::Sdcard, config: SdmmcConfig) -> ! {
         let device = device.setup(config);
-        common::tasks::blackbox_fat::main::<_, BLACKBOX_BUF>(device).await
+        common::tasks::blackbox_fat::main::<_, {512 * 2}>(device).await
     }
 }
 
@@ -542,13 +555,15 @@ pub struct UsartBuffered<'d> {
     pub tx: embassy_stm32::usart::UartTx<'d, Async>,
 }
 
-macro_rules! impl_ring_buffered_usart_setup {
-    ($fn_name:ident, $UsartX:ident, $USARTX:ident, rb = $rb_size:literal, $buf_rx:path, $buf_tx:path) => {
+macro_rules! impl_usart_setup {
+    ($fn_name:ident, $UsartX:ident, $USARTX:ident, rb = $rb_size:literal, $buf_rx:path, $buf_tx:path, $rx_dma_str:ident, $rx_dma_ch:ident, $tx_dma_str:ident, $tx_dma_ch:ident) => {
         #[allow(unused)]
         impl $UsartX {
             pub fn setup<'d>(&'d mut self, uart_cfg: UartConfig) -> UsartBuffered<'d> {
                 bind_interrupts!(struct UsartIrq {
                     $USARTX => embassy_stm32::usart::InterruptHandler<peripherals::$USARTX>;
+                    $rx_dma_str => embassy_stm32::dma::InterruptHandler<peripherals::$rx_dma_ch>;
+                    $tx_dma_str => embassy_stm32::dma::InterruptHandler<peripherals::$tx_dma_ch>;
                 });
 
                 let mut config = embassy_stm32::usart::Config::default();
@@ -577,9 +592,9 @@ macro_rules! impl_ring_buffered_usart_setup {
                     self.periph.reborrow(),
                     self.rx_pin.reborrow(),
                     self.tx_pin.reborrow(),
-                    UsartIrq,
                     self.tx_dma.reborrow(),
                     self.rx_dma.reborrow(),
+                    UsartIrq,
                     config,
                 );
 
@@ -615,8 +630,8 @@ macro_rules! impl_ring_buffered_usart_setup {
             };
 
             common::embassy_futures::join::join(
-                dev_prod.embedded_io_connect_mapped(rx, map_err),
-                dev_cons.embedded_io_connect_mapped(tx, map_err),
+                dev_prod.embedded_io_connect(rx, map_err),
+                dev_cons.embedded_io_connect(tx, map_err),
             ).await;
 
             defmt::warn!("[{}] Stream disconnected unexpectedly", serial_id)

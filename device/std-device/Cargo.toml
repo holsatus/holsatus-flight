@@ -8,13 +8,8 @@ default = ["rerun"]
 rerun = ["dep:rerun"]
 
 [dependencies]
-common = { path = "../../common", default-features = false, features = ["arch-std", "log", "mpc", "mavlink"] }
+common = { path = "../../common", default-features = false, features = ["std", "log", "mpc", "mavlink"] }
 holsatus-sim = { path = "../../holsatus-sim" }
-
-# embassy-net = { path = "../../embassy-holsatus/embassy-net", features = [
-#     "std", "tcp", "proto-ipv4"
-# ] }
-# embassy-net-tuntap = { path = "../../embassy-holsatus/embassy-net-tuntap" }
 
 static_cell = "2"
 
@@ -25,8 +20,8 @@ rerun = { version = "0.24.0", optional = true }
 toml = "0.9.8"
 
 rapier3d = { version = "0.29.0" }
-embedded-io-adapters = {version = "0.6.1", features = ["tokio-1"]}
-embedded-io = {version = "0.6.1", features = ["std"]}
+embedded-io-adapters = { version = "0.7.0", features = ["tokio-1"] }
+embedded-io = { version = "0.7.1", features = ["std"] }
 
 embedded-storage-async = "0.4.1"
 
@@ -38,9 +33,9 @@ tokio = { version = "1.48.0", features = ["io-std", "io-util", "macros", "net", 
 
 [dependencies.embassy-executor]
 git = "https://github.com/embassy-rs/embassy"
-rev = "4d67633"
+rev = "5bc8260"
 features = [
     "executor-thread",
-    "arch-std",
+    "platform-std",
     "log",
 ]

@@ -4,8 +4,9 @@ use block_device_adapters::BufStream;
 pub use block_device_driver::slice_to_blocks_mut;
 pub use block_device_driver::BlockDevice;
 use embassy_time::Instant;
+use embassy_time::Timer;
 use embedded_fatfs::{FileSystem, FsOptions};
-use embedded_io_async::Write;
+use embedded_io_async_061::Write as _;
 use heapless::{String, Vec};
 use postcard::to_slice;
 
@@ -44,22 +45,15 @@ where
 {
     // Ensure device is in a known-good state
     if !device.reset().await {
+        Timer::after_secs(1).await;
         Err(BlackboxError::ResetFault)?
     }
-
-    // TODO - reimplement
-    // // Messages likely stale at this point, drop them
-    // if BLACKBOX_QUEUE.free_capacity() == 0 {
-    //     warn!("Channel was full, dropping all messages");
-    //     BLACKBOX_QUEUE.clear();
-    // }
 
     // The BufStream holds a small local cache, and is what the filesystem uses directly
     let inner = BufStream::new(device);
 
     // Setup the filesystem with default options
     let fs = FileSystem::new(inner, FsOptions::new()).await?;
-
 
     // Find log file with largest index
     let mut current_file_idx = 0;

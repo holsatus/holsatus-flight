@@ -56,7 +56,7 @@ crate::const_default!(
 impl Actual {
     pub fn apply(&self, val: f32) -> f32 {
         #[allow(unused)]
-        #[cfg(not(feature = "arch-std"))]
+        #[cfg(not(feature = "std"))]
         use num_traits::Float as _;
         self.cent * val
             + (self.rate - self.cent)
