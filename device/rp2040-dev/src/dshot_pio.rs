@@ -1,5 +1,5 @@
 use dshot_encoder as dshot;
-use paste::paste;
+use pastey::paste;
 
 use embassy_rp::{
     interrupt::typelevel::Binding,

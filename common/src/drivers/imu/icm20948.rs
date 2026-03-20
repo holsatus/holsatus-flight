@@ -1,5 +1,5 @@
 use embassy_time::Instant;
-use icm20948_async::{self, BusI2c, BusSpi, Icm20948, MagEnabled, SetupError};
+use icm20948_async::{self, I2cDevice, SpiDevice, Icm20948, MagEnabled, SetupError};
 
 use crate::{
     errors::DeviceError,
@@ -7,7 +7,7 @@ use crate::{
     types::measurements::{Imu6DofData, Imu9DofData},
 };
 
-impl<BUS, MAG> Imu6Dof for Icm20948<BusI2c<BUS>, MAG>
+impl<BUS, MAG> Imu6Dof for Icm20948<I2cDevice<BUS>, MAG>
 where
     BUS: embedded_hal_async::i2c::I2c,
 {
@@ -35,7 +35,7 @@ where
     }
 }
 
-impl<BUS> Imu9Dof for Icm20948<BusI2c<BUS>, MagEnabled>
+impl<BUS> Imu9Dof for Icm20948<I2cDevice<BUS>, MagEnabled>
 where
     BUS: embedded_hal_async::i2c::I2c,
 {
@@ -60,7 +60,7 @@ where
     }
 }
 
-impl<BUS, MAG> Imu6Dof for Icm20948<BusSpi<BUS>, MAG>
+impl<BUS, MAG> Imu6Dof for Icm20948<SpiDevice<BUS>, MAG>
 where
     BUS: embedded_hal_async::spi::SpiDevice,
     BUS::Error: embedded_hal::spi::Error,
@@ -89,7 +89,7 @@ where
     }
 }
 
-impl<BUS> Imu9Dof for Icm20948<BusSpi<BUS>, MagEnabled>
+impl<BUS> Imu9Dof for Icm20948<SpiDevice<BUS>, MagEnabled>
 where
     BUS: embedded_hal_async::spi::SpiDevice,
 {
@@ -116,7 +116,7 @@ where
 
 pub fn from_i2c_err<E: embedded_hal::i2c::Error>(value: SetupError<E>) -> DeviceError {
     match value {
-        SetupError::Bus(bus_err) => DeviceError::I2c(bus_err.into()),
+        SetupError::Transport(e) => DeviceError::I2c(e.into()),
         SetupError::ImuWhoAmI(_) => DeviceError::IdentificationError,
         SetupError::MagWhoAmI(_) => DeviceError::IdentificationError,
     }
@@ -124,7 +124,7 @@ pub fn from_i2c_err<E: embedded_hal::i2c::Error>(value: SetupError<E>) -> Device
 
 pub fn from_spi_err<E: embedded_hal::spi::Error>(value: SetupError<E>) -> DeviceError {
     match value {
-        SetupError::Bus(bus_err) => DeviceError::Spi(bus_err.into()),
+        SetupError::Transport(e) => DeviceError::Spi(e.into()),
         SetupError::ImuWhoAmI(_) => DeviceError::IdentificationError,
         SetupError::MagWhoAmI(_) => DeviceError::IdentificationError,
     }

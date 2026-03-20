@@ -19,7 +19,6 @@ defmt-rtt = "1.1.0"
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 
 common = { path = "../../common", default-features = false, features = [
-    "portable-atomic-critical-section",
     "mavlink",
     "defmt",
     "gnss",
@@ -46,7 +45,7 @@ dshot-encoder = { git = "https://github.com/peterkrull/dshot-encoder" }
 portable-atomic = { version = "1", features = ["critical-section"] }
 assign-resources = "0.5.0"
 static_cell = "2.1.0"
-paste = "1.0.15"
+pastey = "0.2.1"
 pio-proc = "0.3.0"
 pio = "0.3.0"
 
