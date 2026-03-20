@@ -189,12 +189,9 @@ pub(crate) mod sdmmc {
         types::config::SdmmcConfig,
     };
     use embassy_stm32::{
-        bind_interrupts,
-        sdmmc::{Error, Instance, InterruptHandler, Sdmmc},
-        time::Hertz,
+        bind_interrupts, dma, sdmmc::{self, Error, Sdmmc, sd::{Card, CmdBlock, StorageDevice}}, time::Hertz
     };
-
-    use crate::config::BLACKBOX_BUF;
+    use static_cell::StaticCell;
 
     // NOTE: There is a TODO in the embassy `Sdmmc` read/write
     // impls about handling the partition begin offset. If the SD
@@ -202,22 +199,22 @@ pub(crate) mod sdmmc {
     // please check if this has already been implemented there.
     const BOOT_SECTOR_OFFS: u32 = 2048;
 
-    pub struct SdmmcDevice<'d, T: Instance> {
-        sdmmc: Sdmmc<'d, T>,
-        frequency: Hertz,
+    pub struct SdmmcDevice<'d> {
+        storage: StorageDevice<'d, 'd, Card>,
+        freq: Hertz,
     }
 
-    impl<'d, T: Instance> ErrorType for SdmmcDevice<'d, T> {
+    impl ErrorType for SdmmcDevice<'_> {
         type Error = ErrorKind;
     }
 
-    impl<'d, T: Instance> Reset for SdmmcDevice<'d, T> {
+    impl Reset for SdmmcDevice<'_> {
         async fn reset(&mut self) -> bool {
-            self.sdmmc.init_sd_card(self.frequency).await.is_ok()
+            self.storage.reacquire(&mut CmdBlock::new(), self.freq).await.is_ok()
         }
     }
 
-    impl<'d, T: Instance> BlockDevice<512> for SdmmcDevice<'d, T> {
+    impl BlockDevice<512> for SdmmcDevice<'_> {
         type Error = Error;
         type Align = aligned::A4;
 
@@ -227,7 +224,7 @@ pub(crate) mod sdmmc {
             data: &mut [Aligned<Self::Align, [u8; 512]>],
         ) -> Result<(), Self::Error> {
             // 2048 is the offset for the boot sector.
-            self.sdmmc
+            self.storage
                 .read(BOOT_SECTOR_OFFS + block_address, data)
                 .await
         }
@@ -238,36 +235,40 @@ pub(crate) mod sdmmc {
             data: &[Aligned<Self::Align, [u8; 512]>],
         ) -> Result<(), Self::Error> {
             // 2048 is the offset for the boot sector.
-            self.sdmmc
+            self.storage
                 .write(BOOT_SECTOR_OFFS + block_address, data)
                 .await
         }
 
         async fn size(&mut self) -> Result<u64, Self::Error> {
-            self.sdmmc.size().await
+            self.storage.size().await
         }
     }
 
     impl super::Sdcard {
         pub fn setup(self, config: SdmmcConfig) -> impl BlockDevice<512> + Reset {
             bind_interrupts!(struct SdioIrq {
-                SDIO => InterruptHandler<super::peripherals::SDIO>;
+                SDIO => sdmmc::InterruptHandler<super::peripherals::SDIO>;
+                DMA2_STREAM3 => dma::InterruptHandler<super::peripherals::DMA2_CH3>;
             });
 
+            static SDMMC: StaticCell<Sdmmc<'static>> = StaticCell::new();
+            let sdmmc = SDMMC.init(Sdmmc::new_4bit(
+                self.periph,
+                self.dma,
+                SdioIrq,
+                self.clk,
+                self.cmd,
+                self.d0,
+                self.d1,
+                self.d2,
+                self.d3,
+                Default::default(),
+            ));
+
             SdmmcDevice {
-                sdmmc: Sdmmc::new_4bit(
-                    self.periph,
-                    SdioIrq,
-                    self.dma,
-                    self.clk,
-                    self.cmd,
-                    self.d0,
-                    self.d1,
-                    self.d2,
-                    self.d3,
-                    Default::default(),
-                ),
-                frequency: Hertz::hz(config.frequency),
+                storage: StorageDevice::new_uninit_sd_card(sdmmc),
+                freq: Hertz::hz(config.frequency),
             }
         }
     }
@@ -276,7 +277,7 @@ pub(crate) mod sdmmc {
     #[embassy_executor::task]
     pub(crate) async fn blackbox_fat(device: super::Sdcard, config: SdmmcConfig) -> ! {
         let device = device.setup(config);
-        common::tasks::blackbox_fat::main::<_, BLACKBOX_BUF>(device).await
+        common::tasks::blackbox_fat::main::<_, {512 * 2}>(device).await
     }
 }
 

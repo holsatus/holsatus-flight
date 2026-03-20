@@ -4,17 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["mpc", "mavlink", "gnss"]
+default = ["sdmmc", "gnss", "mavlink"]
 
 mpc = ["common/mpc"]
-
-# Enable the on-board sdmmc controller for SD card support.
-# Useful for high frequency data logging and post-accident analysis.
 sdmmc = []
 gnss = ["common/gnss"]
-
-# Enable the onboard USB header to be used for wired configuration
-# HITL and shell-like functionality.
 usb = ["common/usb"]
 
 mavlink = ["common/mavlink"]
@@ -42,7 +36,7 @@ features = [
 
 [dependencies.embassy-executor]
 git = "https://github.com/embassy-rs/embassy"
-rev = "d22f3bf"
+rev = "5bc8260"
 features = [
     "executor-interrupt",
     "executor-thread",
@@ -51,7 +45,7 @@ features = [
 
 [dependencies.embassy-stm32]
 git = "https://github.com/embassy-rs/embassy"
-rev = "d22f3bf"
+rev = "5bc8260"
 features = [
     "time-driver-tim2",
     "stm32f405rg",

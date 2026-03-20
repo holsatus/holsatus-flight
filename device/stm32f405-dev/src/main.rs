@@ -102,12 +102,9 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     level_t_spawner.spawn(common::tasks::eskf::main().unwrap());
 
     #[cfg(feature = "mpc")]
-    {
-        level_t_spawner.spawn(common::tasks::controller_mpc::main().unwrap());
-    }
+    level_t_spawner.spawn(common::tasks::controller_mpc::main().unwrap());
 
     level_t_spawner.spawn(common::tasks::in_flight_estimator::main().unwrap());
-    level_t_spawner.spawn(auto_program_entry().unwrap());
 
     // -------------------------- fin ---------------------------
     common::embassy_time::Timer::after_secs(1).await;
@@ -115,128 +112,5 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     loop {
         defmt::debug!("[stm32f405-dev] thread-mode execution operating as intended");
         common::embassy_time::Timer::after_secs(10).await;
-    }
-}
-
-#[embassy_executor::task]
-async fn auto_program_entry() -> ! {
-    use common::types::control::ControlMode;
-    let mut rcv_flight_mode = common::tasks::commander::CMD_CONTROL_MODE.receiver();
-
-    loop {
-        // Wait for us change to autonomous mode, then run the auto_program
-        rcv_flight_mode
-            .changed_and(|mode| matches!(mode, ControlMode::Autonomous))
-            .await;
-
-        // Run the program to completion, or, until the mode changes
-        common::embassy_futures::select::select(
-            rcv_flight_mode.changed_and(|mode| !matches!(mode, ControlMode::Autonomous)),
-            auto_program::side_to_side(),
-        )
-        .await;
-    }
-}
-
-mod auto_program {
-    use common::embassy_time::{Duration, Instant, Timer};
-    use defmt::*;
-
-    fn millis_in_future(millis: u32) -> Instant {
-        Instant::now() + Duration::from_millis(millis as u64)
-    }
-
-    pub async fn side_to_side() {
-        use common::tasks::commander::{message::Command, Origin, Request, Response, PROCEDURE};
-        use common::tasks::controller_mpc::{Message, CHANNEL};
-
-        let mut motors_state = common::signals::MOTORS_STATE.receiver();
-        let mut eskf_estimate = common::signals::ESKF_ESTIMATE.receiver();
-
-        // Request the arming the vehicle, doing all checks
-        let res = PROCEDURE
-            .request(Request {
-                command: Command::ArmDisarm {
-                    arm: true,
-                    force: false,
-                },
-                origin: Origin::Automatic,
-            })
-            .await;
-
-        if res.is_none_or(|res| res != Response::Accepted) {
-            warn!("[auto] Arming request was not accepted");
-            return;
-        }
-
-        // Wait for the arming sequence to be complete
-        motors_state.changed_and(|motors| motors.is_armed()).await;
-
-        // In one second we should be 25 cm in the air (NED)
-        CHANNEL
-            .send(Message::SetPositionAt(
-                [0.0, 0.0, -0.25],
-                millis_in_future(1000),
-            ))
-            .await;
-        Timer::after_secs(5).await;
-
-        // Get up to 1 meter
-        CHANNEL
-            .send(Message::SetPositionAt(
-                [0.0, 0.0, -1.0],
-                millis_in_future(1000),
-            ))
-            .await;
-        Timer::after_secs(5).await;
-
-        // Move 2 meters to the left
-        CHANNEL
-            .send(Message::SetPositionAt(
-                [0.0, -2.0, -1.0],
-                millis_in_future(4500),
-            ))
-            .await;
-        Timer::after_secs(7).await;
-
-        // Move 2 meters to the right
-        CHANNEL
-            .send(Message::SetPositionAt(
-                [0.0, 2.0, -1.0],
-                millis_in_future(4500),
-            ))
-            .await;
-        Timer::after_secs(5).await;
-
-        // Move back to center
-        CHANNEL
-            .send(Message::SetPositionAt(
-                [0.0, 0.0, -1.0],
-                millis_in_future(4500),
-            ))
-            .await;
-        Timer::after_secs(5).await;
-
-        // Get in for a landing
-        CHANNEL
-            .send(Message::SetPositionAt(
-                [0.0, 0.0, 0.0],
-                millis_in_future(4500),
-            ))
-            .await;
-
-        // Wait for the drone to be close to the ground before turning off the motors
-        eskf_estimate.changed_and(|est| est.pos[2] > -0.15).await;
-
-        // Request the arming the vehicle, doing all checks
-        PROCEDURE
-            .request(Request {
-                command: Command::ArmDisarm {
-                    arm: false,
-                    force: false,
-                },
-                origin: Origin::Automatic,
-            })
-            .await;
     }
 }

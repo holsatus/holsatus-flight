@@ -6,9 +6,6 @@ use common::{
     types::config::{DshotConfig, I2cConfig, UartConfig},
 };
 
-#[cfg(feature = "sdmmc")]
-pub(crate) const BLACKBOX_BUF: usize = 512 * 2;
-
 #[cfg(feature = "usb")]
 pub(crate) fn hwinfo() -> common::types::device::HardwareInfo {
     use common::heapless::String;

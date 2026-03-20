@@ -31,8 +31,8 @@ tokio = { version = "1.48.0", features = ["io-std", "io-util", "macros", "net", 
 
 critical-section = { version = "*", features = ["std"] }
 
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf" }
-embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf" }
-embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf" }
-embassy-executor-macros = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf" }
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-executor-macros = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }

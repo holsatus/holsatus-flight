@@ -44,11 +44,11 @@ std = [
 ]
 
 [dependencies]
-embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf", optional = true }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf" }
-embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf" }
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", optional = true }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
 
 # Logging, embedded and std environments
 defmt = { version = "1.0.1", optional = true }

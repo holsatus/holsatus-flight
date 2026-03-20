@@ -26,13 +26,13 @@ common = { path = "../../common", default-features = false, features = [
     "usb",
 ] }
 
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf", features = [
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = [
     "executor-interrupt",
     "executor-thread",
     "platform-cortex-m",
 ] }
 
-embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "d22f3bf", features = [
+embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = [
     "critical-section-impl",
     "rom-v2-intrinsics",
     "unstable-pac",
