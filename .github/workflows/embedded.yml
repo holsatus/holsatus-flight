@@ -32,7 +32,7 @@ jobs:
       run: |
         export CARGO_HOME=$(pwd)/device/stm32f405-dev/.cargo
         cargo build --manifest-path device/stm32f405-dev/Cargo.toml --no-default-features --verbose
-        # cargo build --manifest-path device/stm32f405-dev/Cargo.toml --all-features --verbose
+        cargo build --manifest-path device/stm32f405-dev/Cargo.toml --all-features --verbose
 
     - name: Build binary for rp2040-dev target
       run: |
