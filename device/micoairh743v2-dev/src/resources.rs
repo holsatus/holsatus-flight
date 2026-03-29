@@ -1,7 +1,7 @@
 //! Peripheral resource splitting and embassy task wrappers for the MicoAir H743.
 //!
 //! Peripheral assignments:
-//!   BMI270 IMU  -- SPI2:  SCLK=PD3, MOSI=PC3, MISO=PC2, CS=PA15
+//!   BMI088 IMU  -- SPI2:  SCLK=PD3, MOSI=PC3, MISO=PC2, CS_ACC=PD4, CS_GYR=PD5
 //!                          DMA1_CH6 (TX), DMA1_CH7 (RX)
 //!   DPS310 Baro -- I2C2:  SCL=PB10, SDA=PB11, addr=0x76 (SDO low)
 //!   IST8310 Mag -- I2C2:  shared bus, addr=0x0E (fixed)
@@ -26,8 +26,8 @@ use static_cell::StaticCell;
 
 use common::types::config::DshotConfig;
 
-use crate::bmi270::Bmi270;
-use crate::bmi270_imu6dof::Bmi270Imu6Dof;
+use crate::bmi088::Bmi088;
+use crate::bmi088_imu6dof::Bmi088Imu6Dof;
 use crate::dshot_driver::{DshotDriver, UpDmaWaveform};
 
 assign_resources! {
@@ -36,7 +36,8 @@ assign_resources! {
         sclk:   PD3,
         mosi:   PC3,
         miso:   PC2,
-        cs:     PA15,
+        cs_acc: PD4,
+        cs_gyr: PD5,
         dma_tx: DMA1_CH6,
         dma_rx: DMA1_CH7,
     }
@@ -87,8 +88,12 @@ bind_interrupts!(pub struct Spi2Irqs {
     DMA1_STREAM7 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH7>;
 });
 
+bind_interrupts!(pub struct MotorIrqs {
+    DMA1_STREAM1 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH1>;
+});
+
 // ----------------------------------------------------------
-// -------------------- IMU (SPI2 / BMI270) -----------------
+// -------------------- IMU (SPI2 / BMI088) -----------------
 // ----------------------------------------------------------
 
 type Spi2Bus = Mutex<NoopRawMutex, Spi<'static, Async, SpiMaster>>;
@@ -111,28 +116,30 @@ pub async fn imu_reader_task(r: ImuResources) -> ! {
     );
 
     let bus = SPI2_BUS.init(Mutex::new(spi));
-    let cs = Output::new(r.cs, Level::High, Speed::High);
-    let dev = SpiDeviceWithConfig::new(bus, cs, spi_cfg);
+    let cs_acc = Output::new(r.cs_acc, Level::High, Speed::High);
+    let cs_gyr = Output::new(r.cs_gyr, Level::High, Speed::High);
+    let accel_dev = SpiDeviceWithConfig::new(bus, cs_acc, spi_cfg);
+    let gyro_dev  = SpiDeviceWithConfig::new(bus, cs_gyr, spi_cfg);
 
-    let inner = Bmi270::new(dev);
-    let mut imu = Bmi270Imu6Dof::new(inner);
+    let inner = Bmi088::new(accel_dev, gyro_dev);
+    let mut imu = Bmi088Imu6Dof::new(inner);
 
     let mut attempt = 0u32;
     loop {
         match imu.init().await {
             Ok(()) => {
-                defmt::info!("[imu_reader] BMI270 initialized");
-                crate::log::log("[imu] BMI270 init OK");
+                defmt::info!("[imu_reader] BMI088 initialized");
+                crate::log::log("[imu] BMI088 init OK");
                 break;
             }
             Err(e) => {
-                defmt::error!("[imu_reader] BMI270 init failed: {:?}", e);
+                defmt::error!("[imu_reader] BMI088 init failed: {:?}", e);
                 attempt += 1;
                 match attempt {
-                    1 => crate::log::log("[imu] BMI270 init FAIL attempt 1"),
-                    2 => crate::log::log("[imu] BMI270 init FAIL attempt 2"),
-                    3 => crate::log::log("[imu] BMI270 init FAIL attempt 3"),
-                    _ => crate::log::log("[imu] BMI270 init FAIL (retrying)"),
+                    1 => crate::log::log("[imu] BMI088 init FAIL attempt 1"),
+                    2 => crate::log::log("[imu] BMI088 init FAIL attempt 2"),
+                    3 => crate::log::log("[imu] BMI088 init FAIL attempt 3"),
+                    _ => crate::log::log("[imu] BMI088 init FAIL (retrying)"),
                 }
                 embassy_time::Timer::after_secs(1).await;
             }
@@ -148,10 +155,6 @@ pub async fn imu_reader_task(r: ImuResources) -> ! {
 
 #[embassy_executor::task]
 pub async fn motor_governor_task(r: MotorResources, dshot: DshotConfig) -> ! {
-    bind_interrupts!(struct MotorIrqs {
-        DMA1_STREAM1 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH1>;
-    });
-
     let wav = UpDmaWaveform::new(r.dma, MotorIrqs);
 
     // Motor pin order follows the motor_dshot.rs convention:

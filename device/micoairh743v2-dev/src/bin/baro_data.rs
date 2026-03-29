@@ -77,6 +77,7 @@ struct BaroSample {
 // ── Interrupt bindings ───────────────────────────────────────────────────────
 
 // I2C2 + DMA1_STREAM4/5 are bound at lib level (resources::I2c2Irqs).
+// DMA1_STREAM1 (TIM1 UP DMA for ESC silence) is bound at lib level (resources::MotorIrqs).
 bind_interrupts!(struct UartIrqs {
     DMA1_STREAM0 => InterruptHandler<DMA1_CH0>;           // UART1 TX DMA
     USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
@@ -85,7 +86,7 @@ bind_interrupts!(struct UartIrqs {
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(micoairh743v2::config::embassy_config());
 
     let mut led_red   = Output::new(p.PE3, Level::Low, Speed::Low);
@@ -103,6 +104,14 @@ async fn main(_spawner: Spawner) {
     let mut uart =
         UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartIrqs, UartConfig::default()).unwrap();
     uart.write(b"baro_log: UART ok\r\n").await.ok();
+
+    // ── ESC silence ──────────────────────────────────────────────────────────
+    // Spawn a task that sends DShot disarm frames continuously so ESCs stay
+    // quiet for the lifetime of this binary.
+    spawner.spawn(micoairh743v2::esc_silence::task(
+        p.TIM1, p.PE9, p.PE11, p.PE13, p.PE14, p.DMA1_CH1,
+    ).unwrap());
+    uart.write(b"baro_log: ESC silence task started\r\n").await.ok();
 
     // ── I2C2 / DPS310 ───────────────────────────────────────────────────────
     let mut i2c_cfg = I2cConfig::default();

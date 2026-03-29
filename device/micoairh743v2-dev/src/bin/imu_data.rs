@@ -94,8 +94,8 @@ struct ImuSample {
 
 // ── Interrupt bindings ───────────────────────────────────────────────────────
 
-// DMA1_STREAM6 and DMA1_STREAM7 are bound at lib level (resources::Spi2Irqs)
-// to avoid duplicate #[no_mangle] symbols when the lib is linked in.
+// DMA1_STREAM6 and DMA1_STREAM7 are bound at lib level (resources::Spi2Irqs).
+// DMA1_STREAM1 (TIM1 UP DMA for ESC silence) is bound at lib level (resources::MotorIrqs).
 bind_interrupts!(struct UartIrqs {
     DMA1_STREAM0 => InterruptHandler<DMA1_CH0>;   // UART1 TX DMA
     USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
@@ -107,7 +107,7 @@ static SPI2_BUS: StaticCell<Spi2Bus> = StaticCell::new();
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(micoairh743v2::config::embassy_config());
 
     let mut led_red   = Output::new(p.PE3, Level::Low, Speed::Low);
@@ -126,6 +126,14 @@ async fn main(_spawner: Spawner) {
     let mut uart =
         UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartIrqs, UartConfig::default()).unwrap();
     uart.write(b"imu_log: UART ok\r\n").await.ok();
+
+    // ── ESC silence ──────────────────────────────────────────────────────────
+    // Spawn a task that sends DShot disarm frames continuously so ESCs stay
+    // quiet for the lifetime of this binary.
+    spawner.spawn(micoairh743v2::esc_silence::task(
+        p.TIM1, p.PE9, p.PE11, p.PE13, p.PE14, p.DMA1_CH1,
+    ).unwrap());
+    uart.write(b"imu_log: ESC silence task started\r\n").await.ok();
 
     // ── SPI2 / BMI088 ───────────────────────────────────────────────────────
     let mut spi_cfg = SpiConfig::default();

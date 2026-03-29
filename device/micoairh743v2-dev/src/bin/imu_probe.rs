@@ -1,11 +1,10 @@
 //! MicoAir H743v2 -- SPI IMU chip-ID probe.
 //!
-//! Reads the CHIP_ID register from every IMU CS pin on SPI2 and prints the
-//! results over UART1.  Use this to confirm which IMU is physically populated.
+//! Reads the CHIP_ID register from both BMI088 CS pins on SPI2 and prints the
+//! results over UART1.  Use this to confirm the IMU is correctly wired.
 //!
 //! Expected results:
-//!   BMI270  CS=PA15  -> chip_id=0x24
-//!   BMI088 accel CS=PD4  -> chip_id=0x1E
+//!   BMI088 accel CS=PD4  -> chip_id=0x1E  (or 0x1A for BMI088_MM, 0x1F for BMI085)
 //!   BMI088 gyro  CS=PD5  -> chip_id=0x0F
 //!
 //! 0xFF means nothing responds on that CS (MISO floating high due to Pull::Up).
@@ -76,40 +75,18 @@ async fn main(_spawner: Spawner) {
     );
     let bus = SPI2_BUS.init(Mutex::new(spi));
 
-    // Probe each CS pin; idle all others high before asserting.
-    let probes: [(&str, u8); 3] = [
-        ("BMI270  PA15", 0),
-        ("BMI088A PD4 ", 1),
-        ("BMI088G PD5 ", 2),
-    ];
-
-    // Create one device per CS, probe sequentially.
-    let mut cs_pa15 = Output::new(p.PA15, Level::High, Speed::High);
-    let mut cs_pd4  = Output::new(p.PD4,  Level::High, Speed::High);
-    let mut cs_pd5  = Output::new(p.PD5,  Level::High, Speed::High);
+    let mut cs_pd4 = Output::new(p.PD4, Level::High, Speed::High);
+    let mut cs_pd5 = Output::new(p.PD5, Level::High, Speed::High);
 
     Timer::after_millis(10).await;
 
-    for (label, idx) in probes {
-        let id = match idx {
-            0 => {
-                let mut dev = SpiDeviceWithConfig::new(bus, &mut cs_pa15, spi_cfg);
-                read_chip_id(&mut dev).await
-            }
-            1 => {
-                let mut dev = SpiDeviceWithConfig::new(bus, &mut cs_pd4, spi_cfg);
-                read_chip_id(&mut dev).await
-            }
-            _ => {
-                let mut dev = SpiDeviceWithConfig::new(bus, &mut cs_pd5, spi_cfg);
-                read_chip_id(&mut dev).await
-            }
-        };
-
+    for (label, id) in [
+        ("BMI088A PD4", { let mut d = SpiDeviceWithConfig::new(bus, &mut cs_pd4, spi_cfg); read_chip_id(&mut d).await }),
+        ("BMI088G PD5", { let mut d = SpiDeviceWithConfig::new(bus, &mut cs_pd5, spi_cfg); read_chip_id(&mut d).await }),
+    ] {
         let mut s: String<48> = String::new();
         write!(s, "imu_probe: {} chip_id=0x{:02X}\r\n", label, id).ok();
         uart.write(s.as_bytes()).await.ok();
-
         Timer::after_millis(5).await;
     }
 

@@ -36,15 +36,16 @@ use embassy_stm32::timer::simple_pwm::{PwmPin, SimplePwm};
 use embassy_stm32::timer::{Ch1, Ch2, Ch3, Ch4};
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_time::Timer;
+use micoairh743v2::resources::MotorIrqs;
 use {defmt_rtt as _, panic_probe as _};
 
 #[path = "../config.rs"]
 mod config;
 use config::{Reverse, MOTOR_REVERSE_FLAGS};
 
+// DMA1_STREAM1 (TIM1 UP DMA) is bound at lib level (resources::MotorIrqs).
 bind_interrupts!(struct Irqs {
     DMA1_STREAM0 => DmaInterruptHandler<peripherals::DMA1_CH0>;
-    DMA1_STREAM1 => DmaInterruptHandler<peripherals::DMA1_CH1>;
     USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
 });
 
@@ -85,7 +86,7 @@ async fn burst(
     gap_us: u64,
 ) {
     for _ in 0..count {
-        pwm.waveform_up_multi_channel(dma.reborrow(), Irqs, Channel::Ch1, Channel::Ch4, buf).await;
+        pwm.waveform_up_multi_channel(dma.reborrow(), MotorIrqs, Channel::Ch1, Channel::Ch4, buf).await;
         Timer::after_micros(gap_us).await;
     }
 }
@@ -140,7 +141,7 @@ async fn main(_spawner: Spawner) {
         // ---- direction commands ----
         let _ = uart.write(b"[dir] sending direction commands ...\r\n").await;
         for _ in 0..20 {
-            pwm.waveform_up_multi_channel(dma.reborrow(), Irqs, Channel::Ch1, Channel::Ch4, &rev_buf).await;
+            pwm.waveform_up_multi_channel(dma.reborrow(), MotorIrqs, Channel::Ch1, Channel::Ch4, &rev_buf).await;
             Timer::after_millis(1).await;
         }
 

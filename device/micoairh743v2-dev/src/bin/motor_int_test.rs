@@ -32,6 +32,7 @@ use embassy_stm32::timer::simple_pwm::{PwmPin, SimplePwm};
 use embassy_stm32::timer::{Ch1, Ch2, Ch3, Ch4};
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_time::Timer;
+use micoairh743v2::resources::MotorIrqs;
 use {defmt_rtt as _, panic_probe as _};
 
 // Pull in config without linking the full micoairh743 lib (avoids duplicate ISR).
@@ -39,9 +40,9 @@ use {defmt_rtt as _, panic_probe as _};
 mod config;
 use config::{Reverse, MOTOR_REVERSE_FLAGS};
 
+// DMA1_STREAM1 (TIM1 UP DMA) is bound at lib level (resources::MotorIrqs).
 bind_interrupts!(struct Irqs {
     DMA1_STREAM0 => DmaInterruptHandler<peripherals::DMA1_CH0>;
-    DMA1_STREAM1 => DmaInterruptHandler<peripherals::DMA1_CH1>;
     USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
 });
 
@@ -132,31 +133,31 @@ async fn motor_task(
     loop {
         defmt::info!("cycle: disarming 3 s");
         for _ in 0u16..3000 {
-            pwm.waveform_up_multi_channel(dma.reborrow(), Irqs, Channel::Ch1, Channel::Ch4, &all_disarm).await;
+            pwm.waveform_up_multi_channel(dma.reborrow(), MotorIrqs, Channel::Ch1, Channel::Ch4, &all_disarm).await;
             Timer::after_micros(50).await;
         }
 
         defmt::info!("cycle: direction");
         for _ in 0..10 {
-            pwm.waveform_up_multi_channel(dma.reborrow(), Irqs, Channel::Ch1, Channel::Ch4, &dir_buf).await;
+            pwm.waveform_up_multi_channel(dma.reborrow(), MotorIrqs, Channel::Ch1, Channel::Ch4, &dir_buf).await;
             Timer::after_millis(1).await;
         }
 
         defmt::info!("cycle: disarm 200");
         for _ in 0u16..200 {
-            pwm.waveform_up_multi_channel(dma.reborrow(), Irqs, Channel::Ch1, Channel::Ch4, &all_disarm).await;
+            pwm.waveform_up_multi_channel(dma.reborrow(), MotorIrqs, Channel::Ch1, Channel::Ch4, &all_disarm).await;
             Timer::after_micros(50).await;
         }
 
         defmt::info!("cycle: spinning throttle=200 for 2 s");
         for _ in 0u16..2000 {
-            pwm.waveform_up_multi_channel(dma.reborrow(), Irqs, Channel::Ch1, Channel::Ch4, &all_spin).await;
+            pwm.waveform_up_multi_channel(dma.reborrow(), MotorIrqs, Channel::Ch1, Channel::Ch4, &all_spin).await;
             Timer::after_micros(50).await;
         }
 
         defmt::info!("cycle: disarm 500");
         for _ in 0u16..500 {
-            pwm.waveform_up_multi_channel(dma.reborrow(), Irqs, Channel::Ch1, Channel::Ch4, &all_disarm).await;
+            pwm.waveform_up_multi_channel(dma.reborrow(), MotorIrqs, Channel::Ch1, Channel::Ch4, &all_disarm).await;
             Timer::after_micros(50).await;
         }
 

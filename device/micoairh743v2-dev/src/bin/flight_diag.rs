@@ -119,11 +119,11 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
     // ------------------------------------------------------------------
     // Step 6: imu_reader at P10
-    // (does BMI270 init via SPI, then TABLE.read())
+    // (does BMI088 init via SPI, then TABLE.read())
     // ------------------------------------------------------------------
     level_0_spawner.spawn(resources::imu_reader_task(r.imu).unwrap());
     Timer::after_millis(500).await;
-    ulog::log("[diag] step 6: imu_reader spawned + BMI270 init attempted");
+    ulog::log("[diag] step 6: imu_reader spawned + BMI088 init attempted");
 
     // ------------------------------------------------------------------
     // Step 7: controller_rate at P10

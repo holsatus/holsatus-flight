@@ -31,14 +31,15 @@ use embassy_stm32::timer::{Ch1, Ch2, Ch3, Ch4};
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_stm32::Peri;
 use embassy_time::Timer;
+use micoairh743v2::resources::MotorIrqs;
 use {defmt_rtt as _, panic_probe as _};
 
 #[path = "../config.rs"]
 mod config;
 
+// DMA1_STREAM1 (TIM1 UP DMA) is bound at lib level (resources::MotorIrqs).
 bind_interrupts!(struct Irqs {
     DMA1_STREAM0 => DmaInterruptHandler<DMA1_CH0>;
-    DMA1_STREAM1 => DmaInterruptHandler<DMA1_CH1>;
     USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
 });
 
@@ -74,7 +75,7 @@ async fn send_frames(
 ) {
     let channels = [Channel::Ch1, Channel::Ch2, Channel::Ch3, Channel::Ch4];
     for (ch, frame) in channels.iter().zip(frames.iter()) {
-        pwm.waveform_up(dma.reborrow(), Irqs, *ch, frame.as_slice()).await;
+        pwm.waveform_up(dma.reborrow(), MotorIrqs, *ch, frame.as_slice()).await;
     }
 }
 
