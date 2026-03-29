@@ -92,6 +92,12 @@ bind_interrupts!(pub struct MotorIrqs {
     DMA1_STREAM1 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH1>;
 });
 
+// SPI3 (BMI270): DMA2_CH0 (RX), DMA2_CH1 (TX).
+bind_interrupts!(pub struct Spi3Irqs {
+    DMA2_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH0>;
+    DMA2_STREAM1 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH1>;
+});
+
 // ----------------------------------------------------------
 // -------------------- IMU (SPI2 / BMI088) -----------------
 // ----------------------------------------------------------

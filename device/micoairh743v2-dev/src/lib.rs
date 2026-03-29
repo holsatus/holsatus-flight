@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod bmi088;
+pub mod bmi270;
 pub mod esc_silence;
 pub mod bmi088_imu6dof;
 pub mod dps310_i2c;
