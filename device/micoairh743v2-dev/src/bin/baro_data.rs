@@ -1,7 +1,7 @@
 //! MicoAir H743v2 -- DPS310 barometer data logger to SD card.
 //!
 //! Samples DPS310 at 2 Hz over I2C2 and writes COBS+postcard records to a
-//! sequentially-named `.BARO` file inside the current session directory on
+//! sequentially-named `.BAR` file inside the current session directory on
 //! SDMMC1. UART1 prints a live reading once per sample.
 //!
 //! # Hardware
@@ -11,12 +11,12 @@
 //!
 //! # Log format
 //!   Directory  : D000001/ (shared with imu_data, one per boot)
-//!   File name  : D000001/000001.BARO, 000002.BARO, ... (rotates every 30 s)
+//!   File name  : D000001/000001.BAR, 000002.BAR, ... (rotates every 30 s)
 //!   Each record: COBS-encoded postcard blob, zero-byte terminated.
 //!   Struct     : { timestamp_us: u64, pressure_pa: f32, temperature_c: f32 }
 //!
 //! # Decoding on macOS / Linux
-//!   cat /Volumes/<card>/D000001/*.BARO > session.bin
+//!   cat /Volumes/<card>/D000001/*.BAR > session.bin
 //!
 //!   Python:
 //!     import struct
@@ -61,7 +61,6 @@ use postcard::to_slice_cobs;
 use serde::Serialize;
 use {defmt_rtt as _, panic_probe as _};
 
-use common::tasks::blackbox_fat::Reset;
 use micoairh743v2::dps310_i2c::{self, Dps310I2c};
 use micoairh743v2::resources::I2c2Irqs;
 use micoairh743v2::sdlog::SdmmcResources;
@@ -166,8 +165,30 @@ async fn main(_spawner: Spawner) {
     }
     .setup();
 
-    if !device.reset().await {
-        uart.write(b"baro_log: SD card init FAIL\r\n").await.ok();
+    let mut sd_ok = false;
+    for attempt in 1u8..=5 {
+        match device.try_reset().await {
+            Ok(()) => { sd_ok = true; break; }
+            Err(e) => {
+                let reason = match e {
+                    embassy_stm32::sdmmc::Error::NoCard              => "no card inserted",
+                    embassy_stm32::sdmmc::Error::Timeout             => "card not responding (inserted?)",
+                    embassy_stm32::sdmmc::Error::SoftwareTimeout     => "software timeout",
+                    embassy_stm32::sdmmc::Error::Crc                 => "CRC error (loose connection?)",
+                    embassy_stm32::sdmmc::Error::UnsupportedCardVersion => "unsupported card version",
+                    embassy_stm32::sdmmc::Error::UnsupportedCardType => "unsupported card type",
+                    embassy_stm32::sdmmc::Error::UnsupportedVoltage  => "unsupported voltage",
+                    _                                                 => "hardware error",
+                };
+                let mut s: String<64> = String::new();
+                write!(s, "baro_log: SD attempt {} FAIL: {}\r\n", attempt, reason).ok();
+                uart.write(s.as_bytes()).await.ok();
+                Timer::after_millis(500).await;
+            }
+        }
+    }
+    if !sd_ok {
+        uart.write(b"baro_log: SD FAIL (giving up)\r\n").await.ok();
         loop {
             for _ in 0..4u8 {
                 led_red.set_high();
@@ -184,8 +205,15 @@ async fn main(_spawner: Spawner) {
     let stream = BufStream::new(device);
     let fs = match FileSystem::new(stream, FsOptions::new()).await {
         Ok(fs) => fs,
-        Err(_) => {
-            uart.write(b"baro_log: FAT mount FAIL\r\n").await.ok();
+        Err(e) => {
+            let reason = match e {
+                embedded_fatfs::Error::CorruptedFileSystem => "corrupted filesystem (reformat?)",
+                embedded_fatfs::Error::Io(_)              => "I/O error reading FAT structures",
+                _                                         => "unexpected FAT error",
+            };
+            let mut s: String<64> = String::new();
+            write!(s, "baro_log: FAT mount FAIL: {}\r\n", reason).ok();
+            uart.write(s.as_bytes()).await.ok();
             loop { Timer::after_secs(1).await; }
         }
     };
@@ -218,15 +246,26 @@ async fn main(_spawner: Spawner) {
 
     let session_dir = match fs.root_dir().create_dir(dir_name.as_str()).await {
         Ok(d) => d,
-        Err(_) => {
-            uart.write(b"baro_log: session dir FAIL\r\n").await.ok();
+        Err(embedded_fatfs::Error::AlreadyExists) => fs.root_dir().open_dir(dir_name.as_str()).await.unwrap_or_else(|_| {
+            // Should not happen: dir exists but we cannot open it.
+            loop {}
+        }),
+        Err(e) => {
+            let reason = match e {
+                embedded_fatfs::Error::NotEnoughSpace => "disk full",
+                embedded_fatfs::Error::CorruptedFileSystem => "corrupted filesystem",
+                _ => "unexpected error",
+            };
+            let mut s: String<64> = String::new();
+            write!(s, "baro_log: session dir FAIL: {}\r\n", reason).ok();
+            uart.write(s.as_bytes()).await.ok();
             loop { Timer::after_secs(1).await; }
         }
     };
 
     let mut file_idx: u16 = 1;
     let mut fname: String<12> = String::new();
-    write!(fname, "{:06}.BARO", file_idx).ok();
+    write!(fname, "{:06}.BAR", file_idx).ok();
 
     let mut file = match session_dir.create_file(fname.as_str()).await {
         Ok(f) => {
@@ -235,8 +274,16 @@ async fn main(_spawner: Spawner) {
             uart.write(m.as_bytes()).await.ok();
             f
         }
-        Err(_) => {
-            uart.write(b"baro_log: file create FAIL\r\n").await.ok();
+        Err(e) => {
+            let reason = match e {
+                embedded_fatfs::Error::NotEnoughSpace => "disk full",
+                embedded_fatfs::Error::AlreadyExists  => "file already exists",
+                embedded_fatfs::Error::CorruptedFileSystem => "corrupted filesystem",
+                _ => "unexpected error",
+            };
+            let mut s: String<64> = String::new();
+            write!(s, "baro_log: file create FAIL: {}\r\n", reason).ok();
+            uart.write(s.as_bytes()).await.ok();
             loop { Timer::after_secs(1).await; }
         }
     };
@@ -324,12 +371,18 @@ async fn main(_spawner: Spawner) {
 
             file_idx = file_idx.wrapping_add(1);
             fname.clear();
-            write!(fname, "{:06}.BARO", file_idx).ok();
+            write!(fname, "{:06}.BAR", file_idx).ok();
 
             file = match session_dir.create_file(fname.as_str()).await {
                 Ok(f) => f,
-                Err(_) => {
-                    uart.write(b"baro_log: rotate FAIL\r\n").await.ok();
+                Err(e) => {
+                    let reason = match e {
+                        embedded_fatfs::Error::NotEnoughSpace => "disk full",
+                        _ => "unexpected error",
+                    };
+                    let mut s: String<64> = String::new();
+                    write!(s, "baro_log: rotate FAIL: {}\r\n", reason).ok();
+                    uart.write(s.as_bytes()).await.ok();
                     loop { Timer::after_secs(1).await; }
                 }
             };

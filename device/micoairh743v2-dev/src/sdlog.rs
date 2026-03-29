@@ -61,21 +61,18 @@ impl ErrorType for SdmmcDevice {
     type Error = ErrorKind;
 }
 
-impl Reset for SdmmcDevice {
-    async fn reset(&mut self) -> bool {
-        if self.storage.reacquire(&mut CmdBlock::new(), self.freq).await.is_err() {
-            return false;
-        }
+impl SdmmcDevice {
+    /// Like `Reset::reset()` but returns the underlying SDMMC error on failure,
+    /// allowing callers to emit specific diagnostics (e.g. `NoCard` vs `Crc`).
+    pub async fn try_reset(&mut self) -> Result<(), Error> {
+        self.storage.reacquire(&mut CmdBlock::new(), self.freq).await?;
 
         // Read sector 0 and parse MBR to find the FAT partition start LBA.
         let mut block = DataBlock([0u32; 128]);
         self.boot_sector_offs = match self.storage.read_block(0, &mut block).await {
             Ok(()) => {
-                // DataBlock is [u32; 128]; reinterpret as bytes for MBR parsing.
                 let bytes: &[u8; 512] = unsafe { &*(&block.0 as *const [u32; 128] as *const [u8; 512]) };
-                let sig_ok = bytes[510] == 0x55 && bytes[511] == 0xAA;
-                if sig_ok {
-                    // MBR partition entry 1 starts at offset 446; LBA start is at +8.
+                if bytes[510] == 0x55 && bytes[511] == 0xAA {
                     let lba = u32::from_le_bytes([bytes[454], bytes[455], bytes[456], bytes[457]]);
                     defmt::info!("sdlog: MBR ok, partition LBA={}", lba);
                     lba
@@ -90,7 +87,13 @@ impl Reset for SdmmcDevice {
             }
         };
 
-        true
+        Ok(())
+    }
+}
+
+impl Reset for SdmmcDevice {
+    async fn reset(&mut self) -> bool {
+        self.try_reset().await.is_ok()
     }
 }
 

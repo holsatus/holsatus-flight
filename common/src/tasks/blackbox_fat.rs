@@ -39,6 +39,104 @@ where
     }
 }
 
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use std::vec::Vec;
+
+    use postcard::{from_bytes_cobs, to_slice_cobs};
+    use serde::{Deserialize, Serialize};
+
+    /// Mirror of `imu_data::ImuSample` -- the struct logged to SD card at 1 kHz.
+    /// Keeping the definition here (rather than sharing it) avoids pulling
+    /// device-specific code into common; the encoding contract is what matters.
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct ImuSample {
+        timestamp_us: u64,
+        acc: [i16; 3],
+        gyr: [i16; 3],
+    }
+
+    #[test]
+    fn cobs_round_trip_zero_sample() {
+        let sample = ImuSample { timestamp_us: 0, acc: [0, 0, 0], gyr: [0, 0, 0] };
+        let mut buf = [0u8; 32];
+        let encoded = to_slice_cobs(&sample, &mut buf).unwrap();
+        std::assert_eq!(*encoded.last().unwrap(), 0u8, "sentinel missing");
+        let decoded: ImuSample = from_bytes_cobs(encoded).unwrap();
+        std::assert_eq!(decoded, sample);
+    }
+
+    #[test]
+    fn cobs_round_trip_typical_sample() {
+        let sample = ImuSample {
+            timestamp_us: 1_234_567_890,
+            acc: [1024, -512, 8192],
+            gyr: [-1000, 2000, -32768],
+        };
+        let mut buf = [0u8; 32];
+        let encoded = to_slice_cobs(&sample, &mut buf).unwrap();
+        let decoded: ImuSample = from_bytes_cobs(encoded).unwrap();
+        std::assert_eq!(decoded, sample);
+    }
+
+    #[test]
+    fn cobs_encoded_fits_in_30_bytes() {
+        // Worst case: all fields at maximum magnitude.
+        let sample = ImuSample {
+            timestamp_us: u64::MAX,
+            acc: [i16::MAX, i16::MIN, i16::MAX],
+            gyr: [i16::MIN, i16::MAX, i16::MIN],
+        };
+        let mut buf = [0u8; 32];
+        let encoded = to_slice_cobs(&sample, &mut buf).unwrap();
+        std::assert!(encoded.len() <= 30, "encoded {} bytes, expected <= 30", encoded.len());
+    }
+
+    #[test]
+    fn cobs_no_zero_bytes_inside_frame() {
+        let sample = ImuSample {
+            timestamp_us: 999_999,
+            acc: [100, 200, 300],
+            gyr: [-100, -200, -300],
+        };
+        let mut buf = [0u8; 32];
+        let encoded = to_slice_cobs(&sample, &mut buf).unwrap();
+        let interior = &encoded[..encoded.len() - 1];
+        std::assert!(interior.iter().all(|&b| b != 0), "zero byte inside COBS frame");
+    }
+
+    #[test]
+    fn cobs_multiple_records_independently_decodable() {
+        let samples = [
+            ImuSample { timestamp_us: 0, acc: [0, 0, 0], gyr: [0, 0, 0] },
+            ImuSample { timestamp_us: 1000, acc: [10, -10, 100], gyr: [5, -5, 50] },
+            ImuSample {
+                timestamp_us: 2000,
+                acc: [i16::MAX, i16::MIN, 0],
+                gyr: [0, i16::MAX, i16::MIN],
+            },
+        ];
+        // Build a concatenated stream of COBS records.
+        let mut stream: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 32];
+        for s in &samples {
+            let encoded = to_slice_cobs(s, &mut buf).unwrap();
+            stream.extend_from_slice(encoded);
+        }
+        // Decode each record by splitting on zero-byte sentinels.
+        let mut offset = 0;
+        for expected in &samples {
+            let end = stream[offset..].iter().position(|&b| b == 0).unwrap();
+            let frame = &mut stream[offset..=offset + end].to_vec();
+            let got: ImuSample = from_bytes_cobs(frame).unwrap();
+            std::assert_eq!(&got, expected);
+            offset += end + 1;
+        }
+        std::assert_eq!(offset, stream.len());
+    }
+}
+
 async fn blackbox_run<D, const BUFF: usize>(device: &mut D) -> Result<(), HolsatusError>
 where
     D: BlockDevice<512> + Reset,
