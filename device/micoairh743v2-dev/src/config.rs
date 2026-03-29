@@ -51,8 +51,10 @@ pub fn embassy_config() -> embassy_stm32::Config {
     config.rcc.apb3_pre = APBPrescaler::DIV2;   // APB3   = 100 MHz
     config.rcc.apb4_pre = APBPrescaler::DIV2;   // APB4   = 100 MHz
     config.rcc.voltage_scale = VoltageScale::Scale1; // VOS1
-    // SPI2 kernel clock = PER = HSI = 64 MHz (unchanged from previous config)
+    // SPI2/3 kernel clock = PER = HSI = 64 MHz
     config.rcc.mux.spi123sel = embassy_stm32::rcc::mux::Saisel::PER;
+    // ADC kernel clock = PER = HSI = 64 MHz (required or Adc::new hangs in calibration)
+    config.rcc.mux.adcsel = embassy_stm32::rcc::mux::Adcsel::PER;
     config
 }
 
