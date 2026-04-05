@@ -4,8 +4,8 @@
 //! No direction commands are sent -- ESCs use the direction stored in
 //! their flash from a previous motor_dir_test run.
 //!
-//! Startup: disarm 3 s (all ESCs boot and arm)
-//! Loop:    disarm 1 s (red) -> spin one motor 2 s (blue) -> next motor
+//! Startup: disarm 5 s (all ESCs boot and arm)
+//! Loop:    spin each motor 0.3 s (blue) -> next motor (no disarm gap)
 //!
 //! Channel order: Ch1=M4(PE9)=MOTOR_0, Ch2=M3(PE11)=MOTOR_1,
 //!                Ch3=M2(PE13)=MOTOR_2, Ch4=M1(PE14)=MOTOR_3
@@ -90,7 +90,7 @@ async fn send_frames(
 async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(config::embassy_config());
 
-    let mut led_red = Output::new(p.PE3, Level::Low, Speed::Low);
+    let _led_red = Output::new(p.PE3, Level::Low, Speed::Low);
     let mut led_blue = Output::new(p.PE4, Level::Low, Speed::Low);
     let mut led_green = Output::new(p.PE2, Level::Low, Speed::Low);
 
@@ -131,37 +131,32 @@ async fn main(_spawner: Spawner) {
     let spin_m1 = [d, d, d, s]; // Ch4 = M1 (PE14)
 
     const MOTORS: [&[u8]; 4] = [
+        b"M1 Ch4 PE14\r\n",
         b"M4 Ch1 PE9\r\n",
         b"M3 Ch2 PE11\r\n",
         b"M2 Ch3 PE13\r\n",
-        b"M1 Ch4 PE14\r\n",
     ];
     let spin_bufs = [&spin_m4, &spin_m3, &spin_m2, &spin_m1];
 
     let mut dma = p.DMA1_CH1;
 
-    // Initial disarm 3 s.
-    let _ = uart_tx.write(b"initial disarm (3 s)...\r\n").await;
-    for _ in 0u16..3000 {
+    // Initial disarm 5 s -- generous for cold ESC boot + arm.
+    // Each iteration: send_frames ~320 us + delay 500 us = ~820 us.
+    let _ = uart_tx.write(b"initial disarm (5 s)...\r\n").await;
+    for _ in 0u32..6100 {
         send_frames(&mut pwm, &mut dma, &disarm).await;
         Timer::after_micros(500).await;
     }
     led_green.set_high();
+    let _ = uart_tx.write(b"armed -- starting motor sequence\r\n").await;
 
-    // Spin each motor alone for 2 s, then disarm 1 s, then next motor.
+    // Fast cycle: 0.3 s per motor, no disarm gap between motors.
+    // 0.3 s / 820 us per iteration = ~366 iterations.
     loop {
         for (label, spin_buf) in MOTORS.iter().zip(spin_bufs.iter()) {
-            let _ = uart_tx.write(b"disarming (1 s)...\r\n").await;
-            led_red.set_high();
-            for _ in 0u16..500 {
-                send_frames(&mut pwm, &mut dma, &disarm).await;
-                Timer::after_micros(500).await;
-            }
-            led_red.set_low();
-
             let _ = uart_tx.write(label).await;
             led_blue.set_high();
-            for _ in 0u16..1000 {
+            for _ in 0u32..366 {
                 send_frames(&mut pwm, &mut dma, spin_buf).await;
                 Timer::after_micros(500).await;
             }

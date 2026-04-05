@@ -155,6 +155,10 @@ pub async fn pre_arm_loop<T, WAV>(
     }
 }
 
+/// Global DShot frame counter -- incremented each time run_waveform completes.
+/// Read from motor_monitor to confirm frames are actually being transmitted.
+pub static DSHOT_TX_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 pub trait WaveformGenerator {
     type Timer: GeneralInstance4Channel;
     async fn run_waveform(
@@ -212,5 +216,6 @@ where
             )
             .await;
         }
+        DSHOT_TX_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 }

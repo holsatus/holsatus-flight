@@ -1,32 +1,40 @@
-//! Barometric altitude hold using a simple PI controller.
+//! Altitude hold using MTF-01 lidar (primary) with DPS310 baro fallback.
 //!
-//! Reads the DPS310 barometer at 10 Hz and writes a collective thrust setpoint to
-//! `common::signals::TRUE_Z_THRUST_SP`.  The `ALTITUDE_SETPOINT` signal is written
-//! by the mission sequencer to command a target altitude.
-//!
-//! Barometric formula used:
-//!   alt_m = 44330 * (1 - (p / p0) ^ 0.1903)
-//!
-//! where `p0` is the baseline pressure measured at startup.
+//! The MTF-01 lidar gives 0-8m AGL altitude at ~50 Hz with ~2cm accuracy,
+//! far superior to the barometer which is corrupted by prop wash. The baro
+//! is kept as a fallback and for altitude above 8m.
 
 use core::fmt::Write;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
+use embassy_sync::watch::Watch;
 use embassy_time::Timer;
 use embedded_hal_async::i2c::I2c;
 use libm::powf;
 
-use crate::dps310_i2c::{Dps310I2c, ADDR_SDO_LOW};
+use crate::dps310_i2c::Dps310I2c;
 
 /// External setpoint written by the mission sequencer (metres above takeoff point).
 pub static ALTITUDE_SETPOINT: Signal<CriticalSectionRawMutex, f32> = Signal::new();
 
-/// Base collective thrust for hovering (dimensionless 0..1).
-/// Start conservative -- too low means the drone won't lift; too high means
-/// it jumps and flips. Tune by observing the motor speeds at arming and
-/// comparing to the weight. Typical 250mm quads hover around 0.30-0.40.
-const BASE_THRUST: f32 = 0.25;
+/// Lidar distance in metres, published by the MTF-01 reader task at ~50 Hz.
+/// Negative value or quality=0 means invalid reading.
+pub static LIDAR_ALT_M: Watch<CriticalSectionRawMutex, f32, 2> = Watch::new();
+
+/// Optical flow velocity in body frame [vx, vy] m/s, published by MTF-01 reader at ~50 Hz.
+/// vx = forward (positive = drone moving forward), vy = rightward.
+/// Used by the flow_hold controller for velocity damping.
+pub static FLOW_VEL_MS: Watch<CriticalSectionRawMutex, [f32; 2], 2> = Watch::new();
+
+/// Base collective thrust for hovering (dimensionless 0..1) at NOMINAL_MV.
+/// Voltage compensation scales this so the physical thrust stays constant
+/// regardless of battery charge state.
+const BASE_THRUST: f32 = 4.50;
+
+/// Nominal battery voltage (mV) at which BASE_THRUST was tuned.
+/// 4S storage voltage = 15200 mV (3.80 V/cell).
+const NOMINAL_MV: f32 = 15200.0;
 
 /// PI gains -- tune after initial bench test.
 const KP: f32 = 0.5;
@@ -70,10 +78,15 @@ fn format_baro_log(alt_m: f32, setpoint_m: f32, thrust: f32) -> heapless::String
     s
 }
 
-pub async fn main(i2c: impl I2c) -> ! {
+pub async fn main(i2c: impl I2c, addr: u8, battery_mv: u32) -> ! {
     defmt::info!("[alt_hold] task started");
 
-    let mut baro = Dps310I2c::new(i2c, ADDR_SDO_LOW);
+    // Voltage compensation: thrust ~ V^2, so scale by (nominal/actual)^2.
+    // Clamp to avoid division by zero or extreme values.
+    let v_actual = (battery_mv as f32).clamp(10000.0, 20000.0);
+    let v_comp = (NOMINAL_MV / v_actual) * (NOMINAL_MV / v_actual);
+
+    let mut baro = Dps310I2c::new(i2c, addr);
 
     loop {
         match baro.init().await {
@@ -101,6 +114,8 @@ pub async fn main(i2c: impl I2c) -> ! {
     let mut setpoint_m = 0.0_f32;
     let mut log_counter = 0u32;
     let mut alt_filtered = 0.0_f32;
+    let mut lidar_rcv = LIDAR_ALT_M.receiver().unwrap();
+    let mut use_lidar = false;
 
     let mut snd_thrust = common::signals::TRUE_Z_THRUST_SP.sender();
 
@@ -110,27 +125,50 @@ pub async fn main(i2c: impl I2c) -> ! {
             setpoint_m = sp;
         }
 
-        if let Ok(d) = baro.read().await {
-            let alt_raw = pressure_to_altitude(d.pressure_pa, baseline_pa);
-            alt_filtered = EWMA_ALPHA * alt_raw + (1.0 - EWMA_ALPHA) * alt_filtered;
-
-            let err = setpoint_m - alt_filtered;
-            integral = (integral + err * DT).clamp(-1.0, 1.0);
-            let thrust = BASE_THRUST + KP * err + KI * integral;
-            snd_thrust.send(thrust.clamp(0.0, 1.0));
-            defmt::trace!(
-                "[alt_hold] alt={} sp={} thrust={}",
-                alt_filtered,
-                setpoint_m,
-                thrust
-            );
-
-            // Log to UART at 1 Hz (every 10 cycles at 10 Hz).
-            log_counter += 1;
-            if log_counter >= 10 {
-                log_counter = 0;
-                crate::log::log(format_baro_log(alt_filtered, setpoint_m, thrust).as_str());
+        // Prefer lidar if available and valid (0-8m range, positive value).
+        let alt_raw = if let Some(lidar_m) = lidar_rcv.try_changed() {
+            if lidar_m >= 0.0 && lidar_m <= 8.0 {
+                if !use_lidar {
+                    crate::log::log("[alt] switching to lidar");
+                    use_lidar = true;
+                }
+                Some(lidar_m)
+            } else {
+                None
             }
+        } else {
+            None
+        };
+
+        // Fall back to baro if no lidar reading this cycle.
+        let alt_raw = match alt_raw {
+            Some(a) => a,
+            None => {
+                if let Ok(d) = baro.read().await {
+                    pressure_to_altitude(d.pressure_pa, baseline_pa)
+                } else {
+                    Timer::after_millis((DT * 1000.0) as u64).await;
+                    continue;
+                }
+            }
+        };
+
+        alt_filtered = EWMA_ALPHA * alt_raw + (1.0 - EWMA_ALPHA) * alt_filtered;
+
+        let err = setpoint_m - alt_filtered;
+        integral = (integral + err * DT).clamp(-3.0, 3.0);
+        let thrust = (BASE_THRUST + KP * err + KI * integral) * v_comp;
+        snd_thrust.send(thrust.clamp(0.0, 5.0));
+
+        // Log to UART at 1 Hz (every 10 cycles at 10 Hz).
+        log_counter += 1;
+        if log_counter >= 10 {
+            log_counter = 0;
+            let src = if use_lidar { "lid" } else { "bar" };
+            let mut s: heapless::String<64> = heapless::String::new();
+            let _ = write!(s, "[alt:{}] h={:.3}m sp={:.1}m thr={:.3}",
+                src, alt_filtered, setpoint_m, thrust);
+            crate::log::log(s.as_str());
         }
 
         Timer::after_millis((DT * 1000.0) as u64).await;

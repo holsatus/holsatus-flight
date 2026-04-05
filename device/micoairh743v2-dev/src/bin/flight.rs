@@ -32,6 +32,7 @@ use common::tasks::controller_angle;
 use common::tasks::controller_rate;
 use common::tasks::commander::COMMAD_ARM_VEHICLE;
 use common::tasks::eskf::EskfEstimate;
+use common::tasks::imu_reader;
 use common::tasks::motor_governor::params;
 use common::types::actuators::MotorsState;
 use common::types::config::DshotConfig;
@@ -42,7 +43,9 @@ use embassy_time::Timer;
 use micoairh743v2::alt_hold::ALTITUDE_SETPOINT;
 use micoairh743v2::config::MOTOR_REVERSE_FLAGS;
 use micoairh743v2::log as ulog;
-use micoairh743v2::resources::{self, UartLogResources};
+use micoairh743v2::mtf01;
+use micoairh743v2::resources::{self, Mtf01Resources, SdmmcLogResources, UartLogResources};
+use micoairh743v2::sdlog::SdmmcResources;
 
 /// Helper macro to create an interrupt executor at the given priority.
 macro_rules! interrupt_executor {
@@ -83,7 +86,7 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     // UART log writer (async DMA, same setup as sensors.rs test binary).
     // Spawned before anything else so startup messages are captured.
     // ------------------------------------------------------------------
-    thread_spawner.spawn(uart_writer_task(r.uart_log).unwrap());
+    thread_spawner.spawn(uart_writer_task(r.uart_log, r.sdmmc).unwrap());
 
     ulog::log("[flight] board init ok");
 
@@ -122,7 +125,31 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     // motor_governor reading the table.
     // ------------------------------------------------------------------
     params::TABLE.params.write().await.rev = MOTOR_REVERSE_FLAGS;
-    ulog::log("[flight] motor params overridden");
+
+    // ------------------------------------------------------------------
+    // Rate PID overrides -- conservative starting values for this frame.
+    // Fields: x=roll, y=pitch, z=yaw.
+    // Defaults were: kp=0.08, ki=0.5, kd=0.03 (all axes identical).
+    // Angle controller params are private in common/ -- left at defaults
+    // (roll/pitch kp=15, yaw kp=25) for now.
+    // ------------------------------------------------------------------
+    {
+        let mut r = controller_rate::params::TABLE.params.write().await;
+        // Roll rate (x)
+        r.x.kp = 0.03;
+        r.x.ki = 0.10;
+        r.x.kd = 0.010;
+        // Pitch rate (y) -- same as roll for symmetric frame
+        r.y.kp = 0.03;
+        r.y.ki = 0.10;
+        r.y.kd = 0.010;
+        // Yaw rate (z) -- minimal gains, yaw oscillation is the primary instability
+        r.z.kp = 0.01;
+        r.z.ki = 0.01;
+        r.z.kd = 0.005;
+    }
+
+    ulog::log("[flight] motor+PID params overridden");
 
     // ------------------------------------------------------------------
     // Yield to let param_storage_task initialize and enter its receive
@@ -161,14 +188,82 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     level_1_spawner.spawn(angle_to_rate_bridge().unwrap());
 
     // ------------------------------------------------------------------
+    // Read battery voltage once (blocking ADC, before motors spin).
+    // Used for voltage compensation in alt_hold.
+    // ------------------------------------------------------------------
+    let battery_mv = {
+        use embassy_stm32::adc::{Adc, SampleTime};
+        let mut adc = Adc::new(r.battery.adc);
+        let mut pin_v = r.battery.pin_v;
+        let raw = adc.blocking_read(&mut pin_v, SampleTime::CYCLES64_5);
+        const V_DIV: u32 = 21;
+        const ADC_FULL: u32 = 65535;
+        const VREF_MV: u32 = 3300;
+        let mv = (raw as u32 * VREF_MV * V_DIV) / ADC_FULL;
+        let mut s: heapless::String<48> = heapless::String::new();
+        let _ = write!(s, "[bat] voltage={} mV", mv);
+        ulog::log(s.as_str());
+        mv
+    };
+
+    // ------------------------------------------------------------------
     // Thread-priority tasks
     // ------------------------------------------------------------------
-    thread_spawner.spawn(resources::alt_hold_task(r.baro).unwrap());
+    thread_spawner.spawn(resources::alt_hold_task(r.baro, battery_mv).unwrap());
+    thread_spawner.spawn(mtf01_reader_task(r.mtf01).unwrap());
+    thread_spawner.spawn(flow_hold().unwrap());
     thread_spawner.spawn(mission_sequencer().unwrap());
     thread_spawner.spawn(motor_monitor().unwrap());
     thread_spawner.spawn(imu_monitor().unwrap());
 
     ulog::log("[flight] all tasks spawned");
+
+    // ------------------------------------------------------------------
+    // Startup accelerometer bias calibration.
+    // Collect N samples from RAW_MULTI_IMU_DATA while the drone sits level
+    // and stationary, compute the mean, and subtract expected gravity to
+    // get the bias. Write it to the imu_reader params table so all
+    // subsequent CAL_MULTI_IMU_DATA readings are bias-corrected.
+    // ------------------------------------------------------------------
+    {
+        const N: u32 = 500;
+        let mut rcv = signals::RAW_MULTI_IMU_DATA[0].receiver();
+        let mut sum = [0.0_f32; 3];
+
+        ulog::log("[cal] accel bias cal: hold level...");
+
+        // Wait for the first reading to ensure the IMU is producing data.
+        rcv.changed().await;
+
+        for _ in 0..N {
+            let d = rcv.changed().await;
+            sum[0] += d.acc[0];
+            sum[1] += d.acc[1];
+            sum[2] += d.acc[2];
+        }
+
+        let bias = [
+            sum[0] / N as f32,                      // expected 0
+            sum[1] / N as f32,                      // expected 0
+            sum[2] / N as f32 - common::consts::GRAVITY, // expected +g
+        ];
+
+        // Write bias and axis correction to imu_reader params.
+        // The att_estimator applies rot_x_180 (flips Y and Z) internally.
+        // On this board the BMI088 is already in NED, so we pre-flip Y and Z
+        // in the calibration scale so the double flip cancels out.
+        {
+            let mut p = imu_reader::params::TABLE.params.write().await;
+            p.cal_acc.bias = bias;
+            p.cal_acc.scale = [1.0, -1.0, -1.0];
+            p.cal_gyr.scale = [1.0, -1.0, -1.0];
+        }
+        imu_reader::CHANNEL[0].sender().send(imu_reader::Message::ReloadParams).await;
+
+        let mut s: heapless::String<64> = heapless::String::new();
+        let _ = write!(s, "[cal] bias=[{:.3},{:.3},{:.3}]", bias[0], bias[1], bias[2]);
+        ulog::log(s.as_str());
+    }
 
     // ------------------------------------------------------------------
     // Heartbeat: blink green LED and send UART ping every 2 s.
@@ -183,30 +278,130 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 }
 
 // ------------------------------------------------------------------
-// UART log writer.
-// Uses async DMA UART (same approach as sensors.rs, proven on this board).
-// Runs at thread priority; drains the log channel.
+// UART + SD card log writer.
+// Drains the log channel, writes each message to UART1 and (if the SD
+// card is mounted) appends it to a text file on the FAT filesystem.
 // ------------------------------------------------------------------
 
 #[embassy_executor::task]
-async fn uart_writer_task(r: UartLogResources) -> ! {
+async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
+    use core::fmt::Write as FmtWrite;
+    use block_device_adapters::BufStream;
+    use embedded_fatfs::{FileSystem, FsOptions};
+    use embedded_io_async_061::Write as _;
+
     bind_interrupts!(struct UartIrqs {
         DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH0>;
         USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
     });
 
-    match UartTx::new(r.usart, r.tx, r.dma, UartIrqs, UartConfig::default()) {
-        Ok(mut uart) => loop {
+    let mut uart = UartTx::new(r.usart, r.tx, r.dma, UartIrqs, UartConfig::default())
+        .ok();
+
+    // ── SD card setup (best-effort -- logging continues on UART if SD fails) ──
+    let mut device = SdmmcResources {
+        periph: sd.periph, clk: sd.clk, cmd: sd.cmd,
+        d0: sd.d0, d1: sd.d1, d2: sd.d2, d3: sd.d3,
+    }.setup();
+
+    let sd_ok = {
+        let mut ok = false;
+        for _ in 0u8..3 {
+            if device.try_reset().await.is_ok() { ok = true; break; }
+            Timer::after_millis(500).await;
+        }
+        ok
+    };
+
+    if !sd_ok {
+        // No SD -- fall back to UART-only logging.
+        loop {
             let msg = ulog::CHANNEL.receive().await;
-            uart.write(msg.as_bytes()).await.ok();
-            uart.write(b"\r\n").await.ok();
-        },
-        Err(_) => {
-            defmt::error!("USART1 init failed -- no UART log output");
-            loop {
-                // Drain the channel so senders never block.
-                ulog::CHANNEL.receive().await;
+            if let Some(ref mut u) = uart {
+                u.write(msg.as_bytes()).await.ok();
+                u.write(b"\r\n").await.ok();
             }
+        }
+    }
+
+    let stream = BufStream::new(device);
+    let fs = match FileSystem::new(stream, FsOptions::new()).await {
+        Ok(fs) => fs,
+        Err(_) => loop {
+            let msg = ulog::CHANNEL.receive().await;
+            if let Some(ref mut u) = uart {
+                u.write(msg.as_bytes()).await.ok();
+                u.write(b"\r\n").await.ok();
+            }
+        },
+    };
+
+    // Find next session directory.
+    let mut session_idx: u32 = 0;
+    let mut iter = fs.root_dir().iter();
+    while let Some(Ok(entry)) = iter.next().await {
+        if entry.is_dir() {
+            let name = entry.short_file_name_as_bytes();
+            if name.len() == 7 && (name[0] == b'D' || name[0] == b'd') {
+                if let Some(idx) = name[1..].iter().try_fold(0u32, |acc, &b| {
+                    if b >= b'0' && b <= b'9' { Some(acc * 10 + (b - b'0') as u32) } else { None }
+                }) {
+                    session_idx = session_idx.max(idx);
+                }
+            }
+        }
+    }
+    session_idx += 1;
+
+    let mut dir_name: heapless::String<8> = heapless::String::new();
+    let session_dir = loop {
+        dir_name.clear();
+        let _ = FmtWrite::write_fmt(&mut dir_name, format_args!("D{:06}", session_idx));
+        match fs.root_dir().create_dir(dir_name.as_str()).await {
+            Ok(d) => break d,
+            Err(embedded_fatfs::Error::AlreadyExists) => { session_idx += 1; }
+            Err(_) => loop {
+                let msg = ulog::CHANNEL.receive().await;
+                if let Some(ref mut u) = uart {
+                    u.write(msg.as_bytes()).await.ok();
+                    u.write(b"\r\n").await.ok();
+                }
+            },
+        }
+    };
+
+    let mut file_name: heapless::String<12> = heapless::String::new();
+    let _ = FmtWrite::write_fmt(&mut file_name, format_args!("000001.LOG"));
+    let mut file = match session_dir.create_file(file_name.as_str()).await {
+        Ok(f) => f,
+        Err(_) => loop {
+            let msg = ulog::CHANNEL.receive().await;
+            if let Some(ref mut u) = uart {
+                u.write(msg.as_bytes()).await.ok();
+                u.write(b"\r\n").await.ok();
+            }
+        },
+    };
+
+    let mut flush_counter: u16 = 0;
+    loop {
+        let msg = ulog::CHANNEL.receive().await;
+
+        // Write to UART (if connected).
+        if let Some(ref mut u) = uart {
+            u.write(msg.as_bytes()).await.ok();
+            u.write(b"\r\n").await.ok();
+        }
+
+        // Write to SD file.
+        file.write_all(msg.as_bytes()).await.ok();
+        file.write_all(b"\r\n").await.ok();
+
+        // Flush every 25 messages (~0.5s at 50 Hz).
+        flush_counter += 1;
+        if flush_counter >= 25 {
+            flush_counter = 0;
+            file.flush().await.ok();
         }
     }
 }
@@ -268,16 +463,41 @@ async fn mission_sequencer() -> ! {
 
     Timer::after_secs(3).await;
 
-    ulog::log("[mission] climb setpoint 0.5 m");
-    ALTITUDE_SETPOINT.signal(0.5);
-    Timer::after_secs(5).await;
+    // Slow altitude ramp: 0.0 -> 0.5 m over 15 seconds.
+    // The alt_hold controller converts this to thrust gradually,
+    // giving time to observe and cut power if needed.
+    ulog::log("[mission] ramping setpoint 0->0.5m (15 s)");
+    let ramp_start = embassy_time::Instant::now();
+    const RAMP_DURATION_MS: u64 = 15_000;
+    const TARGET_ALT: f32 = 0.5;
 
-    ulog::log("[mission] hovering");
-    Timer::after_secs(5).await;
+    loop {
+        let elapsed = ramp_start.elapsed().as_millis();
+        if elapsed >= RAMP_DURATION_MS { break; }
+        let sp = TARGET_ALT * (elapsed as f32 / RAMP_DURATION_MS as f32);
+        ALTITUDE_SETPOINT.signal(sp);
+        Timer::after_millis(100).await;
+    }
+    ALTITUDE_SETPOINT.signal(TARGET_ALT);
 
-    ulog::log("[mission] descent setpoint 0.0 m");
+    ulog::log("[mission] hovering at 0.5 m (10 s)");
+    Timer::after_secs(10).await;
+
+    // Slow descent: 0.5 -> 0.0 m over 10 seconds.
+    ulog::log("[mission] descending 0.5->0m (10 s)");
+    let desc_start = embassy_time::Instant::now();
+    const DESC_DURATION_MS: u64 = 10_000;
+
+    loop {
+        let elapsed = desc_start.elapsed().as_millis();
+        if elapsed >= DESC_DURATION_MS { break; }
+        let sp = TARGET_ALT * (1.0 - elapsed as f32 / DESC_DURATION_MS as f32);
+        ALTITUDE_SETPOINT.signal(sp);
+        Timer::after_millis(100).await;
+    }
     ALTITUDE_SETPOINT.signal(0.0);
-    Timer::after_secs(5).await;
+
+    Timer::after_secs(3).await;
 
     ulog::log("[mission] disarming");
     COMMAD_ARM_VEHICLE.send(false);
@@ -340,41 +560,41 @@ async fn angle_to_rate_bridge() -> ! {
 }
 
 // ------------------------------------------------------------------
-// IMU monitor: logs acc + gyro at 1 Hz to UART.
+// High-rate sensor+motor monitor (50 Hz) for flight dynamics analysis.
+// Compact CSV format for easy plotting:
+//   t_ms,ax,ay,az,gx,gy,gz,m0,m1,m2,m3
 // ------------------------------------------------------------------
 
 #[embassy_executor::task]
 async fn imu_monitor() -> ! {
-    let mut rcv = signals::RAW_MULTI_IMU_DATA[0].receiver();
-    let mut counter = 0u32;
+    let mut imu_rcv = signals::RAW_MULTI_IMU_DATA[0].receiver();
+    let mut mtr_rcv = signals::MOTORS_STATE.receiver();
     loop {
-        Timer::after_millis(100).await;
-        counter += 1;
-        if counter < 10 {
-            continue;
-        }
-        counter = 0;
-        let Some(d) = rcv.try_get() else { continue };
+        Timer::after_millis(20).await; // 50 Hz
+        let Some(d) = imu_rcv.try_get() else { continue };
+        let t = embassy_time::Instant::now().as_millis();
+        let (m0, m1, m2, m3) = match mtr_rcv.try_get() {
+            Some(MotorsState::Armed(s)) => (s[0], s[1], s[2], s[3]),
+            Some(MotorsState::Arming)   => (0u16, 0, 0, 0),
+            _                           => (0u16, 0, 0, 0),
+        };
         let mut s: heapless::String<96> = heapless::String::new();
         let _ = write!(
-            s,
-            "[imu] a=[{:.2},{:.2},{:.2}] g=[{:.1},{:.1},{:.1}]",
-            d.acc[0], d.acc[1], d.acc[2],
+            s, "{},{:.1},{:.1},{:.1},{:.2},{:.2},{:.2},{},{},{},{}",
+            t, d.acc[0], d.acc[1], d.acc[2],
             d.gyr[0], d.gyr[1], d.gyr[2],
+            m0, m1, m2, m3
         );
         ulog::log(s.as_str());
     }
 }
 
-// ------------------------------------------------------------------
-// Motor monitor: logs the motor governor state at 1 Hz to UART.
-// ------------------------------------------------------------------
-
 #[embassy_executor::task]
 async fn motor_monitor() -> ! {
+    // Kept for the low-rate status messages (arming, disarmed, etc.)
     let mut rcv = signals::MOTORS_STATE.receiver();
     loop {
-        Timer::after_secs(1).await;
+        Timer::after_secs(2).await;
         let Some(state) = rcv.try_get() else { continue };
         let mut s: heapless::String<64> = heapless::String::new();
         match state {
@@ -385,16 +605,139 @@ async fn motor_monitor() -> ! {
                 let _ = write!(s, "[mtr] arming");
             }
             MotorsState::ArmedIdle => {
-                let _ = write!(s, "[mtr] armed-idle (thr=48)");
+                let _ = write!(s, "[mtr] armed-idle");
             }
-            MotorsState::Armed(speeds) => {
-                let _ = write!(
-                    s,
-                    "[mtr] armed [{},{},{},{}]",
-                    speeds[0], speeds[1], speeds[2], speeds[3]
-                );
+            MotorsState::Armed(sp) => {
+                let _ = write!(s, "[mtr] [{},{},{},{}]", sp[0], sp[1], sp[2], sp[3]);
             }
         }
         ulog::log(s.as_str());
+    }
+}
+
+// ------------------------------------------------------------------
+// Flow hold: velocity damping using MTF-01 optical flow.
+//
+// Reads horizontal velocity from FLOW_VEL_MS and tilts the attitude
+// setpoint (TRUE_ATTITUDE_Q_SP) to counteract drift. When the drone
+// drifts left, the flow sensor detects leftward ground motion and the
+// controller tilts right to brake.
+//
+// This is velocity hold (zero velocity), not position hold. The drone
+// won't return to a fixed point but will resist being pushed around.
+// ------------------------------------------------------------------
+
+#[embassy_executor::task]
+async fn flow_hold() -> ! {
+    let mut rcv = micoairh743v2::alt_hold::FLOW_VEL_MS.receiver().unwrap();
+
+    let mut snd_att = signals::TRUE_ATTITUDE_Q_SP.sender();
+
+    // Proportional gain: how much tilt (rad) per unit velocity (m/s).
+    // Start conservative. Typical range: 0.05-0.3.
+    // Too high -> oscillates laterally. Too low -> drift isn't corrected.
+    const KP_FLOW: f32 = 0.10;
+
+    // Max tilt angle in radians (~10 degrees). Prevents the flow controller
+    // from commanding extreme angles that could flip the drone.
+    const MAX_TILT_RAD: f32 = 0.17;
+
+    ulog::log("[flow] velocity damping started");
+
+    let mut log_div: u8 = 0;
+
+    loop {
+        let [vx, vy] = rcv.changed().await;
+
+        let pitch_tilt = (KP_FLOW * vx).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
+        let roll_tilt  = (-KP_FLOW * vy).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
+
+        let q = UnitQuaternion::from_euler_angles(roll_tilt, pitch_tilt, 0.0);
+        snd_att.send(q);
+
+        // Log at ~10 Hz (flow arrives at ~50 Hz, log every 5th).
+        log_div = log_div.wrapping_add(1);
+        if log_div >= 5 {
+            log_div = 0;
+            let mut s: heapless::String<64> = heapless::String::new();
+            let _ = write!(s, "[flow] vx={:.3} vy={:.3} r={:.2} p={:.2}",
+                vx, vy, roll_tilt, pitch_tilt);
+            ulog::log(s.as_str());
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// MTF-01 optical flow + lidar reader.
+// Reads MSP v2 frames at ~100 Hz and publishes lidar distance to
+// LIDAR_ALT_M for the altitude controller.
+// ------------------------------------------------------------------
+
+#[embassy_executor::task]
+async fn mtf01_reader_task(r: Mtf01Resources) -> ! {
+    use embassy_stm32::usart::{Config as UartConfig, UartRx};
+
+    bind_interrupts!(struct Mtf01Irqs {
+        DMA1_STREAM3 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH3>;
+        UART4        => embassy_stm32::usart::InterruptHandler<peripherals::UART4>;
+    });
+
+    let mut cfg = UartConfig::default();
+    cfg.baudrate = 115_200;
+    let mut uart = UartRx::new(r.usart, r.rx, r.dma, Mtf01Irqs, cfg).unwrap();
+
+    ulog::log("[mtf01] UART4 RX started");
+
+    let snd_lidar = micoairh743v2::alt_hold::LIDAR_ALT_M.sender();
+    let snd_flow  = micoairh743v2::alt_hold::FLOW_VEL_MS.sender();
+    let mut last_height_m: f32 = 0.0;
+
+    // Read buffers (reused every frame).
+    let mut b   = [0u8; 1];
+    let mut hdr = [0u8; 6];
+    let mut pbuf = [0u8; mtf01::MAX_PAYLOAD + 1];
+
+    loop {
+        // Sync to MSP v2 preamble: $X
+        loop {
+            uart.read(&mut b).await.ok();
+            if b[0] != b'$' { continue; }
+            uart.read(&mut b).await.ok();
+            if b[0] == b'X' { break; }
+        }
+
+        // Read header: dir flags fn_lo fn_hi size_lo size_hi
+        uart.read(&mut hdr).await.ok();
+        let size = u16::from_le_bytes([hdr[4], hdr[5]]) as usize;
+        if size > mtf01::MAX_PAYLOAD { continue; }
+
+        // Read payload + CRC
+        uart.read(&mut pbuf[..size + 1]).await.ok();
+
+        match mtf01::parse(hdr, &pbuf[..size + 1]) {
+            Some(mtf01::Frame::Lidar(l)) => {
+                if l.quality > 0 && l.distance_mm >= 0 {
+                    let h = l.distance_mm as f32 / 1000.0;
+                    snd_lidar.send(h);
+                    last_height_m = h;
+                }
+            }
+            Some(mtf01::Frame::Flow(f)) => {
+                if f.quality > 30 && last_height_m > 0.05 {
+                    // Convert pixel counts to angular rate (rad/frame), then to velocity.
+                    // PMW3901: ~35 counts/degree => ~0.0005 rad/count.
+                    // Velocity = angular_rate * height.
+                    // The MTF-01 sensor arrow should point forward (drone nose).
+                    //   sensor X = forward  => drone pitch axis (vx)
+                    //   sensor Y = rightward => drone roll axis (vy)
+                    // If sensor is mounted rotated, swap or negate here.
+                    const FLOW_SCALE: f32 = 0.0005;
+                    let vx = f.motion_x as f32 * FLOW_SCALE * last_height_m;
+                    let vy = f.motion_y as f32 * FLOW_SCALE * last_height_m;
+                    snd_flow.send([vx, vy]);
+                }
+            }
+            None => {}
+        }
     }
 }

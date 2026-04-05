@@ -1,17 +1,30 @@
-//! Board-specific configuration overrides for the MicoAir H743.
+//! Board-specific configuration overrides for the MicoAir H743 V2.
 //!
-//! Motor channel mapping (TIM1, DshotDriver::new argument order):
-//!   Ch1 -> M4 (PE9)   -> MOTOR_0 in motor_governor indexing
-//!   Ch2 -> M3 (PE11)  -> MOTOR_1
-//!   Ch3 -> M2 (PE13)  -> MOTOR_2
-//!   Ch4 -> M1 (PE14)  -> MOTOR_3
+//! # Physical motor layout (board silkscreen, arrow = front)
 //!
-//! Physical observation (motor_dir_test, all-four-reversed config):
-//!   MOTOR_0 (back-right):  CW  -- correct, keep reversed
-//!   MOTOR_1 (front-right): CCW -- correct, keep reversed
-//!   MOTOR_2 (back-left):   CW  -- wrong (needs CCW), remove from reverse flags
-//!   MOTOR_3 (front-left):  CW  -- correct, keep reversed
-//! Result: MOTOR_0 | MOTOR_1 | MOTOR_3 reversed; MOTOR_2 not reversed.
+//!        FRONT (arrow)
+//!     M2(FL)    M4(FR)
+//!       ⟲  \  /  ⟳
+//!           \/
+//!           /\
+//!       ⟳  /  \  ⟲
+//!     M1(BL)    M3(BR)
+//!        BACK (battery)
+//!
+//! # Channel-to-pin wiring (fixed by PCB)
+//!   Ch1 = PE9  = board M4 = Front-Right
+//!   Ch2 = PE11 = board M3 = Back-Right
+//!   Ch3 = PE13 = board M2 = Front-Left
+//!   Ch4 = PE14 = board M1 = Back-Left
+//!
+//! # Mixer MOTOR indices (fixed by common/src/airframe)
+//!   MOTOR_0 = Back-Right   (CW)
+//!   MOTOR_1 = Front-Right  (CCW)
+//!   MOTOR_2 = Back-Left    (CCW)
+//!   MOTOR_3 = Front-Left   (CW)
+//!
+//! CHANNEL_MAP remaps MOTOR order to channel order so the mixer's
+//! corrections reach the correct physical motors.
 
 use embassy_stm32::rcc::{AHBPrescaler, APBPrescaler, Pll, PllDiv, PllMul, PllPreDiv, PllSource, Sysclk, VoltageScale};
 use embassy_stm32::rcc::HSIPrescaler;
@@ -58,16 +71,14 @@ pub fn embassy_config() -> embassy_stm32::Config {
     config
 }
 
-/// Reverse flags for this board. MOTOR_0, MOTOR_1, MOTOR_3 are reversed.
-pub const MOTOR_REVERSE_FLAGS: Reverse = Reverse::MOTOR_0.union(Reverse::MOTOR_1).union(Reverse::MOTOR_3);
+/// Maps each DShot channel to the MOTOR index whose speed it should receive.
+/// The mixer outputs [MOTOR_0(BR), MOTOR_1(FR), MOTOR_2(BL), MOTOR_3(FL)].
+/// DShot channels are [Ch1(FR), Ch2(BR), Ch3(FL), Ch4(BL)].
+///   Ch1(FR) <- MOTOR_1  |  Ch2(BR) <- MOTOR_0
+///   Ch3(FL) <- MOTOR_3  |  Ch4(BL) <- MOTOR_2
+pub const CHANNEL_MAP: [usize; 4] = [1, 0, 3, 2];
 
-// ------------------------------------------------------------------
-// Compile-time guards -- these fire on every build, not just cargo test.
-// ------------------------------------------------------------------
-
-// Verify exactly MOTOR_0 | MOTOR_1 | MOTOR_3 are reversed.
-const EXPECTED_BITS: u16 = Reverse::MOTOR_0.bits() | Reverse::MOTOR_1.bits() | Reverse::MOTOR_3.bits();
-const _: () = assert!(
-    MOTOR_REVERSE_FLAGS.bits() == EXPECTED_BITS,
-    "MOTOR_REVERSE_FLAGS must be MOTOR_0 | MOTOR_1 | MOTOR_3 for this board"
-);
+/// Reverse flags for this board with corrected CHANNEL_MAP.
+/// MOTOR_0(BR), MOTOR_1(FR), MOTOR_2(BL) need DShot reversal.
+/// MOTOR_3(FL) spins correctly by default wiring.
+pub const MOTOR_REVERSE_FLAGS: Reverse = Reverse::MOTOR_0.union(Reverse::MOTOR_1).union(Reverse::MOTOR_2);

@@ -116,32 +116,39 @@ async fn main(_spawner: Spawner) {
     let b1 = ((max * 768) >> 10) as u16;
 
     let min_frame  = build_frame(encode(0),   b0, b1);
-    let spin_frame = build_frame(encode(200), b0, b1);
+    let spin_frame = build_frame(encode(80), b0, b1);
     let zero_frame = build_frame(encode(0),   b0, b1);
 
     let all_min = interleave([min_frame; NCHAN]);
 
+    // Build reverse frames in CHANNEL order (not MOTOR order).
+    // CHANNEL_MAP[ch] gives the MOTOR index for each channel.
+    use config::CHANNEL_MAP;
     let rev_frames = [
-        build_frame(dshot_encoder::reverse(MOTOR_REVERSE_FLAGS.contains(Reverse::MOTOR_0)), b0, b1),
-        build_frame(dshot_encoder::reverse(MOTOR_REVERSE_FLAGS.contains(Reverse::MOTOR_1)), b0, b1),
-        build_frame(dshot_encoder::reverse(MOTOR_REVERSE_FLAGS.contains(Reverse::MOTOR_2)), b0, b1),
-        build_frame(dshot_encoder::reverse(MOTOR_REVERSE_FLAGS.contains(Reverse::MOTOR_3)), b0, b1),
+        build_frame(dshot_encoder::reverse(MOTOR_REVERSE_FLAGS.contains(Reverse::from_bits_truncate(1 << CHANNEL_MAP[0]))), b0, b1),
+        build_frame(dshot_encoder::reverse(MOTOR_REVERSE_FLAGS.contains(Reverse::from_bits_truncate(1 << CHANNEL_MAP[1]))), b0, b1),
+        build_frame(dshot_encoder::reverse(MOTOR_REVERSE_FLAGS.contains(Reverse::from_bits_truncate(1 << CHANNEL_MAP[2]))), b0, b1),
+        build_frame(dshot_encoder::reverse(MOTOR_REVERSE_FLAGS.contains(Reverse::from_bits_truncate(1 << CHANNEL_MAP[3]))), b0, b1),
     ];
-    let rev_buf = interleave(rev_frames);
 
     let mut dma = p.DMA1_CH1;
 
     let _ = uart.write(b"motor_dir_test: remove props, then observe one motor at a time\r\n").await;
 
     loop {
-        // ---- arm all ESCs (~2.5 s) ----
-        let _ = uart.write(b"[arm] min throttle 2.5 s ...\r\n").await;
-        burst(&mut pwm, &mut dma, &all_min, 2500, 500).await;
+        // ---- arm all ESCs (~5 s, must be long enough for ESC to accept direction cmds) ----
+        let _ = uart.write(b"[arm] min throttle 5 s ...\r\n").await;
+        burst(&mut pwm, &mut dma, &all_min, 6100, 500).await;
 
-        // ---- direction commands ----
+        // ---- direction commands (sequential per-channel at correct 300 kHz) ----
+        // BLHeli32/BlueJay need 6+ consecutive valid command frames to accept.
+        // The old interleaved Ch1..Ch4 approach ran at 75 kHz and was rejected.
         let _ = uart.write(b"[dir] sending direction commands ...\r\n").await;
-        for _ in 0..20 {
-            pwm.waveform_up_multi_channel(dma.reborrow(), MotorIrqs, Channel::Ch1, Channel::Ch4, &rev_buf).await;
+        let channels = [Channel::Ch1, Channel::Ch2, Channel::Ch3, Channel::Ch4];
+        for _ in 0..50 {
+            for (ch, frame) in channels.iter().zip(rev_frames.iter()) {
+                pwm.waveform_up_multi_channel(dma.reborrow(), MotorIrqs, *ch, *ch, frame).await;
+            }
             Timer::after_millis(1).await;
         }
 

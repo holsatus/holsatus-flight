@@ -24,6 +24,7 @@ use embassy_embedded_hal::shared_bus::asynch::spi::SpiDeviceWithConfig;
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use static_cell::StaticCell;
 
+use common::hw_abstraction::OutputGroup;
 use common::types::config::DshotConfig;
 
 use crate::bmi088::Bmi088;
@@ -65,6 +66,24 @@ assign_resources! {
         usart: USART1,
         tx:    PA9,
         dma:   DMA1_CH0,
+    }
+    battery: BatteryResources {
+        adc:   ADC1,
+        pin_v: PC0,
+    }
+    mtf01: Mtf01Resources {
+        usart: UART4,
+        rx:    PA1,
+        dma:   DMA1_CH3,
+    }
+    sdmmc: SdmmcLogResources {
+        periph: SDMMC1,
+        clk:    PC12,
+        cmd:    PD2,
+        d0:     PC8,
+        d1:     PC9,
+        d2:     PC10,
+        d3:     PC11,
     }
 }
 
@@ -159,6 +178,47 @@ pub async fn imu_reader_task(r: ImuResources) -> ! {
 // -------------- Motors (TIM1 / DShot / DMA1_CH1) ----------
 // ----------------------------------------------------------
 
+use core::sync::atomic::{AtomicU16, Ordering as AtOrd};
+use embassy_sync::signal::Signal;
+
+/// Latest motor speeds written by motor_governor, read by the DShot sender.
+static DSHOT_SPEEDS: [AtomicU16; 4] = [
+    AtomicU16::new(0), AtomicU16::new(0), AtomicU16::new(0), AtomicU16::new(0),
+];
+
+/// Pending direction command (rare, only at startup).
+static DSHOT_REVERSE: Signal<
+    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, [bool; 4]
+> = Signal::new();
+
+/// Proxy OutputGroup that writes to atomics instead of sending DShot directly.
+/// The actual DShot frames are sent by the keepalive sender at a fixed 1 kHz.
+struct DshotProxy;
+
+impl common::hw_abstraction::OutputGroup for DshotProxy {
+    async fn set_motor_speeds(&mut self, speed: [u16; 4]) {
+        // Remap from mixer MOTOR order to physical channel order.
+        use crate::config::CHANNEL_MAP;
+        for ch in 0..4 {
+            DSHOT_SPEEDS[ch].store(speed[CHANNEL_MAP[ch]], AtOrd::Relaxed);
+        }
+    }
+    async fn set_reverse_dir(&mut self, direction: [bool; 4]) {
+        use crate::config::CHANNEL_MAP;
+        let ch_dir = [
+            direction[CHANNEL_MAP[0]],
+            direction[CHANNEL_MAP[1]],
+            direction[CHANNEL_MAP[2]],
+            direction[CHANNEL_MAP[3]],
+        ];
+        DSHOT_REVERSE.signal(ch_dir);
+    }
+    async fn set_motor_speeds_min(&mut self) {
+        for a in &DSHOT_SPEEDS { a.store(0, AtOrd::Relaxed); }
+    }
+    async fn make_beep(&mut self) {}
+}
+
 #[embassy_executor::task]
 pub async fn motor_governor_task(r: MotorResources, dshot: DshotConfig) -> ! {
     let wav = UpDmaWaveform::new(r.dma, MotorIrqs);
@@ -184,7 +244,39 @@ pub async fn motor_governor_task(r: MotorResources, dshot: DshotConfig) -> ! {
         || arm_rcv.try_get() == Some(true),
     ).await;
 
-    common::tasks::motor_governor::main(driver).await
+    crate::log::log("[mtr] pre_arm_loop done -> keepalive sender");
+
+    // Run motor_governor (writes speeds to DSHOT_SPEEDS via DshotProxy)
+    // and the DShot keepalive sender (reads DSHOT_SPEEDS, sends DShot at 1 kHz)
+    // concurrently. This ensures ESCs never see a DShot gap, regardless of
+    // how slowly the control loop updates.
+    embassy_futures::join::join(
+        common::tasks::motor_governor::main(DshotProxy),
+        dshot_keepalive_sender(driver),
+    ).await;
+
+    unreachable!()
+}
+
+/// Send DShot frames at ~1 kHz using the latest speeds from DSHOT_SPEEDS.
+/// Handles reverse-direction commands when signalled.
+async fn dshot_keepalive_sender<T, WAV>(mut driver: DshotDriver<'static, T, WAV>) -> !
+where
+    T: embassy_stm32::timer::GeneralInstance4Channel,
+    WAV: crate::dshot_driver::WaveformGenerator<Timer = T>,
+{
+    loop {
+        // Process pending direction command (rare).
+        if let Some(d) = DSHOT_REVERSE.try_take() {
+            driver.set_reverse_dir(d).await;
+        }
+
+        // Read latest speeds and send DShot frame.
+        let speeds = DSHOT_SPEEDS.each_ref().map(|a| a.load(AtOrd::Relaxed));
+        driver.set_motor_speeds(speeds).await;
+
+        embassy_time::Timer::after_micros(1000).await;
+    }
 }
 
 // ----------------------------------------------------------
@@ -193,11 +285,11 @@ pub async fn motor_governor_task(r: MotorResources, dshot: DshotConfig) -> ! {
 
 /// Set up I2C2 and run altitude hold + compass reader concurrently.
 ///
-/// DPS310 (baro, 0x76) and IST8310 (compass, 0x0E) share the I2C2 bus via a
-/// NoopRawMutex shared-bus wrapper. Both devices run in the same task so there
-/// is no cross-executor contention; NoopRawMutex is safe here.
+/// DPS310/SPL06 (baro, 0x76) and QMC5883L (compass, 0x0D) share the I2C2 bus
+/// via a NoopRawMutex shared-bus wrapper. Both devices run in the same task so
+/// there is no cross-executor contention; NoopRawMutex is safe here.
 #[embassy_executor::task]
-pub async fn alt_hold_task(r: BaroResources) -> ! {
+pub async fn alt_hold_task(r: BaroResources, battery_mv: u32) -> ! {
 
     let mut i2c_cfg = I2cConfig::default();
     i2c_cfg.sda_pullup = true;
@@ -215,30 +307,52 @@ pub async fn alt_hold_task(r: BaroResources) -> ! {
     static I2C2_BUS: StaticCell<I2c2Bus> = StaticCell::new();
     let bus: &'static I2c2Bus = I2C2_BUS.init(Mutex::new(i2c));
 
+    // Probe the baro address and prime the I2C2 DMA path.
+    // embassy-stm32 routes empty writes through a blocking (non-DMA) path;
+    // the first DMA transfer fails if no non-DMA transaction has occurred.
+    // This mirrors the probe in sensors.rs.
+    let baro_addr = {
+        use crate::dps310_i2c::{ADDR_SDO_LOW, ADDR_SDO_HIGH};
+        let mut b = bus.lock().await;
+        if b.write(ADDR_SDO_LOW, &[]).await.is_ok() {
+            crate::log::log("[baro] SPL06 found at 0x76");
+            ADDR_SDO_LOW
+        } else if b.write(ADDR_SDO_HIGH, &[]).await.is_ok() {
+            crate::log::log("[baro] SPL06 found at 0x77");
+            ADDR_SDO_HIGH
+        } else {
+            crate::log::log("[baro] SPL06 not found, defaulting to 0x76");
+            ADDR_SDO_LOW
+        }
+    };
+
     embassy_futures::join::join(
-        crate::alt_hold::main(I2cDevice::new(bus)),
+        crate::alt_hold::main(I2cDevice::new(bus), baro_addr, battery_mv),
         compass_reader(I2cDevice::new(bus)),
     ).await;
 
     unreachable!()
 }
 
-/// Read IST8310 magnetometer at ~50 Hz and publish to att_estimator.
+/// Read QMC5883L magnetometer at ~50 Hz and publish to att_estimator.
 ///
 /// The Madgwick filter in att_estimator uses this for absolute yaw reference,
 /// eliminating the yaw drift that causes oscillation without a compass.
 async fn compass_reader(i2c: impl embedded_hal_async::i2c::I2c) -> ! {
-    use crate::ist8310::{Ist8310, SENSITIVITY_UT_PER_LSB};
+    use crate::qmc5883l::Qmc5883l;
 
-    let mut compass = Ist8310::new(i2c);
+    /// QMC5883L sensitivity at 2G range: 0.244 uT/LSB.
+    const SENSITIVITY_UT_PER_LSB: f32 = 0.244;
+
+    let mut compass = Qmc5883l::new(i2c);
     loop {
         match compass.init().await {
             Ok(()) => {
-                crate::log::log("[compass] IST8310 init OK");
+                crate::log::log("[compass] QMC5883L init OK");
                 break;
             }
             Err(_) => {
-                crate::log::log("[compass] IST8310 init FAIL (retrying)");
+                crate::log::log("[compass] QMC5883L init FAIL (retrying)");
                 embassy_time::Timer::after_secs(1).await;
             }
         }
