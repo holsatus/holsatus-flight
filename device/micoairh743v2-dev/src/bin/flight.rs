@@ -18,10 +18,13 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use defmt_rtt as _;
 use panic_probe as _;
+
+/// Latest optical flow quality, shared between mtf01_reader and flow_hold for logging.
+static FLOW_QUALITY: AtomicU8 = AtomicU8::new(0);
 
 use core::fmt::Write;
 
@@ -135,14 +138,14 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     // ------------------------------------------------------------------
     {
         let mut r = controller_rate::params::TABLE.params.write().await;
-        // Roll rate (x)
-        r.x.kp = 0.03;
-        r.x.ki = 0.10;
-        r.x.kd = 0.010;
-        // Pitch rate (y) -- same as roll for symmetric frame
-        r.y.kp = 0.03;
-        r.y.ki = 0.10;
-        r.y.kd = 0.010;
+        // Roll rate (x) -- needs enough authority to track angle controller
+        r.x.kp = 0.08;
+        r.x.ki = 0.15;
+        r.x.kd = 0.02;
+        // Pitch rate (y) -- same as roll
+        r.y.kp = 0.08;
+        r.y.ki = 0.15;
+        r.y.kd = 0.02;
         // Yaw rate (z) -- minimal gains, yaw oscillation is the primary instability
         r.z.kp = 0.01;
         r.z.ki = 0.01;
@@ -212,6 +215,7 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     thread_spawner.spawn(resources::alt_hold_task(r.baro, battery_mv).unwrap());
     thread_spawner.spawn(mtf01_reader_task(r.mtf01).unwrap());
     thread_spawner.spawn(flow_hold().unwrap());
+    thread_spawner.spawn(flip_kill().unwrap());
     thread_spawner.spawn(mission_sequencer().unwrap());
     thread_spawner.spawn(motor_monitor().unwrap());
     thread_spawner.spawn(imu_monitor().unwrap());
@@ -249,9 +253,12 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
         ];
 
         // Write bias and axis correction to imu_reader params.
-        // The att_estimator applies rot_x_180 (flips Y and Z) internally.
-        // On this board the BMI088 is already in NED, so we pre-flip Y and Z
-        // in the calibration scale so the double flip cancels out.
+        // The att_estimator applies rot_x_180 (flips Y and Z) internally to
+        // convert from the firmware's NED-like frame to the Madgwick Z-up frame.
+        // The BMI088 on this board has Z-up natively (az=+9.8 level), so we
+        // pre-flip Y and Z with scale [-1,-1] to present NED-like data to the
+        // rate controller and mixer, while rot_x_180 inside att_estimator
+        // cancels the flip back to raw Z-up for the Madgwick filter.
         {
             let mut p = imu_reader::params::TABLE.params.write().await;
             p.cal_acc.bias = bias;
@@ -397,9 +404,10 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
         file.write_all(msg.as_bytes()).await.ok();
         file.write_all(b"\r\n").await.ok();
 
-        // Flush every 25 messages (~0.5s at 50 Hz).
+        // Flush every 5 messages (~50ms at 100 Hz).
+        // Aggressive flush ensures crash data is captured.
         flush_counter += 1;
-        if flush_counter >= 25 {
+        if flush_counter >= 5 {
             flush_counter = 0;
             file.flush().await.ok();
         }
@@ -466,9 +474,9 @@ async fn mission_sequencer() -> ! {
     // Slow altitude ramp: 0.0 -> 0.5 m over 15 seconds.
     // The alt_hold controller converts this to thrust gradually,
     // giving time to observe and cut power if needed.
-    ulog::log("[mission] ramping setpoint 0->0.5m (15 s)");
+    ulog::log("[mission] ramping setpoint 0->0.5m (30 s)");
     let ramp_start = embassy_time::Instant::now();
-    const RAMP_DURATION_MS: u64 = 15_000;
+    const RAMP_DURATION_MS: u64 = 30_000;
     const TARGET_ALT: f32 = 0.5;
 
     loop {
@@ -560,32 +568,77 @@ async fn angle_to_rate_bridge() -> ! {
 }
 
 // ------------------------------------------------------------------
-// High-rate sensor+motor monitor (50 Hz) for flight dynamics analysis.
-// Compact CSV format for easy plotting:
-//   t_ms,ax,ay,az,gx,gy,gz,m0,m1,m2,m3
+// High-rate telemetry monitor (100 Hz) for PID analysis.
+// Alternates between two CSV line types each cycle:
+//   A: t,ax,ay,az,gx,gy,gz,m0,m1,m2,m3
+//   B: t,rsp0,rsp1,rsp2,pp0,ip0,pp1,ip1,pp2,ip2,thr
+// where rspN = rate setpoint, ppN/ipN = PID P/I output per axis
 // ------------------------------------------------------------------
 
 #[embassy_executor::task]
 async fn imu_monitor() -> ! {
+    use common::tasks::controller_rate::{RATE_PID_TERMS, RATE_REF_FILTERED};
+
     let mut imu_rcv = signals::RAW_MULTI_IMU_DATA[0].receiver();
     let mut mtr_rcv = signals::MOTORS_STATE.receiver();
+    let mut att_rcv = signals::AHRS_ATTITUDE_Q.receiver();
+    let mut pid_rcv = RATE_PID_TERMS.receiver();
+    let mut ref_rcv = RATE_REF_FILTERED.receiver();
+    let mut thr_rcv = signals::TRUE_Z_THRUST_SP.receiver();
+
+    let mut cycle: u8 = 0;
+
     loop {
-        Timer::after_millis(20).await; // 50 Hz
-        let Some(d) = imu_rcv.try_get() else { continue };
+        Timer::after_millis(10).await; // 100 Hz
+
         let t = embassy_time::Instant::now().as_millis();
-        let (m0, m1, m2, m3) = match mtr_rcv.try_get() {
-            Some(MotorsState::Armed(s)) => (s[0], s[1], s[2], s[3]),
-            Some(MotorsState::Arming)   => (0u16, 0, 0, 0),
-            _                           => (0u16, 0, 0, 0),
-        };
-        let mut s: heapless::String<96> = heapless::String::new();
-        let _ = write!(
-            s, "{},{:.1},{:.1},{:.1},{:.2},{:.2},{:.2},{},{},{},{}",
-            t, d.acc[0], d.acc[1], d.acc[2],
-            d.gyr[0], d.gyr[1], d.gyr[2],
-            m0, m1, m2, m3
-        );
-        ulog::log(s.as_str());
+
+        if cycle == 0 {
+            // Line A: IMU + motors
+            let Some(d) = imu_rcv.try_get() else { continue };
+            let (m0, m1, m2, m3) = match mtr_rcv.try_get() {
+                Some(MotorsState::Armed(s)) => (s[0], s[1], s[2], s[3]),
+                Some(MotorsState::Arming)   => (0u16, 0, 0, 0),
+                _                           => (0u16, 0, 0, 0),
+            };
+            let mut s: heapless::String<96> = heapless::String::new();
+            let _ = write!(
+                s, "A,{},{:.1},{:.1},{:.1},{:.2},{:.2},{:.2},{},{},{},{}",
+                t, d.acc[0], d.acc[1], d.acc[2],
+                d.gyr[0], d.gyr[1], d.gyr[2],
+                m0, m1, m2, m3
+            );
+            ulog::log(s.as_str());
+        } else {
+            // Line B: PID internals + attitude + thrust
+            let pid = pid_rcv.try_get();
+            let rsp = ref_rcv.try_get();
+            let thr = thr_rcv.try_get().unwrap_or(0.0);
+            let att = att_rcv.try_get();
+
+            if let Some(pid) = pid {
+                let r = rsp.unwrap_or([0.0; 3]);
+                // Euler angles from attitude quaternion
+                let (rd, pd, yd) = match att {
+                    Some(q) => {
+                        let (r, p, y) = q.euler_angles();
+                        (r.to_degrees(), p.to_degrees(), y.to_degrees())
+                    }
+                    None => (0.0, 0.0, 0.0),
+                };
+                // Line B1: attitude + roll PID + pitch PID
+                let mut s: heapless::String<96> = heapless::String::new();
+                let _ = write!(
+                    s, "B,{},{:.1},{:.1},{:.1},{:.2},{:.3},{:.3},{:.2},{:.3},{:.3},{:.1}",
+                    t, rd, pd, yd,
+                    r[0], pid[0].p_out, pid[0].i_out,
+                    r[1], pid[1].p_out, pid[1].i_out,
+                    thr
+                );
+                ulog::log(s.as_str());
+            }
+        }
+        cycle = 1 - cycle;
     }
 }
 
@@ -612,6 +665,63 @@ async fn motor_monitor() -> ! {
             }
         }
         ulog::log(s.as_str());
+    }
+}
+
+// ------------------------------------------------------------------
+// Auto-kill on flip detection.
+//
+// Monitors the accelerometer Z axis. If gravity points upward (az < 0)
+// for more than FLIP_DURATION_MS, the drone is inverted and motors are
+// immediately disarmed. This catches the most dangerous failure mode
+// (uncontrolled flip) without requiring any external hardware.
+// ------------------------------------------------------------------
+
+/// Master enable for the flip-kill safety feature.
+/// Set to false to disable (e.g., for inverted bench testing).
+const FLIP_KILL_ENABLED: bool = true;
+
+#[embassy_executor::task]
+async fn flip_kill() -> ! {
+    if !FLIP_KILL_ENABLED {
+        ulog::log("[kill] flip-kill DISABLED");
+        loop { Timer::after_secs(60).await; }
+    }
+
+    ulog::log("[kill] flip-kill active");
+
+    let mut rcv = signals::RAW_MULTI_IMU_DATA[0].receiver();
+
+    // Number of consecutive inverted samples before triggering kill.
+    // At 1kHz IMU rate: cnt=10 = 10ms. Filters motor vibration spikes
+    // (1-2ms) while catching real flips (50-100ms) within 10ms.
+    const FLIP_COUNT_THRESHOLD: u32 = 10;
+    // Z acceleration below this threshold means inverted (gravity pointing up).
+    const AZ_INVERTED_THRESHOLD: f32 = -3.0;
+
+    let mut inverted_count: u32 = 0;
+
+    loop {
+        let d = rcv.changed().await;
+
+        if d.acc[2] < AZ_INVERTED_THRESHOLD {
+            inverted_count += 1;
+            if inverted_count >= FLIP_COUNT_THRESHOLD {
+                COMMAD_ARM_VEHICLE.send(false);
+                ulog::log("[kill] FLIP DETECTED -- motors disarmed");
+
+                // Log a few more readings then go quiet.
+                for _ in 0..5 {
+                    Timer::after_millis(200).await;
+                    ulog::log("[kill] motors off (flip-kill)");
+                }
+
+                // Stay disarmed forever (requires power cycle to reset).
+                loop { Timer::after_secs(60).await; }
+            }
+        } else {
+            inverted_count = 0;
+        }
     }
 }
 
@@ -659,9 +769,11 @@ async fn flow_hold() -> ! {
         log_div = log_div.wrapping_add(1);
         if log_div >= 5 {
             log_div = 0;
+            // Read latest flow quality from the mtf01_reader via a shared atomic.
+            let fq = FLOW_QUALITY.load(Ordering::Relaxed);
             let mut s: heapless::String<64> = heapless::String::new();
-            let _ = write!(s, "[flow] vx={:.3} vy={:.3} r={:.2} p={:.2}",
-                vx, vy, roll_tilt, pitch_tilt);
+            let _ = write!(s, "[flow] q={} vx={:.3} vy={:.3} r={:.2} p={:.2}",
+                fq, vx, vy, roll_tilt, pitch_tilt);
             ulog::log(s.as_str());
         }
     }
@@ -723,17 +835,17 @@ async fn mtf01_reader_task(r: Mtf01Resources) -> ! {
                 }
             }
             Some(mtf01::Frame::Flow(f)) => {
+                FLOW_QUALITY.store(f.quality, Ordering::Relaxed);
                 if f.quality > 30 && last_height_m > 0.05 {
-                    // Convert pixel counts to angular rate (rad/frame), then to velocity.
-                    // PMW3901: ~35 counts/degree => ~0.0005 rad/count.
-                    // Velocity = angular_rate * height.
-                    // The MTF-01 sensor arrow should point forward (drone nose).
-                    //   sensor X = forward  => drone pitch axis (vx)
-                    //   sensor Y = rightward => drone roll axis (vy)
-                    // If sensor is mounted rotated, swap or negate here.
-                    const FLOW_SCALE: f32 = 0.0005;
-                    let vx = f.motion_x as f32 * FLOW_SCALE * last_height_m;
-                    let vy = f.motion_y as f32 * FLOW_SCALE * last_height_m;
+                    // Convert pixel counts to velocity via angular rate * height.
+                    // Axis mapping (empirically determined from flow_test):
+                    //   drone forward = +motion_y
+                    //   drone right   = -motion_x
+                    // Scale: raw ±5 counts at 8cm height ≈ 0.1 m/s hand movement.
+                    //   FLOW_SCALE = 0.1 / (5 * 0.08) = 0.25
+                    const FLOW_SCALE: f32 = 0.25;
+                    let vx =  f.motion_y as f32 * FLOW_SCALE * last_height_m;
+                    let vy = -(f.motion_x as f32) * FLOW_SCALE * last_height_m;
                     snd_flow.send([vx, vy]);
                 }
             }
