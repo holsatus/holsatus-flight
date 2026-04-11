@@ -9,6 +9,7 @@
 //!   Motors      -- TIM1:  CH1=PE9(M4), CH2=PE11(M3), CH3=PE13(M2), CH4=PE14(M1)
 //!                          DMA1_CH1 (UP DMA)
 //!   USART1      -- TX=PA9, DMA1_CH0
+//!   GPS (USART3) -- RX=PD9, TX=PD8, DMA1_CH2
 
 use assign_resources::assign_resources;
 
@@ -75,6 +76,12 @@ assign_resources! {
         usart: UART4,
         rx:    PA1,
         dma:   DMA1_CH3,
+    }
+    gps: GpsResources {
+        usart: USART3,
+        rx:    PD9,
+        tx:    PD8,
+        dma:   DMA1_CH2,
     }
     sdmmc: SdmmcLogResources {
         periph: SDMMC1,

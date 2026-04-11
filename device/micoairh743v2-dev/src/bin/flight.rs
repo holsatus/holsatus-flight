@@ -31,9 +31,9 @@ use core::fmt::Write;
 use common::nalgebra::{UnitQuaternion, Vector3};
 use common::signals;
 use common::tasks::att_estimator;
+use common::tasks::commander::COMMAD_ARM_VEHICLE;
 use common::tasks::controller_angle;
 use common::tasks::controller_rate;
-use common::tasks::commander::COMMAD_ARM_VEHICLE;
 use common::tasks::eskf::EskfEstimate;
 use common::tasks::imu_reader;
 use common::tasks::motor_governor::params;
@@ -247,8 +247,8 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
         }
 
         let bias = [
-            sum[0] / N as f32,                      // expected 0
-            sum[1] / N as f32,                      // expected 0
+            sum[0] / N as f32,                           // expected 0
+            sum[1] / N as f32,                           // expected 0
             sum[2] / N as f32 - common::consts::GRAVITY, // expected +g
         ];
 
@@ -265,10 +265,17 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
             p.cal_acc.scale = [1.0, -1.0, -1.0];
             p.cal_gyr.scale = [1.0, -1.0, -1.0];
         }
-        imu_reader::CHANNEL[0].sender().send(imu_reader::Message::ReloadParams).await;
+        imu_reader::CHANNEL[0]
+            .sender()
+            .send(imu_reader::Message::ReloadParams)
+            .await;
 
         let mut s: heapless::String<64> = heapless::String::new();
-        let _ = write!(s, "[cal] bias=[{:.3},{:.3},{:.3}]", bias[0], bias[1], bias[2]);
+        let _ = write!(
+            s,
+            "[cal] bias=[{:.3},{:.3},{:.3}]",
+            bias[0], bias[1], bias[2]
+        );
         ulog::log(s.as_str());
     }
 
@@ -284,6 +291,10 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     }
 }
 
+async fn get_battery_mv() -> f32 {
+    15.4
+}
+
 // ------------------------------------------------------------------
 // UART + SD card log writer.
 // Drains the log channel, writes each message to UART1 and (if the SD
@@ -292,8 +303,8 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
 #[embassy_executor::task]
 async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
-    use core::fmt::Write as FmtWrite;
     use block_device_adapters::BufStream;
+    use core::fmt::Write as FmtWrite;
     use embedded_fatfs::{FileSystem, FsOptions};
     use embedded_io_async_061::Write as _;
 
@@ -302,19 +313,27 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
         USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
     });
 
-    let mut uart = UartTx::new(r.usart, r.tx, r.dma, UartIrqs, UartConfig::default())
-        .ok();
+    let mut uart = UartTx::new(r.usart, r.tx, r.dma, UartIrqs, UartConfig::default()).ok();
 
     // ── SD card setup (best-effort -- logging continues on UART if SD fails) ──
     let mut device = SdmmcResources {
-        periph: sd.periph, clk: sd.clk, cmd: sd.cmd,
-        d0: sd.d0, d1: sd.d1, d2: sd.d2, d3: sd.d3,
-    }.setup();
+        periph: sd.periph,
+        clk: sd.clk,
+        cmd: sd.cmd,
+        d0: sd.d0,
+        d1: sd.d1,
+        d2: sd.d2,
+        d3: sd.d3,
+    }
+    .setup();
 
     let sd_ok = {
         let mut ok = false;
         for _ in 0u8..3 {
-            if device.try_reset().await.is_ok() { ok = true; break; }
+            if device.try_reset().await.is_ok() {
+                ok = true;
+                break;
+            }
             Timer::after_millis(500).await;
         }
         ok
@@ -351,7 +370,11 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
             let name = entry.short_file_name_as_bytes();
             if name.len() == 7 && (name[0] == b'D' || name[0] == b'd') {
                 if let Some(idx) = name[1..].iter().try_fold(0u32, |acc, &b| {
-                    if b >= b'0' && b <= b'9' { Some(acc * 10 + (b - b'0') as u32) } else { None }
+                    if b >= b'0' && b <= b'9' {
+                        Some(acc * 10 + (b - b'0') as u32)
+                    } else {
+                        None
+                    }
                 }) {
                     session_idx = session_idx.max(idx);
                 }
@@ -366,7 +389,9 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
         let _ = FmtWrite::write_fmt(&mut dir_name, format_args!("D{:06}", session_idx));
         match fs.root_dir().create_dir(dir_name.as_str()).await {
             Ok(d) => break d,
-            Err(embedded_fatfs::Error::AlreadyExists) => { session_idx += 1; }
+            Err(embedded_fatfs::Error::AlreadyExists) => {
+                session_idx += 1;
+            }
             Err(_) => loop {
                 let msg = ulog::CHANNEL.receive().await;
                 if let Some(ref mut u) = uart {
@@ -481,7 +506,9 @@ async fn mission_sequencer() -> ! {
 
     loop {
         let elapsed = ramp_start.elapsed().as_millis();
-        if elapsed >= RAMP_DURATION_MS { break; }
+        if elapsed >= RAMP_DURATION_MS {
+            break;
+        }
         let sp = TARGET_ALT * (elapsed as f32 / RAMP_DURATION_MS as f32);
         ALTITUDE_SETPOINT.signal(sp);
         Timer::after_millis(100).await;
@@ -498,7 +525,9 @@ async fn mission_sequencer() -> ! {
 
     loop {
         let elapsed = desc_start.elapsed().as_millis();
-        if elapsed >= DESC_DURATION_MS { break; }
+        if elapsed >= DESC_DURATION_MS {
+            break;
+        }
         let sp = TARGET_ALT * (1.0 - elapsed as f32 / DESC_DURATION_MS as f32);
         ALTITUDE_SETPOINT.signal(sp);
         Timer::after_millis(100).await;
@@ -598,15 +627,14 @@ async fn imu_monitor() -> ! {
             let Some(d) = imu_rcv.try_get() else { continue };
             let (m0, m1, m2, m3) = match mtr_rcv.try_get() {
                 Some(MotorsState::Armed(s)) => (s[0], s[1], s[2], s[3]),
-                Some(MotorsState::Arming)   => (0u16, 0, 0, 0),
-                _                           => (0u16, 0, 0, 0),
+                Some(MotorsState::Arming) => (0u16, 0, 0, 0),
+                _ => (0u16, 0, 0, 0),
             };
             let mut s: heapless::String<96> = heapless::String::new();
             let _ = write!(
-                s, "A,{},{:.1},{:.1},{:.1},{:.2},{:.2},{:.2},{},{},{},{}",
-                t, d.acc[0], d.acc[1], d.acc[2],
-                d.gyr[0], d.gyr[1], d.gyr[2],
-                m0, m1, m2, m3
+                s,
+                "A,{},{:.1},{:.1},{:.1},{:.2},{:.2},{:.2},{},{},{},{}",
+                t, d.acc[0], d.acc[1], d.acc[2], d.gyr[0], d.gyr[1], d.gyr[2], m0, m1, m2, m3
             );
             ulog::log(s.as_str());
         } else {
@@ -629,10 +657,18 @@ async fn imu_monitor() -> ! {
                 // Line B1: attitude + roll PID + pitch PID
                 let mut s: heapless::String<96> = heapless::String::new();
                 let _ = write!(
-                    s, "B,{},{:.1},{:.1},{:.1},{:.2},{:.3},{:.3},{:.2},{:.3},{:.3},{:.1}",
-                    t, rd, pd, yd,
-                    r[0], pid[0].p_out, pid[0].i_out,
-                    r[1], pid[1].p_out, pid[1].i_out,
+                    s,
+                    "B,{},{:.1},{:.1},{:.1},{:.2},{:.3},{:.3},{:.2},{:.3},{:.3},{:.1}",
+                    t,
+                    rd,
+                    pd,
+                    yd,
+                    r[0],
+                    pid[0].p_out,
+                    pid[0].i_out,
+                    r[1],
+                    pid[1].p_out,
+                    pid[1].i_out,
                     thr
                 );
                 ulog::log(s.as_str());
@@ -685,7 +721,9 @@ const FLIP_KILL_ENABLED: bool = true;
 async fn flip_kill() -> ! {
     if !FLIP_KILL_ENABLED {
         ulog::log("[kill] flip-kill DISABLED");
-        loop { Timer::after_secs(60).await; }
+        loop {
+            Timer::after_secs(60).await;
+        }
     }
 
     ulog::log("[kill] flip-kill active");
@@ -717,7 +755,9 @@ async fn flip_kill() -> ! {
                 }
 
                 // Stay disarmed forever (requires power cycle to reset).
-                loop { Timer::after_secs(60).await; }
+                loop {
+                    Timer::after_secs(60).await;
+                }
             }
         } else {
             inverted_count = 0;
@@ -760,7 +800,7 @@ async fn flow_hold() -> ! {
         let [vx, vy] = rcv.changed().await;
 
         let pitch_tilt = (KP_FLOW * vx).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
-        let roll_tilt  = (-KP_FLOW * vy).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
+        let roll_tilt = (-KP_FLOW * vy).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
 
         let q = UnitQuaternion::from_euler_angles(roll_tilt, pitch_tilt, 0.0);
         snd_att.send(q);
@@ -772,8 +812,11 @@ async fn flow_hold() -> ! {
             // Read latest flow quality from the mtf01_reader via a shared atomic.
             let fq = FLOW_QUALITY.load(Ordering::Relaxed);
             let mut s: heapless::String<64> = heapless::String::new();
-            let _ = write!(s, "[flow] q={} vx={:.3} vy={:.3} r={:.2} p={:.2}",
-                fq, vx, vy, roll_tilt, pitch_tilt);
+            let _ = write!(
+                s,
+                "[flow] q={} vx={:.3} vy={:.3} r={:.2} p={:.2}",
+                fq, vx, vy, roll_tilt, pitch_tilt
+            );
             ulog::log(s.as_str());
         }
     }
@@ -801,11 +844,11 @@ async fn mtf01_reader_task(r: Mtf01Resources) -> ! {
     ulog::log("[mtf01] UART4 RX started");
 
     let snd_lidar = micoairh743v2::alt_hold::LIDAR_ALT_M.sender();
-    let snd_flow  = micoairh743v2::alt_hold::FLOW_VEL_MS.sender();
+    let snd_flow = micoairh743v2::alt_hold::FLOW_VEL_MS.sender();
     let mut last_height_m: f32 = 0.0;
 
     // Read buffers (reused every frame).
-    let mut b   = [0u8; 1];
+    let mut b = [0u8; 1];
     let mut hdr = [0u8; 6];
     let mut pbuf = [0u8; mtf01::MAX_PAYLOAD + 1];
 
@@ -813,15 +856,21 @@ async fn mtf01_reader_task(r: Mtf01Resources) -> ! {
         // Sync to MSP v2 preamble: $X
         loop {
             uart.read(&mut b).await.ok();
-            if b[0] != b'$' { continue; }
+            if b[0] != b'$' {
+                continue;
+            }
             uart.read(&mut b).await.ok();
-            if b[0] == b'X' { break; }
+            if b[0] == b'X' {
+                break;
+            }
         }
 
         // Read header: dir flags fn_lo fn_hi size_lo size_hi
         uart.read(&mut hdr).await.ok();
         let size = u16::from_le_bytes([hdr[4], hdr[5]]) as usize;
-        if size > mtf01::MAX_PAYLOAD { continue; }
+        if size > mtf01::MAX_PAYLOAD {
+            continue;
+        }
 
         // Read payload + CRC
         uart.read(&mut pbuf[..size + 1]).await.ok();
@@ -844,7 +893,7 @@ async fn mtf01_reader_task(r: Mtf01Resources) -> ! {
                     // Scale: raw ±5 counts at 8cm height ≈ 0.1 m/s hand movement.
                     //   FLOW_SCALE = 0.1 / (5 * 0.08) = 0.25
                     const FLOW_SCALE: f32 = 0.25;
-                    let vx =  f.motion_y as f32 * FLOW_SCALE * last_height_m;
+                    let vx = f.motion_y as f32 * FLOW_SCALE * last_height_m;
                     let vy = -(f.motion_x as f32) * FLOW_SCALE * last_height_m;
                     snd_flow.send([vx, vy]);
                 }
