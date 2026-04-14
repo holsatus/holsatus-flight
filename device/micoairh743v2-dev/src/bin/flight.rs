@@ -35,8 +35,6 @@ use common::tasks::commander::COMMAD_ARM_VEHICLE;
 use common::tasks::controller_angle;
 use common::tasks::controller_rate;
 use common::tasks::eskf::EskfEstimate;
-use common::tasks::imu_reader;
-use common::tasks::motor_governor::params;
 use common::types::actuators::MotorsState;
 use common::types::config::DshotConfig;
 use embassy_stm32::gpio::{Level, Output, Speed};
@@ -44,10 +42,11 @@ use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_time::Timer;
 use micoairh743v2::alt_hold::ALTITUDE_SETPOINT;
-use micoairh743v2::config::MOTOR_REVERSE_FLAGS;
 use micoairh743v2::log as ulog;
 use micoairh743v2::mtf01;
-use micoairh743v2::resources::{self, Mtf01Resources, SdmmcLogResources, UartLogResources};
+use micoairh743v2::resources::{
+    self, BatteryResources, Mtf01Resources, SdmmcLogResources, UartLogResources,
+};
 use micoairh743v2::sdlog::SdmmcResources;
 
 /// Helper macro to create an interrupt executor at the given priority.
@@ -119,40 +118,8 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     // ------------------------------------------------------------------
     thread_spawner.spawn(param_storage_task().unwrap());
 
-    // ------------------------------------------------------------------
-    // Motor reverse-flag override.
-    // Write directly to the params RwLock, bypassing the param_storage
-    // request/response mechanism. Safe because DummyFlash only returns
-    // 0xFF (empty), so LoadTable would restore defaults regardless.
-    // Must happen before interrupt executors start to avoid a race with
-    // motor_governor reading the table.
-    // ------------------------------------------------------------------
-    params::TABLE.params.write().await.rev = MOTOR_REVERSE_FLAGS;
-
-    // ------------------------------------------------------------------
-    // Rate PID overrides -- conservative starting values for this frame.
-    // Fields: x=roll, y=pitch, z=yaw.
-    // Defaults were: kp=0.08, ki=0.5, kd=0.03 (all axes identical).
-    // Angle controller params are private in common/ -- left at defaults
-    // (roll/pitch kp=15, yaw kp=25) for now.
-    // ------------------------------------------------------------------
-    {
-        let mut r = controller_rate::params::TABLE.params.write().await;
-        // Roll rate (x) -- needs enough authority to track angle controller
-        r.x.kp = 0.08;
-        r.x.ki = 0.15;
-        r.x.kd = 0.02;
-        // Pitch rate (y) -- same as roll
-        r.y.kp = 0.08;
-        r.y.ki = 0.15;
-        r.y.kd = 0.02;
-        // Yaw rate (z) -- minimal gains, yaw oscillation is the primary instability
-        r.z.kp = 0.01;
-        r.z.ki = 0.01;
-        r.z.kd = 0.005;
-    }
-
-    ulog::log("[flight] motor+PID params overridden");
+    override_motor_params().await;
+    override_pid_gains().await;
 
     // ------------------------------------------------------------------
     // Yield to let param_storage_task initialize and enter its receive
@@ -190,24 +157,7 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     level_1_spawner.spawn(controller_angle::main().unwrap());
     level_1_spawner.spawn(angle_to_rate_bridge().unwrap());
 
-    // ------------------------------------------------------------------
-    // Read battery voltage once (blocking ADC, before motors spin).
-    // Used for voltage compensation in alt_hold.
-    // ------------------------------------------------------------------
-    let battery_mv = {
-        use embassy_stm32::adc::{Adc, SampleTime};
-        let mut adc = Adc::new(r.battery.adc);
-        let mut pin_v = r.battery.pin_v;
-        let raw = adc.blocking_read(&mut pin_v, SampleTime::CYCLES64_5);
-        const V_DIV: u32 = 21;
-        const ADC_FULL: u32 = 65535;
-        const VREF_MV: u32 = 3300;
-        let mv = (raw as u32 * VREF_MV * V_DIV) / ADC_FULL;
-        let mut s: heapless::String<48> = heapless::String::new();
-        let _ = write!(s, "[bat] voltage={} mV", mv);
-        ulog::log(s.as_str());
-        mv
-    };
+    let battery_mv = read_battery_mv(r.battery);
 
     // ------------------------------------------------------------------
     // Thread-priority tasks
@@ -222,77 +172,108 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
     ulog::log("[flight] all tasks spawned");
 
-    // ------------------------------------------------------------------
-    // Startup accelerometer bias calibration.
-    // Collect N samples from RAW_MULTI_IMU_DATA while the drone sits level
-    // and stationary, compute the mean, and subtract expected gravity to
-    // get the bias. Write it to the imu_reader params table so all
-    // subsequent CAL_MULTI_IMU_DATA readings are bias-corrected.
-    // ------------------------------------------------------------------
-    {
-        const N: u32 = 500;
-        let mut rcv = signals::RAW_MULTI_IMU_DATA[0].receiver();
-        let mut sum = [0.0_f32; 3];
-
-        ulog::log("[cal] accel bias cal: hold level...");
-
-        // Wait for the first reading to ensure the IMU is producing data.
-        rcv.changed().await;
-
-        for _ in 0..N {
-            let d = rcv.changed().await;
-            sum[0] += d.acc[0];
-            sum[1] += d.acc[1];
-            sum[2] += d.acc[2];
-        }
-
-        let bias = [
-            sum[0] / N as f32,                           // expected 0
-            sum[1] / N as f32,                           // expected 0
-            sum[2] / N as f32 - common::consts::GRAVITY, // expected +g
-        ];
-
-        // Write bias and axis correction to imu_reader params.
-        // The att_estimator applies rot_x_180 (flips Y and Z) internally to
-        // convert from the firmware's NED-like frame to the Madgwick Z-up frame.
-        // The BMI088 on this board has Z-up natively (az=+9.8 level), so we
-        // pre-flip Y and Z with scale [-1,-1] to present NED-like data to the
-        // rate controller and mixer, while rot_x_180 inside att_estimator
-        // cancels the flip back to raw Z-up for the Madgwick filter.
-        {
-            let mut p = imu_reader::params::TABLE.params.write().await;
-            p.cal_acc.bias = bias;
-            p.cal_acc.scale = [1.0, -1.0, -1.0];
-            p.cal_gyr.scale = [1.0, -1.0, -1.0];
-        }
-        imu_reader::CHANNEL[0]
-            .sender()
-            .send(imu_reader::Message::ReloadParams)
-            .await;
-
-        let mut s: heapless::String<64> = heapless::String::new();
-        let _ = write!(
-            s,
-            "[cal] bias=[{:.3},{:.3},{:.3}]",
-            bias[0], bias[1], bias[2]
-        );
-        ulog::log(s.as_str());
-    }
+    apply_imu_calibration().await;
 
     // ------------------------------------------------------------------
-    // Heartbeat: blink green LED and send UART ping every 2 s.
-    // The UART ping means miniterm will show output within 2 s of
-    // being opened, regardless of when the startup burst was sent.
+    // Heartbeat: blink green LED, report DShot rate every 2 s.
+    // DShot rate = frames transmitted by the P10 critical path per second.
+    // Expected ~1000 Hz. A sustained drop below ~950 indicates contention.
     // ------------------------------------------------------------------
+    let mut prev_tx =
+        micoairh743v2::dshot_driver::DSHOT_TX_COUNT.load(core::sync::atomic::Ordering::Relaxed);
     loop {
         led_green.toggle();
-        ulog::log("[flight] heartbeat");
         Timer::after_secs(2).await;
+        let cur_tx =
+            micoairh743v2::dshot_driver::DSHOT_TX_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+        let rate = (cur_tx - prev_tx) / 2; // frames per second (sampled over 2s)
+        prev_tx = cur_tx;
+        let mut s: heapless::String<64> = heapless::String::new();
+        let _ = write!(s, "[flight] hb dshot={}Hz", rate);
+        ulog::log(s.as_str());
     }
 }
 
-async fn get_battery_mv() -> f32 {
-    15.4
+/// Read battery voltage once via blocking ADC (call before motors spin).
+fn read_battery_mv(r: BatteryResources) -> u32 {
+    use embassy_stm32::adc::{Adc, SampleTime};
+    let mut adc = Adc::new(r.adc);
+    let mut pin_v = r.pin_v;
+    let raw = adc.blocking_read(&mut pin_v, SampleTime::CYCLES64_5);
+    const V_DIV: u32 = 21;
+    const ADC_FULL: u32 = 65535;
+    const VREF_MV: u32 = 3300;
+    let mv = (raw as u32 * VREF_MV * V_DIV) / ADC_FULL;
+    let mut s: heapless::String<48> = heapless::String::new();
+    let _ = core::fmt::Write::write_fmt(&mut s, format_args!("[bat] voltage={} mV", mv));
+    ulog::log(s.as_str());
+    mv
+}
+
+// ------------------------------------------------------------------
+// Parameter overrides -- called once at startup before executors start.
+// ------------------------------------------------------------------
+
+/// Motor governor: reverse flags and timeout.
+async fn override_motor_params() {
+    use common::tasks::motor_governor::params;
+    use micoairh743v2::config::MOTOR_REVERSE_FLAGS;
+
+    let mut p = params::TABLE.params.write().await;
+    p.rev = MOTOR_REVERSE_FLAGS;
+    p.timeout_ms = 500; // Watch::changed() can stall when mixer output saturates
+    drop(p);
+
+    let mut s: heapless::String<64> = heapless::String::new();
+    let _ = write!(s, "[flight] rev=0x{:04X} timeout=500ms", MOTOR_REVERSE_FLAGS.bits());
+    ulog::log(s.as_str());
+}
+
+/// Rate and angle PID gains for this frame.
+async fn override_pid_gains() {
+    use common::tasks::controller_rate;
+
+    let mut r = controller_rate::params::TABLE.params.write().await;
+    // Roll (x)
+    r.x.kp = 0.08;
+    r.x.ki = 0.15;
+    r.x.kd = 0.02;
+    // Pitch (y) -- same as roll
+    r.y.kp = 0.08;
+    r.y.ki = 0.15;
+    r.y.kd = 0.02;
+    // Yaw (z) -- minimal gains
+    r.z.kp = 0.01;
+    r.z.ki = 0.01;
+    r.z.kd = 0.005;
+    drop(r);
+
+    ulog::log("[flight] PID gains overridden");
+}
+
+/// Hardcoded IMU bias and axis scale from flat-surface calibration.
+/// Re-calibrate if the FC is remounted or the frame changes.
+async fn apply_imu_calibration() {
+    use common::tasks::imu_reader;
+    use micoairh743v2::config::BMI088_ACC_BIAS;
+
+    let mut p = imu_reader::params::TABLE.params.write().await;
+    p.cal_acc.bias = BMI088_ACC_BIAS;
+    p.cal_acc.scale = [1.0, -1.0, -1.0];
+    p.cal_gyr.scale = [1.0, -1.0, -1.0];
+    drop(p);
+
+    imu_reader::CHANNEL[0]
+        .sender()
+        .send(imu_reader::Message::ReloadParams)
+        .await;
+
+    let mut s: heapless::String<64> = heapless::String::new();
+    let _ = write!(
+        s, "[cal] bias=[{:.3},{:.3},{:.3}]",
+        BMI088_ACC_BIAS[0], BMI088_ACC_BIAS[1], BMI088_ACC_BIAS[2]
+    );
+    ulog::log(s.as_str());
 }
 
 // ------------------------------------------------------------------
@@ -488,47 +469,56 @@ impl common::embedded_storage_async::nor_flash::NorFlash for DummyFlash {
 
 #[embassy_executor::task]
 async fn mission_sequencer() -> ! {
-    ulog::log("[mission] waiting 2 s for sensor stabilization");
-    Timer::after_secs(2).await;
+    // String-suspended slow-ramp hover test.
+    //
+    // The drone hangs from a string. Thrust ramps from zero to hover over
+    // 30 seconds, holds for 30 seconds, then ramps down over 15 seconds.
+    // The slow ramp avoids the sudden ground-effect transient that caused
+    // previous crashes. Pull LiPo at any sign of instability.
+    //
+    // Procedure:
+    //   1. Suspend drone from a string (loop around the frame)
+    //   2. Connect LiPo -- motors arm after ~5 seconds
+    //   3. 30s ramp: thrust increases very gradually
+    //   4. 30s hover at 0.15m setpoint
+    //   5. 15s ramp down, then disarm
+
+    ulog::log("[mission] waiting 3s for sensors...");
+    Timer::after_secs(3).await;
 
     ulog::log("[mission] arming motors");
     COMMAD_ARM_VEHICLE.send(true);
-
     Timer::after_secs(3).await;
 
-    // Slow altitude ramp: 0.0 -> 0.5 m over 15 seconds.
-    // The alt_hold controller converts this to thrust gradually,
-    // giving time to observe and cut power if needed.
-    ulog::log("[mission] ramping setpoint 0->0.5m (30 s)");
-    let ramp_start = embassy_time::Instant::now();
-    const RAMP_DURATION_MS: u64 = 30_000;
-    const TARGET_ALT: f32 = 0.5;
+    const TARGET_ALT: f32 = 0.15;
+    const RAMP_UP_MS: u64 = 30_000;
+    const HOVER_S: u64 = 30;
+    const RAMP_DOWN_MS: u64 = 15_000;
 
+    ulog::log("[mission] ramp 0->0.15m (30s)");
+    let ramp_start = embassy_time::Instant::now();
     loop {
         let elapsed = ramp_start.elapsed().as_millis();
-        if elapsed >= RAMP_DURATION_MS {
+        if elapsed >= RAMP_UP_MS {
             break;
         }
-        let sp = TARGET_ALT * (elapsed as f32 / RAMP_DURATION_MS as f32);
+        let sp = TARGET_ALT * (elapsed as f32 / RAMP_UP_MS as f32);
         ALTITUDE_SETPOINT.signal(sp);
         Timer::after_millis(100).await;
     }
     ALTITUDE_SETPOINT.signal(TARGET_ALT);
 
-    ulog::log("[mission] hovering at 0.5 m (10 s)");
-    Timer::after_secs(10).await;
+    ulog::log("[mission] hover 0.15m (30s)");
+    Timer::after_secs(HOVER_S).await;
 
-    // Slow descent: 0.5 -> 0.0 m over 10 seconds.
-    ulog::log("[mission] descending 0.5->0m (10 s)");
+    ulog::log("[mission] descend (15s)");
     let desc_start = embassy_time::Instant::now();
-    const DESC_DURATION_MS: u64 = 10_000;
-
     loop {
         let elapsed = desc_start.elapsed().as_millis();
-        if elapsed >= DESC_DURATION_MS {
+        if elapsed >= RAMP_DOWN_MS {
             break;
         }
-        let sp = TARGET_ALT * (1.0 - elapsed as f32 / DESC_DURATION_MS as f32);
+        let sp = TARGET_ALT * (1.0 - elapsed as f32 / RAMP_DOWN_MS as f32);
         ALTITUDE_SETPOINT.signal(sp);
         Timer::after_millis(100).await;
     }
@@ -578,7 +568,7 @@ async fn ahrs_to_eskf_bridge() -> ! {
 // TRUE_RATE_SP. signal_router normally connects them but it requires RC
 // input and a full control-mode state machine.
 //
-// Yaw is zeroed here because without a magnetometer there is no absolute
+// Yaw is zeroed because without a magnetometer there is no absolute
 // yaw reference: the ESKF can only integrate gyro drift, so any non-zero
 // yaw angle setpoint causes the angle controller to hunt against a moving
 // target and oscillate. Roll and pitch are fine because gravity provides
@@ -680,27 +670,32 @@ async fn imu_monitor() -> ! {
 
 #[embassy_executor::task]
 async fn motor_monitor() -> ! {
-    // Kept for the low-rate status messages (arming, disarmed, etc.)
+    // Reacts immediately to state changes (arming, disarm, timeout).
+    // Armed speed is rate-limited to ~0.5 Hz to avoid flooding the log.
     let mut rcv = signals::MOTORS_STATE.receiver();
+    let mut last_armed_log = embassy_time::Instant::now();
     loop {
-        Timer::after_secs(2).await;
-        let Some(state) = rcv.try_get() else { continue };
+        let state = rcv.changed().await;
         let mut s: heapless::String<64> = heapless::String::new();
         match state {
             MotorsState::Disarmed(reason) => {
                 let _ = write!(s, "[mtr] disarmed ({:?})", reason);
+                ulog::log(s.as_str());
             }
             MotorsState::Arming => {
-                let _ = write!(s, "[mtr] arming");
+                ulog::log("[mtr] arming");
             }
             MotorsState::ArmedIdle => {
-                let _ = write!(s, "[mtr] armed-idle");
+                ulog::log("[mtr] armed-idle");
             }
             MotorsState::Armed(sp) => {
-                let _ = write!(s, "[mtr] [{},{},{},{}]", sp[0], sp[1], sp[2], sp[3]);
+                if last_armed_log.elapsed().as_millis() >= 2000 {
+                    let _ = write!(s, "[mtr] [{},{},{},{}]", sp[0], sp[1], sp[2], sp[3]);
+                    ulog::log(s.as_str());
+                    last_armed_log = embassy_time::Instant::now();
+                }
             }
         }
-        ulog::log(s.as_str());
     }
 }
 

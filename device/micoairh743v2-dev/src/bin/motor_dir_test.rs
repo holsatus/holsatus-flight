@@ -3,15 +3,15 @@
 //! Sequence (repeating):
 //!   1. Arm all four ESCs (min throttle, ~2.5 s)
 //!   2. Send direction commands per MOTOR_REVERSE_FLAGS (MOTOR_2 reversed)
-//!   3. Spin each motor individually for 3 s at DShot 200
+//!   3. Spin each motor individually for ~7.5 s at DShot 200
 //!      Motor is announced on UART before spinning.
 //!   4. 1 s pause between motors.
 //!
 //! Expected spin directions (viewed from ABOVE, prop side up):
-//!   M4 (MOTOR_0, back-right):  CW  -- no reversal applied
-//!   M3 (MOTOR_1, front-right): CCW -- no reversal applied
-//!   M2 (MOTOR_2, back-left):   CCW -- ESC reversed (MOTOR_2 flag set)
-//!   M1 (MOTOR_3, front-left):  CW  -- no reversal applied
+//!   M4 (Ch1) -> MOTOR_1, front-right: CCW -- ESC reversed (MOTOR_1 flag set)
+//!   M3 (Ch2) -> MOTOR_0, back-right:  CW  -- ESC reversed (MOTOR_0 flag set)
+//!   M2 (Ch3) -> MOTOR_3, front-left:  CW  -- no reversal applied
+//!   M1 (Ch4) -> MOTOR_2, back-left:   CCW -- no reversal applied
 //!
 //! If any motor spins in the WRONG direction the mixer and physical spin do not
 //! agree. Fix: either correct MOTOR_REVERSE_FLAGS in config.rs or swap any two
@@ -157,10 +157,10 @@ async fn main(_spawner: Spawner) {
 
         // ---- spin each motor one at a time ----
         const MOTOR_INFO: [(&[u8], &[u8]); 4] = [
-            (b"[M4] MOTOR_0 back-right  -- expected CW\r\n",               b"[M4] done\r\n"),
-            (b"[M3] MOTOR_1 front-right -- expected CCW\r\n",              b"[M3] done\r\n"),
-            (b"[M2] MOTOR_2 back-left   -- expected CCW (ESC reversed)\r\n", b"[M2] done\r\n"),
-            (b"[M1] MOTOR_3 front-left  -- expected CW\r\n",               b"[M1] done\r\n"),
+            (b"[M4] MOTOR_1 front-right -- expected CCW (ESC reversed)\r\n", b"[M4] done\r\n"),
+            (b"[M3] MOTOR_0 back-right  -- expected CW  (ESC reversed)\r\n", b"[M3] done\r\n"),
+            (b"[M2] MOTOR_3 front-left  -- expected CW\r\n",                 b"[M2] done\r\n"),
+            (b"[M1] MOTOR_2 back-left   -- expected CCW\r\n",                b"[M1] done\r\n"),
         ];
 
         for (ch_idx, (start_msg, end_msg)) in MOTOR_INFO.iter().enumerate() {
@@ -175,7 +175,7 @@ async fn main(_spawner: Spawner) {
             solo[ch_idx] = spin_frame;
             let solo_buf = interleave(solo);
 
-            burst(&mut pwm, &mut dma, &solo_buf, 3000, 500).await;
+            burst(&mut pwm, &mut dma, &solo_buf, 15000, 500).await;
 
             led_green.set_low();
             let _ = uart.write(end_msg).await;

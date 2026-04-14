@@ -212,12 +212,22 @@ impl common::hw_abstraction::OutputGroup for DshotProxy {
     }
     async fn set_reverse_dir(&mut self, direction: [bool; 4]) {
         use crate::config::CHANNEL_MAP;
+        use core::fmt::Write;
         let ch_dir = [
             direction[CHANNEL_MAP[0]],
             direction[CHANNEL_MAP[1]],
             direction[CHANNEL_MAP[2]],
             direction[CHANNEL_MAP[3]],
         ];
+        let mut s: heapless::String<64> = heapless::String::new();
+        let _ = write!(
+            s, "[proxy] dir motor=[{},{},{},{}] ch=[{},{},{},{}]",
+            direction[0] as u8, direction[1] as u8,
+            direction[2] as u8, direction[3] as u8,
+            ch_dir[0] as u8, ch_dir[1] as u8,
+            ch_dir[2] as u8, ch_dir[3] as u8,
+        );
+        crate::log::log(s.as_str());
         DSHOT_REVERSE.signal(ch_dir);
     }
     async fn set_motor_speeds_min(&mut self) {
@@ -272,15 +282,54 @@ where
     T: embassy_stm32::timer::GeneralInstance4Channel,
     WAV: crate::dshot_driver::WaveformGenerator<Timer = T>,
 {
+    use core::fmt::Write;
+    let mut frame_count: u32 = 0;
+    let mut dir_burst_count: u32 = 0;
+
     loop {
-        // Process pending direction command (rare).
+        // Process pending direction command (rare). BLHeli ESCs require
+        // multiple consecutive direction frames (no interleaved throttle)
+        // to accept a direction change. Send 10 frames at normal 1kHz rate.
         if let Some(d) = DSHOT_REVERSE.try_take() {
-            driver.set_reverse_dir(d).await;
+            dir_burst_count += 1;
+            let mut s: heapless::String<64> = heapless::String::new();
+            let _ = write!(
+                s, "[dshot] dir#{} f={} [{},{},{},{}]",
+                dir_burst_count, frame_count,
+                d[0] as u8, d[1] as u8, d[2] as u8, d[3] as u8,
+            );
+            crate::log::log(s.as_str());
+
+            for _ in 0..10 {
+                driver.set_reverse_dir(d).await;
+                embassy_time::Timer::after_micros(1000).await;
+            }
+            frame_count += 10;
         }
 
         // Read latest speeds and send DShot frame.
+        // When all speeds are zero (arming phase), send DShot 0 (true disarm)
+        // so ESCs stay stopped and accept direction commands.
+        // throttle_clamp(0) would send DShot 48 (min throttle = motors spin),
+        // which causes ESCs to reject direction commands.
         let speeds = DSHOT_SPEEDS.each_ref().map(|a| a.load(AtOrd::Relaxed));
-        driver.set_motor_speeds(speeds).await;
+        if speeds == [0, 0, 0, 0] {
+            driver.set_motor_speeds_min().await;
+        } else {
+            driver.set_motor_speeds(speeds).await;
+        }
+        frame_count += 1;
+
+        // Log periodically during first 10 seconds to capture arming + direction phase.
+        if frame_count % 500 == 0 && frame_count <= 10_000 {
+            let mut s: heapless::String<64> = heapless::String::new();
+            let _ = write!(
+                s, "[dshot] f={} spd=[{},{},{},{}] (clamp 0->48)",
+                frame_count,
+                speeds[0], speeds[1], speeds[2], speeds[3],
+            );
+            crate::log::log(s.as_str());
+        }
 
         embassy_time::Timer::after_micros(1000).await;
     }

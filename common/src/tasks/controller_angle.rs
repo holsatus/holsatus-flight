@@ -1,6 +1,6 @@
 use crate::{filters::angle_pid::Pid, get_ctrl_freq, get_or_warn, signals as sig};
 
-mod params {
+pub mod params {
     use crate::tasks::param_storage::Table;
 
     #[derive(Debug, Clone, mav_param::Tree)]

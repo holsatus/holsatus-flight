@@ -79,6 +79,11 @@ pub fn embassy_config() -> embassy_stm32::Config {
 pub const CHANNEL_MAP: [usize; 4] = [1, 0, 3, 2];
 
 /// Reverse flags for this board with corrected CHANNEL_MAP.
-/// MOTOR_0(BR), MOTOR_1(FR), MOTOR_2(BL) need DShot reversal.
-/// MOTOR_3(FL) spins correctly by default wiring.
-pub const MOTOR_REVERSE_FLAGS: Reverse = Reverse::MOTOR_0.union(Reverse::MOTOR_1).union(Reverse::MOTOR_2);
+/// MOTOR_0(BR), MOTOR_1(FR) need DShot reversal.
+/// MOTOR_2(BL), MOTOR_3(FL) spin correctly by default wiring.
+pub const MOTOR_REVERSE_FLAGS: Reverse = Reverse::MOTOR_0.union(Reverse::MOTOR_1);
+
+/// BMI088 accelerometer bias [ax, ay, az] in m/s^2.
+/// Measured on flat surface (D000266, 2026-04-13). az is relative to +g.
+/// Re-run calibration binary if the FC is remounted or the frame changes.
+pub const BMI088_ACC_BIAS: [f32; 3] = [-0.245, 0.026, -0.007];
