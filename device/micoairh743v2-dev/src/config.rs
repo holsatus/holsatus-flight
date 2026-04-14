@@ -84,6 +84,6 @@ pub const CHANNEL_MAP: [usize; 4] = [1, 0, 3, 2];
 pub const MOTOR_REVERSE_FLAGS: Reverse = Reverse::MOTOR_0.union(Reverse::MOTOR_1);
 
 /// BMI088 accelerometer bias [ax, ay, az] in m/s^2.
-/// Measured on flat surface (D000266, 2026-04-13). az is relative to +g.
-/// Re-run calibration binary if the FC is remounted or the frame changes.
-pub const BMI088_ACC_BIAS: [f32; 3] = [-0.245, 0.026, -0.007];
+/// Measured level against table underside (imu_cal, 2026-04-14). az relative to +g.
+/// Re-run imu_cal binary if the FC is remounted or the frame changes.
+pub const BMI088_ACC_BIAS: [f32; 3] = [-0.0891, -0.1883, 0.0110];

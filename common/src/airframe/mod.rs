@@ -1,6 +1,9 @@
 use nalgebra::{Point3, SMatrix, Vector3, Vector4};
 
-pub const DEV_QUAD_MOTOR_SETUP: MotorSetup<4> = MotorSetup::quad_x_basic(0.165, 0.225, 0.1, false);
+// TODO: move airframe geometry to a device-specific config file so each
+// device crate can define its own frame dimensions without touching common/.
+// MicoAir H743v2: measured 10.5 cm front-back, 11.25 cm left-right.
+pub const DEV_QUAD_MOTOR_SETUP: MotorSetup<4> = MotorSetup::quad_x_basic(0.105, 0.1125, 0.1, false);
 
 struct Motor {
     /// The position of this motor relative to the vehicle center of mass.

@@ -234,19 +234,32 @@ async fn override_pid_gains() {
     use common::tasks::controller_rate;
 
     let mut r = controller_rate::params::TABLE.params.write().await;
-    // Roll (x)
-    r.x.kp = 0.08;
-    r.x.ki = 0.15;
-    r.x.kd = 0.02;
+    // Roll (x) -- reduced from 0.08 after mixer arm-length fix (effective gain ~1.6x)
+    r.x.kp = 0.05;
+    r.x.ki = 0.10;
+    r.x.kd = 0.015;
     // Pitch (y) -- same as roll
-    r.y.kp = 0.08;
-    r.y.ki = 0.15;
-    r.y.kd = 0.02;
+    r.y.kp = 0.05;
+    r.y.ki = 0.10;
+    r.y.kd = 0.015;
     // Yaw (z) -- minimal gains
     r.z.kp = 0.01;
     r.z.ki = 0.01;
     r.z.kd = 0.005;
     drop(r);
+
+    // Angle controller: ki adds integral to eliminate steady-state offset.
+    // Defaults: kp=15, ki=0, kd=0 for roll/pitch.
+    // NOTE: ki > 0 causes windup when ANY external constraint prevents correction
+    // (hand, string, stick). Only safe in true free flight where the drone can
+    // freely rotate to zero the error. Disabled until free hover is proven stable.
+    // {
+    //     use common::tasks::controller_angle;
+    //     let mut a = controller_angle::params::TABLE.params.write().await;
+    //     a.roll.ki = 0.5;
+    //     a.pitch.ki = 0.5;
+    //     drop(a);
+    // }
 
     ulog::log("[flight] PID gains overridden");
 }
