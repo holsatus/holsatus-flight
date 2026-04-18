@@ -722,11 +722,7 @@ fn build_frame<V: Versioned>(
         .component_id(param.id.com)
         .sequence(sequence)
         .version(V::v())
-        .message(message)
-        .map_err(|e| match e {
-            mavio::Error::Spec(spec_error) => spec_error,
-            _ => unreachable!("This always produces a spec_error"),
-        })?
+        .message(message)?
         .build();
 
     Ok(message)
