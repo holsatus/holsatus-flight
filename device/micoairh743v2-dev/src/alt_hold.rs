@@ -36,9 +36,11 @@ const BASE_THRUST: f32 = 4.50;
 /// 4S storage voltage = 15200 mV (3.80 V/cell).
 const NOMINAL_MV: f32 = 15200.0;
 
-/// PI gains -- tune after initial bench test.
+/// PID gains -- KD damps vertical velocity to prevent overshoot at
+/// liftoff and during setpoint transitions. Validated in sim first.
 const KP: f32 = 0.5;
 const KI: f32 = 0.1;
+const KD: f32 = 0.8;
 
 /// Controller update period in seconds (10 Hz).
 const DT: f32 = 0.1;
@@ -111,13 +113,24 @@ pub async fn main(i2c: impl I2c, addr: u8, battery_mv: u32) -> ! {
     defmt::info!("[alt_hold] baseline pressure: {} Pa", baseline_pa);
 
     let mut integral = 0.0_f32;
-    let mut setpoint_m = 0.0_f32;
+    let mut prev_alt = 0.0_f32;
     let mut log_counter = 0u32;
     let mut alt_filtered = 0.0_f32;
     let mut lidar_rcv = LIDAR_ALT_M.receiver().unwrap();
     let mut use_lidar = false;
 
     let mut snd_thrust = common::signals::TRUE_Z_THRUST_SP.sender();
+
+    // Wait for the mission sequencer to hand over altitude control by
+    // signalling the first ALTITUDE_SETPOINT. Before that point, the mission
+    // owns TRUE_Z_THRUST_SP directly (P0 thrust ramp), and if we ran our
+    // 10 Hz control loop concurrently we would overwrite every 10th ramp
+    // sample with our own BASE_THRUST estimate. That race produced the
+    // 10 Hz motor-thrust jitter visible in D000005/000001.LOG during the
+    // 10 s ramp.
+    crate::log::log("[alt] waiting for mission setpoint...");
+    let mut setpoint_m: f32 = ALTITUDE_SETPOINT.wait().await;
+    crate::log::log("[alt] mission setpoint received, taking over thrust");
 
     loop {
         // Pick up a new altitude setpoint if the mission sequencer sent one.
@@ -156,18 +169,23 @@ pub async fn main(i2c: impl I2c, addr: u8, battery_mv: u32) -> ! {
         alt_filtered = EWMA_ALPHA * alt_raw + (1.0 - EWMA_ALPHA) * alt_filtered;
 
         let err = setpoint_m - alt_filtered;
+        let vel = (alt_filtered - prev_alt) / DT; // positive = climbing
+        prev_alt = alt_filtered;
         integral = (integral + err * DT).clamp(-3.0, 3.0);
-        let thrust = (BASE_THRUST + KP * err + KI * integral) * v_comp;
+        // D-term damps vertical velocity: climbing too fast reduces thrust,
+        // descending too fast increases thrust. Prevents overshoot at liftoff.
+        let thrust = (BASE_THRUST + KP * err + KI * integral - KD * vel) * v_comp;
         snd_thrust.send(thrust.clamp(0.0, 5.0));
 
-        // Log to UART at 1 Hz (every 10 cycles at 10 Hz).
+        // Log to UART at 5 Hz (every 2 cycles at 10 Hz).
+        // Higher rate than before (was 1 Hz) to capture D-term dynamics.
         log_counter += 1;
-        if log_counter >= 10 {
+        if log_counter >= 2 {
             log_counter = 0;
             let src = if use_lidar { "lid" } else { "bar" };
             let mut s: heapless::String<64> = heapless::String::new();
-            let _ = write!(s, "[alt:{}] h={:.3}m sp={:.1}m thr={:.3}",
-                src, alt_filtered, setpoint_m, thrust);
+            let _ = write!(s, "[alt:{}] h={:.3}m sp={:.1}m v={:.2} thr={:.3}",
+                src, alt_filtered, setpoint_m, vel, thrust);
             crate::log::log(s.as_str());
         }
 

@@ -18,6 +18,13 @@ pub struct Configuration {
     pub initial: Initial,
     pub accelerometer: Distortion,
     pub gyroscope: Distortion,
+    /// Accelerometer vibration stddev per Newton of total thrust (0 = off).
+    /// Models prop-wash and motor imbalance coupling into the accel through
+    /// the frame. A typical small quad sees ~3% of thrust as broadband noise.
+    pub acc_vib_stddev_per_thrust: f32,
+    /// Seed for the vibration noise RNG. Keep distinct from the acc/gyr
+    /// distortion seeds so their noise streams are uncorrelated.
+    pub acc_vib_seed: u64,
 }
 
 #[derive(Clone)]
@@ -111,14 +118,19 @@ pub struct SimulatedImu {
     pub sim: SimHandle,
     acc_dist: Distortion,
     gyr_dist: Distortion,
+    vib_stddev_per_thrust: f32,
+    vib_rng: rand::rngs::StdRng,
 }
 
 impl SimulatedImu {
     pub fn new(mock: SimHandle, config: &Configuration) -> Self {
+        use rand::SeedableRng;
         Self {
             sim: mock,
             acc_dist: config.accelerometer.clone(),
             gyr_dist: config.gyroscope.clone(),
+            vib_stddev_per_thrust: config.acc_vib_stddev_per_thrust,
+            vib_rng: rand::rngs::StdRng::seed_from_u64(config.acc_vib_seed),
         }
     }
 
@@ -136,7 +148,26 @@ impl SimulatedImu {
 impl SimulatedImu {
     pub fn read_acc(&mut self) -> [f32; 3] {
         let state = self.sim.vehicle_state();
-        self.acc_dist.apply(state.body_acc).into()
+        let mut acc: Vector3<f32> = self.acc_dist.apply(state.body_acc);
+
+        // Prop-wash + motor-imbalance vibration: broadband accel noise whose
+        // stddev scales with total thrust. This is the dominant real-world
+        // effect that corrupts Madgwick's tilt estimate and was the root of
+        // the D000297/306/308 failures on the real H743v2 drone.
+        if self.vib_stddev_per_thrust > 0.0 {
+            let total_thrust: f32 = state.motors.iter().map(|m| m.force.abs()).sum();
+            if total_thrust > 0.01 {
+                let stddev = total_thrust * self.vib_stddev_per_thrust;
+                let vib = Normal::new(0.0, stddev).unwrap();
+                acc += Vector3::new(
+                    vib.sample(&mut self.vib_rng),
+                    vib.sample(&mut self.vib_rng),
+                    vib.sample(&mut self.vib_rng),
+                );
+            }
+        }
+
+        acc.into()
     }
 
     pub fn read_gyr(&mut self) -> [f32; 3] {

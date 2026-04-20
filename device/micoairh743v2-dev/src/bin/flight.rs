@@ -82,7 +82,11 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     let r = resources::split(p);
 
     // Green LED on immediately -- first sign of life before any other init.
+    // Red + blue kept off; re-used below for the "SD absent" abort pattern if
+    // uart_writer_task reports the card could not be mounted.
     let mut led_green = Output::new(r.leds.green, Level::High, Speed::Low);
+    let mut led_blue = Output::new(r.leds.blue, Level::Low, Speed::Low);
+    let mut led_red = Output::new(r.leds.red, Level::Low, Speed::Low);
 
     // ------------------------------------------------------------------
     // UART log writer (async DMA, same setup as sensors.rs test binary).
@@ -166,6 +170,8 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     thread_spawner.spawn(mtf01_reader_task(r.mtf01).unwrap());
     thread_spawner.spawn(flow_hold().unwrap());
     thread_spawner.spawn(flip_kill().unwrap());
+    thread_spawner.spawn(gyro_runaway_kill().unwrap());
+    thread_spawner.spawn(micoairh743v2::rc_kill::rc_kill_task(r.rc).unwrap());
     thread_spawner.spawn(mission_sequencer().unwrap());
     thread_spawner.spawn(motor_monitor().unwrap());
     thread_spawner.spawn(imu_monitor().unwrap());
@@ -173,6 +179,46 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     ulog::log("[flight] all tasks spawned");
 
     apply_imu_calibration().await;
+
+    // ------------------------------------------------------------------
+    // SD-card gate.
+    //
+    // uart_writer_task publishes its SD mount outcome to ulog::SD_MOUNTED:
+    //   255 = still running the 3x retry (max ~1.5 s) + FAT mount
+    //     1 = ready, log file open
+    //     0 = card missing / FAT mount failed
+    //
+    // If the card never mounts, motors must never arm (the mission task also
+    // checks this) and we latch into a distinct three-blue-one-red LED
+    // pattern so the pilot knows the drone will not fly without a card.
+    // ------------------------------------------------------------------
+    {
+        // 15 s timeout: freshly formatted cards can take 5-10 s on first
+        // mount (FS init, 4-bit bus negotiation). A warm card usually
+        // resolves in under 2 s.
+        let wait_start = embassy_time::Instant::now();
+        while ulog::SD_MOUNTED.load(Ordering::Relaxed) == 255
+            && wait_start.elapsed().as_millis() < 15_000
+        {
+            Timer::after_millis(100).await;
+        }
+    }
+    if ulog::SD_MOUNTED.load(Ordering::Relaxed) != 1 {
+        ulog::log("[flight] SD ABORT -- motors will not arm (3x blue + 1x red forever)");
+        led_green.set_low();
+        loop {
+            for _ in 0..3 {
+                led_blue.set_high();
+                Timer::after_millis(150).await;
+                led_blue.set_low();
+                Timer::after_millis(150).await;
+            }
+            led_red.set_high();
+            Timer::after_millis(400).await;
+            led_red.set_low();
+            Timer::after_millis(600).await;
+        }
+    }
 
     // ------------------------------------------------------------------
     // Heartbeat: blink green LED, report DShot rate every 2 s.
@@ -230,22 +276,42 @@ async fn override_motor_params() {
 }
 
 /// Rate and angle PID gains for this frame.
+///
+/// Reasoning, in order of importance:
+///
+/// 1. kp = 0.05 roll/pitch, 0.04 yaw is handheld-validated (D000278/283/295).
+///    The 10x-scaled holsatus-sim mid-band (kp=0.004-0.0045 roll/pitch,
+///    kp=0.0035 yaw) maps to the same range, so the sim and handheld tests
+///    agree on the kp scale.
+///
+/// 2. kd = 0.015 flipped the drone in D000308/309. The effective rate-PID
+///    D-gain at that setting was kd*kp/dt = 0.015 * 0.05 / 0.001 = 0.75.
+///    In the hardened sim (pipeline latency, ground effect, 5% vibration,
+///    asymmetric motor lag, battery sag), D-gains above ~0.60 tumble and
+///    the mid-band passing D-gain is ~0.08. We pick kd to match the sim
+///    mid-band D-gain at the current kp:
+///       kd = D_gain * dt / kp = 0.08 * 0.001 / 0.05 = 0.0016 -> round to 0.002.
+///    That is 7.5x below the flip threshold and supplies genuine phase
+///    lead against the ~2 ms FC pipeline delay (DShot frame + ESC compute).
+///
+/// 3. ki = 0 on every axis. The rate-PID integrator is gated by
+///    CALM_THRESHOLD = 1.0 rad/s in common/src/filters/rate_pid.rs and
+///    therefore never accumulates during active flight. Angle-controller
+///    ki causes windup whenever something physically constrains the
+///    airframe (hand, string), and is only safe once free hover is proven.
 async fn override_pid_gains() {
     use common::tasks::controller_rate;
 
     let mut r = controller_rate::params::TABLE.params.write().await;
-    // Roll (x) -- reduced from 0.08 after mixer arm-length fix (effective gain ~1.6x)
     r.x.kp = 0.05;
-    r.x.ki = 0.10;
-    r.x.kd = 0.015;
-    // Pitch (y) -- same as roll
+    r.x.ki = 0.0;
+    r.x.kd = 0.002;
     r.y.kp = 0.05;
-    r.y.ki = 0.10;
-    r.y.kd = 0.015;
-    // Yaw (z) -- minimal gains
-    r.z.kp = 0.01;
-    r.z.ki = 0.01;
-    r.z.kd = 0.005;
+    r.y.ki = 0.0;
+    r.y.kd = 0.002;
+    r.z.kp = 0.04;
+    r.z.ki = 0.0;
+    r.z.kd = 0.001;
     drop(r);
 
     // Angle controller: ki adds integral to eliminate steady-state offset.
@@ -264,17 +330,119 @@ async fn override_pid_gains() {
     ulog::log("[flight] PID gains overridden");
 }
 
-/// Hardcoded IMU bias and axis scale from flat-surface calibration.
-/// Re-calibrate if the FC is remounted or the frame changes.
+/// Wait for Madgwick AHRS to settle after IMU calibration.
+/// Monitors roll/pitch variance over a sliding window and returns once
+/// attitude is stable. Logs the final attitude so a human reader can
+/// verify the surface was reasonably level.
+///
+/// IMPORTANT: if Madgwick takes more than ~10 seconds to settle, that
+/// typically means the drone is being moved or vibrating -- in that case
+/// the returned attitude is unreliable and the flight should be aborted.
+async fn wait_for_ahrs_ready() {
+    use signals::AHRS_ATTITUDE_Q;
+
+    const WINDOW_N: usize = 50;      // 500ms at 100 Hz sample rate
+    const STABLE_THRESHOLD_DEG: f32 = 0.3; // peak-to-peak roll/pitch range
+    const MAX_WAIT_MS: u64 = 10_000;
+
+    let mut rcv = AHRS_ATTITUDE_Q.receiver();
+    let mut roll_buf = [0.0_f32; WINDOW_N];
+    let mut pitch_buf = [0.0_f32; WINDOW_N];
+    let mut idx: usize = 0;
+    let mut filled = 0usize;
+
+    ulog::log("[ahrs] waiting for attitude to settle...");
+    let start = embassy_time::Instant::now();
+
+    loop {
+        // Sample at ~100 Hz via the Watch receiver. changed().await yields
+        // whenever att_estimator publishes a new value (100-500 Hz depending
+        // on control frequency).
+        let q = rcv.changed().await;
+        let (r, p, _y) = q.euler_angles();
+        roll_buf[idx] = r.to_degrees();
+        pitch_buf[idx] = p.to_degrees();
+        idx = (idx + 1) % WINDOW_N;
+        if filled < WINDOW_N { filled += 1; }
+
+        if filled == WINDOW_N {
+            let r_min = roll_buf.iter().cloned().fold(f32::INFINITY, f32::min);
+            let r_max = roll_buf.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let p_min = pitch_buf.iter().cloned().fold(f32::INFINITY, f32::min);
+            let p_max = pitch_buf.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let r_range = r_max - r_min;
+            let p_range = p_max - p_min;
+
+            if r_range < STABLE_THRESHOLD_DEG && p_range < STABLE_THRESHOLD_DEG {
+                let r_mean: f32 = roll_buf.iter().sum::<f32>() / WINDOW_N as f32;
+                let p_mean: f32 = pitch_buf.iter().sum::<f32>() / WINDOW_N as f32;
+                let mut s: heapless::String<96> = heapless::String::new();
+                let _ = write!(
+                    s,
+                    "[ahrs] ready: r={:.2} p={:.2} range=({:.2},{:.2})",
+                    r_mean, p_mean, r_range, p_range
+                );
+                ulog::log(s.as_str());
+                return;
+            }
+        }
+
+        if start.elapsed().as_millis() >= MAX_WAIT_MS {
+            let mut s: heapless::String<96> = heapless::String::new();
+            let _ = write!(
+                s, "[ahrs] WARNING: not settled after {}ms, continuing anyway", MAX_WAIT_MS
+            );
+            ulog::log(s.as_str());
+            return;
+        }
+    }
+}
+
+/// Runtime IMU calibration: average 2000 accel+gyro samples (~2 seconds)
+/// while the drone sits level and still. Writes bias and axis scale to
+/// imu_reader params. Must be called after imu_reader task is running.
 async fn apply_imu_calibration() {
     use common::tasks::imu_reader;
-    use micoairh743v2::config::BMI088_ACC_BIAS;
 
-    let mut p = imu_reader::params::TABLE.params.write().await;
-    p.cal_acc.bias = BMI088_ACC_BIAS;
-    p.cal_acc.scale = [1.0, -1.0, -1.0];
-    p.cal_gyr.scale = [1.0, -1.0, -1.0];
-    drop(p);
+    const N: u32 = 2000;
+    let mut rcv = common::signals::RAW_MULTI_IMU_DATA[0].receiver();
+
+    ulog::log("[cal] hold level and still (2s)...");
+
+    // Wait for first reading to ensure IMU is producing data.
+    rcv.changed().await;
+
+    let mut sum_acc = [0.0_f64; 3];
+    let mut sum_gyr = [0.0_f64; 3];
+    for _ in 0..N {
+        let d = rcv.changed().await;
+        sum_acc[0] += d.acc[0] as f64;
+        sum_acc[1] += d.acc[1] as f64;
+        sum_acc[2] += d.acc[2] as f64;
+        sum_gyr[0] += d.gyr[0] as f64;
+        sum_gyr[1] += d.gyr[1] as f64;
+        sum_gyr[2] += d.gyr[2] as f64;
+    }
+
+    let n = N as f64;
+    let acc_bias = [
+        (sum_acc[0] / n) as f32,
+        (sum_acc[1] / n) as f32,
+        (sum_acc[2] / n) as f32 - common::consts::GRAVITY,
+    ];
+    let gyr_bias = [
+        (sum_gyr[0] / n) as f32,
+        (sum_gyr[1] / n) as f32,
+        (sum_gyr[2] / n) as f32,
+    ];
+
+    {
+        let mut p = imu_reader::params::TABLE.params.write().await;
+        p.cal_acc.bias = acc_bias;
+        p.cal_gyr.bias = gyr_bias;
+        p.cal_acc.scale = [1.0, -1.0, -1.0];
+        p.cal_gyr.scale = [1.0, -1.0, -1.0];
+    }
 
     imu_reader::CHANNEL[0]
         .sender()
@@ -283,8 +451,15 @@ async fn apply_imu_calibration() {
 
     let mut s: heapless::String<64> = heapless::String::new();
     let _ = write!(
-        s, "[cal] bias=[{:.3},{:.3},{:.3}]",
-        BMI088_ACC_BIAS[0], BMI088_ACC_BIAS[1], BMI088_ACC_BIAS[2]
+        s, "[cal] acc=[{:.3},{:.3},{:.3}]",
+        acc_bias[0], acc_bias[1], acc_bias[2]
+    );
+    ulog::log(s.as_str());
+
+    let mut s: heapless::String<64> = heapless::String::new();
+    let _ = write!(
+        s, "[cal] gyr=[{:.4},{:.4},{:.4}]",
+        gyr_bias[0], gyr_bias[1], gyr_bias[2]
     );
     ulog::log(s.as_str());
 }
@@ -334,7 +509,9 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
     };
 
     if !sd_ok {
-        // No SD -- fall back to UART-only logging.
+        // No SD -- publish status, log to UART only, never let motors arm.
+        ulog::SD_MOUNTED.store(0, Ordering::Relaxed);
+        ulog::log("[sd] NOT FOUND (tried 3x) -- motors will NOT arm");
         loop {
             let msg = ulog::CHANNEL.receive().await;
             if let Some(ref mut u) = uart {
@@ -347,13 +524,17 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
     let stream = BufStream::new(device);
     let fs = match FileSystem::new(stream, FsOptions::new()).await {
         Ok(fs) => fs,
-        Err(_) => loop {
-            let msg = ulog::CHANNEL.receive().await;
-            if let Some(ref mut u) = uart {
-                u.write(msg.as_bytes()).await.ok();
-                u.write(b"\r\n").await.ok();
+        Err(_) => {
+            ulog::SD_MOUNTED.store(0, Ordering::Relaxed);
+            ulog::log("[sd] reset OK but FAT mount FAILED -- motors will NOT arm");
+            loop {
+                let msg = ulog::CHANNEL.receive().await;
+                if let Some(ref mut u) = uart {
+                    u.write(msg.as_bytes()).await.ok();
+                    u.write(b"\r\n").await.ok();
+                }
             }
-        },
+        }
     };
 
     // Find next session directory.
@@ -400,31 +581,73 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
     let _ = FmtWrite::write_fmt(&mut file_name, format_args!("000001.LOG"));
     let mut file = match session_dir.create_file(file_name.as_str()).await {
         Ok(f) => f,
-        Err(_) => loop {
-            let msg = ulog::CHANNEL.receive().await;
+        Err(_) => {
+            ulog::SD_MOUNTED.store(0, Ordering::Relaxed);
+            ulog::log("[sd] create_file failed -- motors will NOT arm");
+            loop {
+                let msg = ulog::CHANNEL.receive().await;
+                if let Some(ref mut u) = uart {
+                    u.write(msg.as_bytes()).await.ok();
+                    u.write(b"\r\n").await.ok();
+                }
+            }
+        }
+    };
+
+    // SD card fully mounted and log file open. Motors may now arm.
+    ulog::SD_MOUNTED.store(1, Ordering::Relaxed);
+    let mut s: heapless::String<32> = heapless::String::new();
+    let _ = FmtWrite::write_fmt(&mut s, format_args!("[sd] mounted -> {}/000001.LOG", dir_name.as_str()));
+    ulog::log(s.as_str());
+
+    let mut flush_counter: u16 = 0;
+    loop {
+        // Priority: drain CRITICAL_CHANNEL (kill/restart announcements)
+        // before ever touching the regular CHANNEL. Uses try_receive in a
+        // tight loop so back-to-back critical messages are all flushed
+        // before we service telemetry.
+        while let Ok(msg) = ulog::CRITICAL_CHANNEL.try_receive() {
             if let Some(ref mut u) = uart {
                 u.write(msg.as_bytes()).await.ok();
                 u.write(b"\r\n").await.ok();
             }
-        },
-    };
-
-    let mut flush_counter: u16 = 0;
-    loop {
-        let msg = ulog::CHANNEL.receive().await;
-
-        // Write to UART (if connected).
-        if let Some(ref mut u) = uart {
-            u.write(msg.as_bytes()).await.ok();
-            u.write(b"\r\n").await.ok();
+            file.write_all(msg.as_bytes()).await.ok();
+            file.write_all(b"\r\n").await.ok();
+            file.flush().await.ok();
         }
 
-        // Write to SD file.
+        // Now await either a new critical message OR a regular one.
+        use embassy_futures::select::{select, Either};
+        let msg = match select(
+            ulog::CRITICAL_CHANNEL.receive(),
+            ulog::CHANNEL.receive(),
+        )
+        .await
+        {
+            Either::First(m) => {
+                // Critical -- always to UART + SD, always flushed.
+                if let Some(ref mut u) = uart {
+                    u.write(m.as_bytes()).await.ok();
+                    u.write(b"\r\n").await.ok();
+                }
+                file.write_all(m.as_bytes()).await.ok();
+                file.write_all(b"\r\n").await.ok();
+                file.flush().await.ok();
+                continue;
+            }
+            Either::Second(m) => m,
+        };
+
+        // Regular message. Suppress high-rate CSV telemetry on UART.
+        if !ulog::is_high_rate_telemetry(msg.as_str()) {
+            if let Some(ref mut u) = uart {
+                u.write(msg.as_bytes()).await.ok();
+                u.write(b"\r\n").await.ok();
+            }
+        }
         file.write_all(msg.as_bytes()).await.ok();
         file.write_all(b"\r\n").await.ok();
 
-        // Flush every 5 messages (~50ms at 100 Hz).
-        // Aggressive flush ensures crash data is captured.
         flush_counter += 1;
         if flush_counter >= 5 {
             flush_counter = 0;
@@ -482,55 +705,100 @@ impl common::embedded_storage_async::nor_flash::NorFlash for DummyFlash {
 
 #[embassy_executor::task]
 async fn mission_sequencer() -> ! {
-    // String-suspended slow-ramp hover test.
+    // Ground-start hover test with slow thrust ramp.
     //
-    // The drone hangs from a string. Thrust ramps from zero to hover over
-    // 30 seconds, holds for 30 seconds, then ramps down over 15 seconds.
-    // The slow ramp avoids the sudden ground-effect transient that caused
-    // previous crashes. Pull LiPo at any sign of instability.
+    // Validated in holsatus-sim SITL with realistic MTF-01 noise.
     //
-    // Procedure:
-    //   1. Suspend drone from a string (loop around the frame)
-    //   2. Connect LiPo -- motors arm after ~5 seconds
-    //   3. 30s ramp: thrust increases very gradually
-    //   4. 30s hover at 0.15m setpoint
-    //   5. 15s ramp down, then disarm
+    // Phase 0: SLOW THRUST RAMP (10s). Thrust increases linearly from 0
+    //   to BASE_THRUST. Liftoff occurs around second 5-6 when thrust
+    //   exceeds weight. This gives ~5 seconds of "motors spinning, drone
+    //   on ground" to verify stability and pull the plug if needed.
+    // Phase 1: altitude setpoint ramp 0 -> 1.0m (10s)
+    // Phase 2: hover at 1.0m (10s)
+    // Phase 3: altitude setpoint ramp 1.0m -> 0 (10s)
+    // Phase 4: disarm
 
-    ulog::log("[mission] waiting 3s for sensors...");
-    Timer::after_secs(3).await;
+    ulog::log("[mission] waiting 5s for cal + sensors...");
+    Timer::after_secs(5).await;
+
+    // SD card must be mounted before we consider arming. main() handles the
+    // LED pattern; here we just refuse to proceed so no motor ever spins
+    // without telemetry being captured.
+    if ulog::SD_MOUNTED.load(Ordering::Relaxed) != 1 {
+        ulog::log("[mission] ABORT: no SD card, not arming");
+        loop { Timer::after_secs(60).await; }
+    }
+
+    // Verify Madgwick has converged to a stable attitude before arming.
+    // If this logs WARNING, the drone was vibrating/moving during calibration
+    // and the attitude estimate may be unreliable -- abort and retry.
+    wait_for_ahrs_ready().await;
+
+    // Wait for RC link: the kill switch must be functional before any motor
+    // spins. rc_kill_task sets RC_LINK_READY once it has parsed its first
+    // valid CRSF packet and recorded baseline SE/SF positions.
+    {
+        ulog::log("[mission] waiting for RC link (30 s timeout)...");
+        let start = embassy_time::Instant::now();
+        const RC_WAIT_MS: u64 = 30_000;
+        while !micoairh743v2::rc_kill::RC_LINK_READY
+            .load(core::sync::atomic::Ordering::Relaxed)
+        {
+            if start.elapsed().as_millis() >= RC_WAIT_MS {
+                ulog::log("[mission] ABORT: no RC link after 30 s -- motors will NOT arm");
+                loop { Timer::after_secs(60).await; }
+            }
+            Timer::after_millis(100).await;
+        }
+        ulog::log("[mission] RC link established");
+    }
 
     ulog::log("[mission] arming motors");
     COMMAD_ARM_VEHICLE.send(true);
     Timer::after_secs(3).await;
 
-    const TARGET_ALT: f32 = 0.15;
-    const RAMP_UP_MS: u64 = 30_000;
-    const HOVER_S: u64 = 30;
-    const RAMP_DOWN_MS: u64 = 15_000;
-
-    ulog::log("[mission] ramp 0->0.15m (30s)");
+    // Phase 0: slow thrust ramp. Bypasses alt_hold by writing directly
+    // to TRUE_Z_THRUST_SP. alt_hold also writes this signal, but it
+    // starts at err=0/sp=0 so its output is BASE_THRUST (hover).
+    // During the ramp we override it at 50 Hz (faster than alt_hold's 10 Hz).
+    const BASE_THRUST: f32 = 4.50;
+    const RAMP_S: u64 = 10;
+    ulog::log("[mission] P0:thrust ramp (10s, liftoff ~5s)");
     let ramp_start = embassy_time::Instant::now();
     loop {
         let elapsed = ramp_start.elapsed().as_millis();
-        if elapsed >= RAMP_UP_MS {
-            break;
-        }
+        if elapsed >= RAMP_S * 1000 { break; }
+        let frac = elapsed as f32 / (RAMP_S * 1000) as f32;
+        signals::TRUE_Z_THRUST_SP.send(BASE_THRUST * frac);
+        Timer::after_millis(20).await;
+    }
+
+    // Hand off to alt_hold (which runs continuously and will now take over
+    // TRUE_Z_THRUST_SP at its own rate).
+    const TARGET_ALT: f32 = 1.0;
+    const RAMP_UP_MS: u64 = 10_000;
+    const HOVER_S: u64 = 10;
+    const RAMP_DOWN_MS: u64 = 10_000;
+
+    ulog::log("[mission] P1:climb 0->1.0m (10s)");
+    let ramp_start = embassy_time::Instant::now();
+    loop {
+        let elapsed = ramp_start.elapsed().as_millis();
+        if elapsed >= RAMP_UP_MS { break; }
         let sp = TARGET_ALT * (elapsed as f32 / RAMP_UP_MS as f32);
         ALTITUDE_SETPOINT.signal(sp);
         Timer::after_millis(100).await;
     }
     ALTITUDE_SETPOINT.signal(TARGET_ALT);
 
-    ulog::log("[mission] hover 0.15m (30s)");
+    ulog::log("[mission] P2:hover 1.0m (10s)");
     Timer::after_secs(HOVER_S).await;
 
-    ulog::log("[mission] descend (15s)");
+    ulog::log("[mission] P3:descend (10s)");
     let desc_start = embassy_time::Instant::now();
     loop {
         let elapsed = desc_start.elapsed().as_millis();
-        if elapsed >= RAMP_DOWN_MS {
-            break;
-        }
+        if elapsed >= RAMP_DOWN_MS { break; }
         let sp = TARGET_ALT * (1.0 - elapsed as f32 / RAMP_DOWN_MS as f32);
         ALTITUDE_SETPOINT.signal(sp);
         Timer::after_millis(100).await;
@@ -774,15 +1042,68 @@ async fn flip_kill() -> ! {
 }
 
 // ------------------------------------------------------------------
-// Flow hold: velocity damping using MTF-01 optical flow.
+// Gyro-runaway autoabort.
 //
-// Reads horizontal velocity from FLOW_VEL_MS and tilts the attitude
-// setpoint (TRUE_ATTITUDE_Q_SP) to counteract drift. When the drone
-// drifts left, the flow sensor detects leftward ground motion and the
-// controller tilts right to brake.
+// If any axis gyro magnitude exceeds GYRO_RUNAWAY_THRESHOLD for
+// GYRO_RUNAWAY_COUNT consecutive samples, the controller is diverging
+// and is stopped before the drone can break restraint / tumble. The
+// threshold of 5 rad/s (~290 deg/s) sustained for 50 ms is conservative
+// for the gentle hover regime this binary targets; raise it before
+// any aggressive acro flight.
+// ------------------------------------------------------------------
+
+#[embassy_executor::task]
+async fn gyro_runaway_kill() -> ! {
+    ulog::log("[kill] gyro-runaway autoabort active");
+
+    let mut rcv = signals::RAW_MULTI_IMU_DATA[0].receiver();
+
+    const GYRO_RUNAWAY_THRESHOLD: f32 = 5.0;
+    const GYRO_RUNAWAY_COUNT: u32 = 50;
+
+    let mut count: u32 = 0;
+
+    loop {
+        let d = rcv.changed().await;
+        let gmax = d.gyr[0].abs().max(d.gyr[1].abs()).max(d.gyr[2].abs());
+
+        if gmax > GYRO_RUNAWAY_THRESHOLD {
+            count += 1;
+            if count >= GYRO_RUNAWAY_COUNT {
+                COMMAD_ARM_VEHICLE.send(false);
+                let mut s: heapless::String<96> = heapless::String::new();
+                let _ = write!(
+                    s,
+                    "[kill] GYRO RUNAWAY gx={:.1} gy={:.1} gz={:.1} -- motors disarmed",
+                    d.gyr[0], d.gyr[1], d.gyr[2]
+                );
+                ulog::log(s.as_str());
+                for _ in 0..5 {
+                    Timer::after_millis(200).await;
+                    ulog::log("[kill] motors off (gyro-runaway)");
+                }
+                loop { Timer::after_secs(60).await; }
+            }
+        } else {
+            count = 0;
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// Flow-based position hold using MTF-01 optical flow.
 //
-// This is velocity hold (zero velocity), not position hold. The drone
-// won't return to a fixed point but will resist being pushed around.
+// Integrates flow velocity into a dead-reckoned position estimate,
+// then uses PD control (position + velocity) to command attitude tilts.
+// This provides actual station-keeping, not just velocity damping.
+//
+// The position estimate drifts slowly (no absolute reference), but for
+// short flights (<60s) the drift is small enough for ~10cm hold.
+// Validated in holsatus-sim SITL with realistic MTF-01 noise model.
+//
+// Key difference from the previous velocity-only flow_hold: velocity
+// damping gave ~2.3m std dev in sim. Position integration + PD gives
+// ~0.05m std dev.
 // ------------------------------------------------------------------
 
 #[embassy_executor::task]
@@ -791,39 +1112,88 @@ async fn flow_hold() -> ! {
 
     let mut snd_att = signals::TRUE_ATTITUDE_Q_SP.sender();
 
-    // Proportional gain: how much tilt (rad) per unit velocity (m/s).
-    // Start conservative. Typical range: 0.05-0.3.
-    // Too high -> oscillates laterally. Too low -> drift isn't corrected.
-    const KP_FLOW: f32 = 0.10;
+    // PD position hold gains (validated in sim).
+    const KP_POS: f32 = 0.30;  // rad/m -- tilt per metre of estimated position error
+    const KD_VEL: f32 = 0.25;  // rad/(m/s) -- tilt per m/s of measured velocity
+    const MAX_TILT_RAD: f32 = 0.17; // ~10 degrees
 
-    // Max tilt angle in radians (~10 degrees). Prevents the flow controller
-    // from commanding extreme angles that could flip the drone.
-    const MAX_TILT_RAD: f32 = 0.17;
+    // Integrated position estimate (body frame, starts at origin).
+    let mut est_x = 0.0_f32;
+    let mut est_y = 0.0_f32;
 
-    ulog::log("[flow] velocity damping started");
+    // Wait until motors are armed before publishing attitude setpoints.
+    // Without this gate, the task starts integrating spurious MTF-01
+    // velocities from boot, hits the 0.5 m position clamp, and commands
+    // an 8.6 degree tilt setpoint that the angle controller then tries
+    // to track -- producing the 4-6 rad/s rate setpoints visible in
+    // D000019 while the drone was held stationary. The sim version in
+    // std-test-device/src/lib.rs::h743v2_flow_hold uses the same gate.
+    {
+        use common::types::actuators::MotorsState;
+        let mut mtr_rcv = common::signals::MOTORS_STATE.receiver();
+        loop {
+            match mtr_rcv.changed().await {
+                MotorsState::ArmedIdle | MotorsState::Armed(_) => break,
+                _ => {}
+            }
+        }
+    }
+
+    ulog::log("[flow] motors armed, position hold active");
 
     let mut log_div: u8 = 0;
 
     loop {
         let [vx, vy] = rcv.changed().await;
 
-        let pitch_tilt = (KP_FLOW * vx).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
-        let roll_tilt = (-KP_FLOW * vy).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
+        // Safeguard 1: spike rejection. The MTF-01 occasionally produces
+        // large spurious readings (seen vy=-0.878 in D000302). Skip these
+        // to prevent the position estimate from jumping.
+        const MAX_FLOW_VEL: f32 = 1.0;
+        if vx.abs() > MAX_FLOW_VEL || vy.abs() > MAX_FLOW_VEL {
+            continue;
+        }
 
-        let q = UnitQuaternion::from_euler_angles(roll_tilt, pitch_tilt, 0.0);
+        // Safeguard 2: flow quality gate. mtf01_reader already gates at
+        // quality > 30, but be stricter here for position integration.
+        let fq = FLOW_QUALITY.load(Ordering::Relaxed);
+        if fq < 50 {
+            continue;
+        }
+
+        // Integrate velocity to estimate position (dead reckoning).
+        const DT: f32 = 0.02;
+        est_x += vx * DT;
+        est_y += vy * DT;
+
+        // Safeguard 3: position estimate clamp. If the dead-reckoned
+        // position exceeds 0.5m, freeze position term and fall back to
+        // velocity-only damping. Prevents chasing a wrong estimate into
+        // a wall.
+        const POS_CLAMP: f32 = 0.5;
+        let pos_ok = est_x.abs() < POS_CLAMP && est_y.abs() < POS_CLAMP;
+        est_x = est_x.clamp(-POS_CLAMP, POS_CLAMP);
+        est_y = est_y.clamp(-POS_CLAMP, POS_CLAMP);
+
+        let kp = if pos_ok { KP_POS } else { 0.0 };
+
+        // PD: pitch corrects forward/back, roll corrects left/right.
+        let pitch_cmd = ( (kp * est_x + KD_VEL * vx)).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
+        let roll_cmd  = (-(kp * est_y + KD_VEL * vy)).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
+
+        let q = UnitQuaternion::from_euler_angles(roll_cmd, pitch_cmd, 0.0);
         snd_att.send(q);
 
         // Log at ~10 Hz (flow arrives at ~50 Hz, log every 5th).
         log_div = log_div.wrapping_add(1);
         if log_div >= 5 {
             log_div = 0;
-            // Read latest flow quality from the mtf01_reader via a shared atomic.
-            let fq = FLOW_QUALITY.load(Ordering::Relaxed);
-            let mut s: heapless::String<64> = heapless::String::new();
+            let mode = if pos_ok { 'P' } else { 'V' };
+            let mut s: heapless::String<96> = heapless::String::new();
             let _ = write!(
                 s,
-                "[flow] q={} vx={:.3} vy={:.3} r={:.2} p={:.2}",
-                fq, vx, vy, roll_tilt, pitch_tilt
+                "[flow] {}q={} ex={:.2} ey={:.2} vx={:.2} vy={:.2} p={:.2} r={:.2}",
+                mode, fq, est_x, est_y, vx, vy, pitch_cmd, roll_cmd
             );
             ulog::log(s.as_str());
         }

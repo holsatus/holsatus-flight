@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::time::Instant;
 
 use nalgebra::{Isometry, Point3, UnitQuaternion, Vector3};
@@ -11,7 +12,15 @@ pub struct MotorParams {
     pub mass_moment: Real,
     pub position: Vector3<Real>,
     pub normal: Vector3<Real>,
+    /// Symmetric time constant -- used as a fallback when tau_up / tau_down
+    /// are not set (both 0). Kept for backwards-compat with existing configs.
     pub time_constant: Real,
+    /// First-order spin-up time constant (seconds). BLHeli motors typically
+    /// accelerate faster than they decelerate because regen/brake is off.
+    /// If 0, `time_constant` is used.
+    pub tau_up: Real,
+    /// First-order spin-down time constant. If 0, `time_constant` is used.
+    pub tau_down: Real,
     pub motor_map: (f32, f32),
 }
 
@@ -47,6 +56,25 @@ pub struct VehicleParams {
     pub lin_damp: f32,
     /// Angular velocity damping (air resistance)
     pub ang_damp: f32,
+    /// Ground-effect thrust boost: per-motor multiplier is
+    /// `1 + ge_alpha * exp(-h_motor / ge_tau)` where h_motor is the motor's
+    /// altitude above the floor surface. 0 disables the effect entirely.
+    pub ge_alpha: f32,
+    /// Decay length (metres) for the ground-effect thrust boost. Physically
+    /// this is roughly the prop radius -- beyond ~3*tau the effect vanishes.
+    pub ge_tau: f32,
+    /// Sensor-to-actuator pipeline delay, in simulation steps. Models the
+    /// end-to-end lag that is not captured by the motor time-constant:
+    /// DShot frame transmission, ESC internal compute, task-scheduling
+    /// jitter. 0 disables (pure 1-step sampled-data lag only).
+    pub pipeline_latency_steps: usize,
+    /// Battery nominal voltage (V). 0 disables the sag model.
+    pub battery_v_nom: f32,
+    /// Equivalent series internal resistance of the battery (ohms).
+    pub battery_r_internal: f32,
+    /// Current draw per Newton of total thrust (A/N). Real small quads
+    /// typically sit around 2.5-4 A/N at hover.
+    pub battery_amps_per_n: f32,
     /// Motors configuration
     pub motors: Vec<MotorParams>,
 }
@@ -93,6 +121,11 @@ pub struct Simulation {
     pub(crate) params: VehicleParams,
     rb_handle: RigidBodyHandle,
     phys: RapierPhys,
+    /// Pending motor commands delayed by `params.pipeline_latency_steps`.
+    /// set_motors_cmd pushes the incoming array to the back; update pops from
+    /// the front and applies to `state.motors[i].command` once enough steps
+    /// have elapsed. When latency is 0 the queue is bypassed entirely.
+    pending_cmds: VecDeque<Vec<f32>>,
 }
 
 #[derive(Default)]
@@ -184,6 +217,7 @@ impl Simulation {
             start_time: Instant::now(),
             params: vehicle,
             rb_handle,
+            pending_cmds: VecDeque::new(),
             state: VehicleState {
                 rotation: UnitQuaternion::default(),
                 position: Vector3::zeros(),
@@ -223,8 +257,12 @@ impl Simulation {
             "Number of inputs and motors much match exactly"
         );
 
-        for i in 0..motors_cmd.len() {
-            self.state.motors[i].command = motors_cmd[i];
+        if self.params.pipeline_latency_steps == 0 {
+            for i in 0..motors_cmd.len() {
+                self.state.motors[i].command = motors_cmd[i];
+            }
+        } else {
+            self.pending_cmds.push_back(motors_cmd.to_vec());
         }
     }
 
@@ -243,17 +281,87 @@ impl Simulation {
     /// move the simulation forward a single time step.
     pub fn update(&mut self, dt: f32) {
 
-        // Apply first-order filtering to input motor signals and
-        // calculate per motor body-force and -torque contributions.
+        // Pipeline latency: promote the command that was enqueued
+        // `pipeline_latency_steps` sim steps ago to the motors. Newer
+        // commands in the queue stay pending until their step arrives.
+        // When latency is 0 the queue is bypassed and set_motors_cmd writes
+        // directly into state.motors[i].command.
+        if self.params.pipeline_latency_steps > 0 {
+            let target_pending = self.params.pipeline_latency_steps;
+            // Drop anything older than the window (can only happen if the
+            // config's latency is reduced at runtime -- rare, but keep sane).
+            while self.pending_cmds.len() > target_pending + 1 {
+                self.pending_cmds.pop_front();
+            }
+            if self.pending_cmds.len() > target_pending {
+                if let Some(cmd) = self.pending_cmds.pop_front() {
+                    for (i, v) in cmd.iter().enumerate() {
+                        if let Some(m) = self.state.motors.get_mut(i) {
+                            m.command = *v;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Snapshot the rigid body's pose for per-motor ground-effect lookup
+        // (ge_alpha > 0). We read translation + rotation before the mutable
+        // borrow below.
+        let (body_translation, body_rotation) = {
+            let rb = self.phys.get_rb_ref(self.rb_handle);
+            (*rb.translation(), *rb.rotation())
+        };
+        let ge_enabled = self.params.ge_alpha > 0.0 && self.params.ge_tau > 0.0;
+
+        // Battery sag: compute load voltage before the motor step so every
+        // motor sees the same voltage this tick. V_load = V_nom - I*R where
+        // I scales with total thrust. Thrust scales with V_load^2.
+        let sag_enabled = self.params.battery_v_nom > 0.0
+            && self.params.battery_r_internal > 0.0
+            && self.params.battery_amps_per_n > 0.0;
+        let sag_factor = if sag_enabled {
+            let total_thrust: f32 = self.state.motors.iter().map(|m| m.force.abs()).sum();
+            let current = total_thrust * self.params.battery_amps_per_n;
+            let v_load = (self.params.battery_v_nom
+                - current * self.params.battery_r_internal)
+                .max(0.0);
+            let ratio = v_load / self.params.battery_v_nom;
+            ratio * ratio
+        } else {
+            1.0
+        };
+
+        // Apply first-order filtering to input motor signals (asymmetric
+        // tau_up / tau_down when configured) and compute per-motor body
+        // force + torque contributions.
         let mut body_force = Vector3::zeros();
         let mut body_torque = Vector3::zeros();
         for (i, motor) in self.params.motors.iter().enumerate() {
             let map = MotorLin::new(motor.motor_map.0, motor.motor_map.1, 0.01, 1.0);
-            let force = map.command_to_force(self.state.motors[i].command);
-            let alpha = dt / (motor.time_constant + dt);
-            self.state.motors[i].force *= 1.0 - alpha;
-            self.state.motors[i].force += force * alpha;
-            let thrust_force = self.state.motors[i].force;
+            let target_force = map.command_to_force(self.state.motors[i].command);
+            let prev_force = self.state.motors[i].force;
+            let rising = target_force > prev_force;
+            let tau = if rising && motor.tau_up > 0.0 {
+                motor.tau_up
+            } else if !rising && motor.tau_down > 0.0 {
+                motor.tau_down
+            } else {
+                motor.time_constant
+            };
+            let alpha = dt / (tau + dt);
+            self.state.motors[i].force = prev_force * (1.0 - alpha) + target_force * alpha;
+            let mut thrust_force = self.state.motors[i].force * sag_factor;
+
+            // Ground effect: boost each motor's thrust as it approaches the
+            // floor. h_motor is the motor's altitude above the floor top
+            // surface (NED, floor at world z = 0, up is -z).
+            if ge_enabled {
+                let motor_world = body_translation + body_rotation * motor.position;
+                let h_motor = (-motor_world.z).max(0.0);
+                let mult = 1.0 + self.params.ge_alpha * (-h_motor / self.params.ge_tau).exp();
+                thrust_force *= mult;
+            }
+
             let (force, torque) = motor.body_force_and_torque(thrust_force);
             body_force += force;
             body_torque += torque;

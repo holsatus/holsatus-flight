@@ -32,6 +32,29 @@ use crate::bmi088::Bmi088;
 use crate::bmi088_imu6dof::Bmi088Imu6Dof;
 use crate::dshot_driver::{DshotDriver, UpDmaWaveform};
 
+// ================================================================================
+// QMC5883L magnetometer calibration (single source of truth).
+//
+// Every binary that uses the compass (flight, free_test, sub_hover_test, ...)
+// goes through `compass_reader` below, which applies these constants. To
+// re-calibrate after a hardware change (battery/cable re-route, new FC mount):
+//   1. Flash `mag_cal` binary, capture 120 s of rotation per run
+//   2. Combine CSVs via `python3 tools/mag_cal_fit.py D*/000001.CSV`
+//   3. Paste the ellipsoid output into these two constants
+//
+// Fit provenance: D000115/116/117/119/120 (5 runs, 14319 samples),
+// ellipsoid residual 5.27% of radius. Off-diagonal terms ~1% of diagonal --
+// distortion is nearly axis-aligned, dominated by hard-iron offset.
+// Re-fit required whenever battery mount or high-current cable routing
+// changes relative to the FC.
+// ================================================================================
+pub const MAG_BIAS_UT: [f32; 3] = [-7.3602e+02, -5.9836e+01, 4.5067e+02];
+pub const MAG_CAL_MAT: [[f32; 3]; 3] = [
+    [7.707206e-04, 8.502019e-06, 2.517288e-06],
+    [8.502019e-06, 7.344869e-04, 1.303383e-06],
+    [2.517288e-06, 1.303383e-06, 7.878521e-04],
+];
+
 assign_resources! {
     imu: ImuResources {
         spi:    SPI2,
@@ -82,6 +105,11 @@ assign_resources! {
         rx:    PD9,
         tx:    PD8,
         dma:   DMA1_CH2,
+    }
+    rc: RcResources {
+        usart: USART6,
+        rx:    PC7,
+        dma:   DMA2_CH2,
     }
     sdmmc: SdmmcLogResources {
         periph: SDMMC1,
@@ -209,6 +237,24 @@ impl common::hw_abstraction::OutputGroup for DshotProxy {
         for ch in 0..4 {
             DSHOT_SPEEDS[ch].store(speed[CHANNEL_MAP[ch]], AtOrd::Relaxed);
         }
+
+        // Diagnostic: log first non-zero speed via log_critical so it reaches
+        // SD / UART even when the regular channel is saturated by imu_monitor
+        // at 100 Hz. Proves motor_governor has reached its 'armed loop and is
+        // commanding motors independently of whatever CSV flooding is doing.
+        static LOGGED_FIRST_NONZERO: core::sync::atomic::AtomicBool =
+            core::sync::atomic::AtomicBool::new(false);
+        if speed.iter().any(|&s| s > 0)
+            && !LOGGED_FIRST_NONZERO.swap(true, AtOrd::Relaxed)
+        {
+            use core::fmt::Write;
+            let mut s: heapless::String<64> = heapless::String::new();
+            let _ = write!(
+                s, "[proxy] FIRST nonzero speed [{},{},{},{}]",
+                speed[0], speed[1], speed[2], speed[3]
+            );
+            crate::log::log_critical(s.as_str()).await;
+        }
     }
     async fn set_reverse_dir(&mut self, direction: [bool; 4]) {
         use crate::config::CHANNEL_MAP;
@@ -232,6 +278,16 @@ impl common::hw_abstraction::OutputGroup for DshotProxy {
     }
     async fn set_motor_speeds_min(&mut self) {
         for a in &DSHOT_SPEEDS { a.store(0, AtOrd::Relaxed); }
+
+        // Diagnostic: log the first call via log_critical. motor_governor
+        // calls this 50 times during the min-throttle arming phase (right
+        // after the 1 s Timer::after). Seeing this log proves motor_governor
+        // got past params::TABLE.read() at line 122 and into the arming body.
+        static LOGGED_FIRST_MIN: core::sync::atomic::AtomicBool =
+            core::sync::atomic::AtomicBool::new(false);
+        if !LOGGED_FIRST_MIN.swap(true, AtOrd::Relaxed) {
+            crate::log::log_critical("[proxy] FIRST set_motor_speeds_min call").await;
+        }
     }
     async fn make_beep(&mut self) {}
 }
@@ -339,14 +395,22 @@ where
 // ------------------- Baro (I2C2 / DPS310) -----------------
 // ----------------------------------------------------------
 
-/// Set up I2C2 and run altitude hold + compass reader concurrently.
-///
-/// DPS310/SPL06 (baro, 0x76) and QMC5883L (compass, 0x0D) share the I2C2 bus
-/// via a NoopRawMutex shared-bus wrapper. Both devices run in the same task so
-/// there is no cross-executor contention; NoopRawMutex is safe here.
-#[embassy_executor::task]
-pub async fn alt_hold_task(r: BaroResources, battery_mv: u32) -> ! {
+type I2c2Bus = Mutex<
+    NoopRawMutex,
+    embassy_stm32::i2c::I2c<'static, embassy_stm32::mode::Async, embassy_stm32::i2c::Master>,
+>;
+static I2C2_BUS: StaticCell<I2c2Bus> = StaticCell::new();
 
+/// Initialise I2C2 and probe the baro address. Returns the shared bus handle
+/// and the detected baro address. The baro probe also "primes" the DMA path
+/// for subsequent I2C transactions -- embassy-stm32 routes empty writes
+/// through a blocking (non-DMA) path, and without that first transaction the
+/// next DMA transfer fails. This probe runs regardless of whether the caller
+/// intends to use the baro, because it keeps the compass reads reliable.
+///
+/// Call site must own `BaroResources` and only call this ONCE per binary run
+/// (the static cell panics on re-init).
+async fn setup_i2c2(r: BaroResources) -> (&'static I2c2Bus, u8) {
     let mut i2c_cfg = I2cConfig::default();
     i2c_cfg.sda_pullup = true;
     i2c_cfg.scl_pullup = true;
@@ -359,14 +423,8 @@ pub async fn alt_hold_task(r: BaroResources, battery_mv: u32) -> ! {
         i2c_cfg,
     );
 
-    type I2c2Bus = Mutex<NoopRawMutex, embassy_stm32::i2c::I2c<'static, embassy_stm32::mode::Async, embassy_stm32::i2c::Master>>;
-    static I2C2_BUS: StaticCell<I2c2Bus> = StaticCell::new();
     let bus: &'static I2c2Bus = I2C2_BUS.init(Mutex::new(i2c));
 
-    // Probe the baro address and prime the I2C2 DMA path.
-    // embassy-stm32 routes empty writes through a blocking (non-DMA) path;
-    // the first DMA transfer fails if no non-DMA transaction has occurred.
-    // This mirrors the probe in sensors.rs.
     let baro_addr = {
         use crate::dps310_i2c::{ADDR_SDO_LOW, ADDR_SDO_HIGH};
         let mut b = bus.lock().await;
@@ -382,12 +440,36 @@ pub async fn alt_hold_task(r: BaroResources, battery_mv: u32) -> ! {
         }
     };
 
+    (bus, baro_addr)
+}
+
+/// Set up I2C2 and run altitude hold + compass reader concurrently.
+///
+/// DPS310/SPL06 (baro, 0x76/0x77) and QMC5883L (compass, 0x0D) share I2C2
+/// via a NoopRawMutex shared-bus wrapper. Both devices run in the same task
+/// so there is no cross-executor contention; NoopRawMutex is safe here.
+#[embassy_executor::task]
+pub async fn alt_hold_task(r: BaroResources, battery_mv: u32) -> ! {
+    let (bus, baro_addr) = setup_i2c2(r).await;
+
     embassy_futures::join::join(
         crate::alt_hold::main(I2cDevice::new(bus), baro_addr, battery_mv),
         compass_reader(I2cDevice::new(bus)),
     ).await;
 
     unreachable!()
+}
+
+/// Set up I2C2 and run ONLY the compass reader.
+///
+/// Used by test binaries (free_test, sub_hover_test, pid_sweep_test) that
+/// want magnetometer yaw fusion in att_estimator but deliberately skip
+/// altitude-hold (because the mission owns TRUE_Z_THRUST_SP directly and
+/// running alt_hold concurrently creates a setpoint race).
+#[embassy_executor::task]
+pub async fn compass_only_task(r: BaroResources) -> ! {
+    let (bus, _baro_addr) = setup_i2c2(r).await;
+    compass_reader(I2cDevice::new(bus)).await
 }
 
 /// Read QMC5883L magnetometer at ~50 Hz and publish to att_estimator.
@@ -417,10 +499,15 @@ async fn compass_reader(i2c: impl embedded_hal_async::i2c::I2c) -> ! {
     let mut snd = common::signals::CAL_MULTI_MAG_DATA[0].sender();
     loop {
         if let Ok(d) = compass.read().await {
+            let centered = [
+                d.x as f32 * SENSITIVITY_UT_PER_LSB - MAG_BIAS_UT[0],
+                d.y as f32 * SENSITIVITY_UT_PER_LSB - MAG_BIAS_UT[1],
+                d.z as f32 * SENSITIVITY_UT_PER_LSB - MAG_BIAS_UT[2],
+            ];
             snd.send([
-                d.x as f32 * SENSITIVITY_UT_PER_LSB,
-                d.y as f32 * SENSITIVITY_UT_PER_LSB,
-                d.z as f32 * SENSITIVITY_UT_PER_LSB,
+                MAG_CAL_MAT[0][0] * centered[0] + MAG_CAL_MAT[0][1] * centered[1] + MAG_CAL_MAT[0][2] * centered[2],
+                MAG_CAL_MAT[1][0] * centered[0] + MAG_CAL_MAT[1][1] * centered[1] + MAG_CAL_MAT[1][2] * centered[2],
+                MAG_CAL_MAT[2][0] * centered[0] + MAG_CAL_MAT[2][1] * centered[1] + MAG_CAL_MAT[2][2] * centered[2],
             ]);
         }
         embassy_time::Timer::after_millis(20).await;

@@ -1,13 +1,26 @@
 use core::array::from_fn;
+use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use nalgebra::{Vector3, Vector4};
 
 use crate::airframe::DEV_QUAD_MOTOR_SETUP;
 use crate::filters::rate_pid::RatePid;
 use crate::filters::{Complementary, Lowpass, NthOrderLowpass, SlewRate};
+use crate::sync::channel::Channel;
 use crate::sync::watch::Watch;
 use crate::types::measurements::Imu6DofData;
 use crate::types::status::PidTerms;
 use crate::{get_ctrl_freq, get_or_warn, signals as sig};
+
+/// Messages understood by the rate controller task.
+pub enum Message {
+    /// Re-read `params::TABLE` and call `set_gains` on each axis's PID.
+    /// Used by on-hardware PID sweep tests to change gains live without
+    /// restarting the task. The message is checked once per control
+    /// iteration so there is no risk of a gain change landing mid-update.
+    ReloadGains,
+}
+
+pub static CHANNEL: Channel<Message, 2, CriticalSectionRawMutex> = Channel::new();
 
 pub mod params {
     use crate::tasks::param_storage::Table;
@@ -159,10 +172,27 @@ pub async fn main() {
     // TODO: This should be based on the IMU configuration
     const MAX_GYR_MEAS: f32 = (0.95f32 * 2000.0).to_radians();
 
+    let rcv_messages = CHANNEL.receiver();
+
     info!("{}: Entering main loop", ID);
     loop {
         let mut imu_data = rcv_imu_data.changed().await;
         let estimate = rcv_eksf_estimate.get().await;
+
+        // Apply any gain change requested since the previous iteration. Done
+        // at the top of the loop so the PID state is consistent: slew/lp
+        // filters and integrators keep their state, but kp/ki/kd are updated
+        // to whatever is currently in params::TABLE.
+        if let Some(msg) = rcv_messages.try_receive() {
+            match msg {
+                Message::ReloadGains => {
+                    let p = params::TABLE.read().await;
+                    pid[0].set_gains(p.x.kp, p.x.ki, p.x.kd);
+                    pid[1].set_gains(p.y.kp, p.y.ki, p.y.kd);
+                    pid[2].set_gains(p.z.kp, p.z.ki, p.z.kd);
+                }
+            }
+        }
 
         let bias_okay = estimate
             .acc_bias

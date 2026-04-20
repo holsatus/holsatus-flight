@@ -3,7 +3,16 @@ use nalgebra::{Point3, SMatrix, Vector3, Vector4};
 // TODO: move airframe geometry to a device-specific config file so each
 // device crate can define its own frame dimensions without touching common/.
 // MicoAir H743v2: measured 10.5 cm front-back, 11.25 cm left-right.
+// outspin=true flips reaction torque signs to match the inverted Z-axis
+// gyro convention (cal_gyr.scale[2] = -1.0). Without this, the yaw
+// correction drives in the wrong direction (proven D000290 yaw spinout).
+// outspin=true for real H743v2 (cal_gyr.scale Z=-1 inverts yaw),
+// outspin=false for sim (NED-native gyro, no inversion).
+// TODO: make this device-configurable instead of a shared constant.
+#[cfg(not(target_os = "none"))]
 pub const DEV_QUAD_MOTOR_SETUP: MotorSetup<4> = MotorSetup::quad_x_basic(0.105, 0.1125, 0.1, false);
+#[cfg(target_os = "none")]
+pub const DEV_QUAD_MOTOR_SETUP: MotorSetup<4> = MotorSetup::quad_x_basic(0.105, 0.1125, 0.1, true);
 
 struct Motor {
     /// The position of this motor relative to the vehicle center of mass.

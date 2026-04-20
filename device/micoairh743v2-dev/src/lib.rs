@@ -13,4 +13,5 @@ pub mod alt_hold;
 pub mod config;
 pub mod log;
 pub mod mtf01;
+pub mod rc_kill;
 pub mod sdlog;
