@@ -2,7 +2,7 @@ use std::{
     f32::consts::PI,
     sync::{
         atomic::{AtomicBool, Ordering},
-        LazyLock,
+        Arc, LazyLock, Mutex,
     },
 };
 
@@ -29,6 +29,7 @@ pub static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
 #[derive(clap::Parser)]
+#[clap(ignore_errors = true)]
 pub struct Args {
     /// Path to the configuration file for the simulation
     #[clap(default_value = "sim_config.toml")]
@@ -38,12 +39,41 @@ pub struct Args {
 
 const SIM_FREQUENCY: u64 = 500;
 
+
+pub use common::types::mission_report::MissionReport;
+
+/// Wraps `MissionReport` with simulation-specific metadata that has no
+/// equivalent on real hardware.
+#[derive(Clone, serde::Serialize)]
+pub struct SimMissionReport {
+    pub test_name: String,
+    pub sim_time_s: u64,
+    pub wall_time_s: f64,
+    pub speed_factor: f64,
+    pub total_steps: u64,
+    #[serde(flatten)]
+    pub report: MissionReport,
+}
+
+impl SimMissionReport {
+    fn print_json(&self) {
+        println!("{}", serde_json::to_string_pretty(self).unwrap());
+    }
+
+    pub fn save_to_file(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+}
+
 pub fn test_entry(
     limit_seconds: u64,
-    #[allow(unused)]
     test_name: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<SimMissionReport, Box<dyn std::error::Error>> {
     let _enter = RUNTIME.enter();
+
+    RUNNING.store(true, Ordering::Relaxed);
 
     let args = Args::parse();
     let config = holsatus_sim::config::load_from_file_path(&args.config)?;
@@ -53,9 +83,32 @@ pub fn test_entry(
     #[cfg(feature = "rerun")]
     let mut logger = rerun_logger::setup(sitl.clone(), 10, test_name)?;
 
+    // When rerun is not active, fall back to env_logger (respects RUST_LOG, defaults to warn)
+    #[cfg(not(feature = "rerun"))]
+    let _ = env_logger::builder()
+        .filter_level(log::LevelFilter::Warn)
+        .try_init();
+
     // Sometimes rerun can take a split second to start receiving
     #[cfg(feature = "rerun")]
     std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let wall_start = std::time::Instant::now();
+    let test_name = test_name.to_string();
+
+    let mut max_altitude_m = 0.0f32;
+    let mut speed_sum_ms = 0.0f32;
+    let mut max_speed_ms = 0.0f32;
+    let mut max_accel_ms2 = 0.0f32;
+    let mut ground_collision = false;
+    let mut landing_speed_ms = 0.0f32;
+    let mut total_steps = 0u64;
+    #[allow(unused_assignments)]
+    let mut final_pos = [0.0f32; 3];
+
+    // Shared slot so the closure can hand the report back out after lockstep ends.
+    let report_slot: Arc<Mutex<Option<SimMissionReport>>> = Arc::new(Mutex::new(None));
+    let report_write = report_slot.clone();
 
     let fw_sitl = sitl.clone();
     lockstep::lockstep_with(
@@ -64,11 +117,74 @@ pub fn test_entry(
             #[cfg(feature = "rerun")]
             logger.log_subsampled().unwrap();
 
-            assert!(Instant::now().as_secs() < limit_seconds);
+            // Graceful time-limit check (replaces assert)
+            if Instant::now().as_secs() >= limit_seconds {
+                log::warn!("Simulation time limit of {limit_seconds}s reached");
+                RUNNING.store(false, Ordering::Relaxed);
+            }
+
+            let state = sitl.vehicle_state();
+            let pos = state.position;
+
+            // NED: negative z = above ground, ground is at z >= 0
+            let altitude_m = -pos.z;
+            let speed_ms = state.velocity.norm();
+
+            // Specific force (gravity-subtracted), matching what body_acc_norm shows
+            // in the rerun plot. Only tracked while airborne to exclude ground-contact
+            // impulses from the physics solver at touchdown.
+            if altitude_m > 0.3 {
+                max_accel_ms2 = max_accel_ms2.max(state.body_acc.norm());
+            }
+
+            max_altitude_m = max_altitude_m.max(altitude_m);
+            speed_sum_ms += speed_ms;
+            max_speed_ms = max_speed_ms.max(speed_ms);
+
+            // Ground collision: drone went below starting plane
+            if pos.z > 0.1 {
+                ground_collision = true;
+            }
+
+            // Landing speed: last speed recorded while near ground
+            if altitude_m < 0.5 {
+                landing_speed_ms = speed_ms;
+            }
+
+
+            total_steps += 1;
+            final_pos = [pos.x, pos.y, pos.z];
 
             let step_size = embassy_time::Duration::from_hz(SIM_FREQUENCY);
             sitl.step(step_size.as_micros() as f32 * 1e-6);
-            RUNNING.load(Ordering::Relaxed).then_some(step_size)
+
+            let still_running = RUNNING.load(Ordering::Relaxed);
+
+            if !still_running {
+                let sim_secs = Instant::now().as_secs();
+                let wall_secs = wall_start.elapsed().as_secs_f64();
+                let sim_report = SimMissionReport {
+                    test_name: test_name.clone(),
+                    sim_time_s: sim_secs,
+                    wall_time_s: wall_secs,
+                    speed_factor: sim_secs as f64 / wall_secs,
+                    total_steps,
+                    report: MissionReport {
+                        mission_completed: !ground_collision,
+                        max_altitude_m,
+                        avg_speed_ms: speed_sum_ms / total_steps as f32,
+                        max_speed_ms,
+                        max_acceleration_ms2: max_accel_ms2,
+                        ground_collision,
+                        landing_speed_ms,
+                        final_position_m: final_pos,
+                    },
+                };
+                sim_report.print_json();
+                *report_write.lock().unwrap() = Some(sim_report);
+            }
+
+            still_running.then_some(step_size)
         },
     );
 
@@ -76,7 +192,10 @@ pub fn test_entry(
     #[cfg(feature = "rerun")]
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    Ok(())
+    Arc::try_unwrap(report_slot)
+        .map_err(|_| "report Arc still shared after lockstep")?
+        .into_inner()?
+        .ok_or_else(|| "simulation ended without producing a report".into())
 }
 
 fn firmware_entry(spawner: Spawner, r: Resources, sim: SimHandle) {

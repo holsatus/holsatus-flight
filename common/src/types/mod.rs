@@ -7,4 +7,5 @@ pub mod flight_mode;
 // pub mod error;
 pub mod gcs_comm;
 pub mod measurements;
+pub mod mission_report;
 pub mod status;

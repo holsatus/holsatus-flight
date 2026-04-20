@@ -66,6 +66,7 @@ impl RerunLogger {
         let state = self.handle.vehicle_state();
         let pos = state.position;
         let rot = state.rotation;
+        let body_acc = state.body_acc;
 
         if self.pos_trail.len() >= self.trail_len {
             _ = self.pos_trail.pop_back();
@@ -236,6 +237,17 @@ impl RerunLogger {
 
         self.rec
             .log("sim/position", &Scalars::new(pos.data.0[0]))
+            .unwrap();
+
+        self.rec
+            .log("sim/body_acc", &Scalars::new(body_acc.data.0[0]))
+            .unwrap();
+
+        self.rec
+            .log(
+                "sim/body_acc_norm",
+                &Scalars::single(body_acc.norm() as f64),
+            )
             .unwrap();
 
         let (roll, pitch, yaw) = rot.euler_angles();
