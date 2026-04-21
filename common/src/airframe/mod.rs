@@ -3,16 +3,21 @@ use nalgebra::{Point3, SMatrix, Vector3, Vector4};
 // TODO: move airframe geometry to a device-specific config file so each
 // device crate can define its own frame dimensions without touching common/.
 // MicoAir H743v2: measured 10.5 cm front-back, 11.25 cm left-right.
-// outspin=true flips reaction torque signs to match the inverted Z-axis
-// gyro convention (cal_gyr.scale[2] = -1.0). Without this, the yaw
-// correction drives in the wrong direction (proven D000290 yaw spinout).
-// outspin=true for real H743v2 (cal_gyr.scale Z=-1 inverts yaw),
-// outspin=false for sim (NED-native gyro, no inversion).
-// TODO: make this device-configurable instead of a shared constant.
+// outspin=false for both sim and H743v2 hardware: the firmware gyro is
+// NED-native on both. On the H743v2, the BMI088_CHIP_TO_DRONE_ROT matrix
+// (added 2026-04-21 in device/micoairh743v2-dev/src/config.rs) applies the
+// chip->drone rotation including the Z-flip in imu_reader, so by the time
+// data reaches the controller / mixer, gz is already in drone body frame
+// (+gz = CW body rotation from above).
+// Older comment claimed outspin=true was needed to compensate for
+// cal_gyr.scale[2]=-1.0; that flip was removed on the same day the rotation
+// matrix went in, which inverted the mixer yaw sign relative to the gyro and
+// produced consistent yaw runaways in D000106, D000108, D000110, D000113
+// (see project_yaw_mixer_sign_fix memo).
 #[cfg(not(target_os = "none"))]
 pub const DEV_QUAD_MOTOR_SETUP: MotorSetup<4> = MotorSetup::quad_x_basic(0.105, 0.1125, 0.1, false);
 #[cfg(target_os = "none")]
-pub const DEV_QUAD_MOTOR_SETUP: MotorSetup<4> = MotorSetup::quad_x_basic(0.105, 0.1125, 0.1, true);
+pub const DEV_QUAD_MOTOR_SETUP: MotorSetup<4> = MotorSetup::quad_x_basic(0.105, 0.1125, 0.1, false);
 
 struct Motor {
     /// The position of this motor relative to the vehicle center of mass.

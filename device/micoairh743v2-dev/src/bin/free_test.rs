@@ -250,7 +250,12 @@ async fn override_pid_gains() {
     r.y.kp = 0.05;
     r.y.ki = 0.0;
     r.y.kd = 0.002;
-    r.z.kp = 0.04;
+    // Yaw Kp bumped 0.04 -> 0.07 after D000106 showed ~0.26 rad/s yaw drift
+    // at airborne step 3 due to unmodelled CW/CCW drag asymmetry. Ki stays 0
+    // because the rate controller's integrators are gated off on this board
+    // (in_flight_estimator is not spawned, ATTITUDE_INT_EN never fires) so
+    // setting ki would be a no-op -- see project_rate_ki_gated_off memo.
+    r.z.kp = 0.07;
     r.z.ki = 0.0;
     r.z.kd = 0.001;
     drop(r);
@@ -609,7 +614,14 @@ async fn staircase_mission() -> ! {
     // so 1.35 is the upper bound that still leaves dial-down room if the
     // drone lifts cleanly on step 2 or 3.
     const STEPS: [f32; 4] = [0.90, 1.05, 1.20, 1.35];
-    const RAMP_UP_S: u64 = 3;
+    // Fast ramp-up: traverse the stick-slip ground-contact zone (~85-105% of
+    // actual hover thrust) before friction builds a motor-differential load
+    // large enough to snap into yaw runaway when the leg releases. D000108/
+    // D000110 both failed at step 1 (104%) with RAMP_UP_S=3, which spent
+    // ~0.57 s in that band; 1 s shrinks it to ~0.19 s and is robust to
+    // pack-voltage drift that would otherwise shift the bad zone onto
+    // whichever step sits at the instantaneous hover throttle.
+    const RAMP_UP_S: u64 = 1;
     // HOLD_S extended from 5 s to 10 s in D000048+. D000047 tipped during
     // the liftoff-regime step (1.50) roughly 1-2 s into the hold. Giving the
     // angle controller twice as long to settle at each thrust level provides
