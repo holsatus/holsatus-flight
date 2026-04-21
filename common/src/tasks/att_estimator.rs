@@ -19,7 +19,18 @@ pub async fn main() {
 
     let dt = 1.0 / get_ctrl_freq!() as f32;
 
-    let mut ahrs = ahrs::Madgwick::new(dt, 0.01);
+    // Madgwick gain (beta): weight given to accel/mag measurements vs gyro
+    // integration. History:
+    //   0.01 (default): too weak; D000036 showed 0.49 deg/s linear yaw drift.
+    //   0.05: overcorrected; D000047 showed ~10 deg/s yaw-estimate drift on a
+    //         physically stationary drone (post-BR-motor cleanup, gz ~ 0.1
+    //         deg/s). Cause: mag readings shift under motor current because
+    //         the D000115-120 cal was done with motors off, so mag sees
+    //         current-induced field changes the cal can't correct.
+    //   0.03 (current): compromise. Enough mag weight to arrest residual gyro
+    //         bias integration over flight-test timescales, but not so much
+    //         that motor-current-induced mag noise dominates the estimate.
+    let mut ahrs = ahrs::Madgwick::new(dt, 0.03);
 
     info!("{}: Entering main loop at {} Hz", ID, 1. / dt);
     '_infinite: loop {

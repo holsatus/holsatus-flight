@@ -124,6 +124,7 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
     override_motor_params().await;
     override_pid_gains().await;
+    override_imu_rot().await;
 
     // ------------------------------------------------------------------
     // Yield to let param_storage_task initialize and enter its receive
@@ -178,7 +179,7 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
     ulog::log("[flight] all tasks spawned");
 
-    apply_imu_calibration().await;
+    micoairh743v2::imu_cal::apply().await;
 
     // ------------------------------------------------------------------
     // SD-card gate.
@@ -330,6 +331,25 @@ async fn override_pid_gains() {
     ulog::log("[flight] PID gains overridden");
 }
 
+/// Configure the BMI088 chip-to-drone-body rotation matrix. Without this,
+/// imu_reader's `params.rot` defaults to identity, and the entire control
+/// pipeline operates in the chip's native frame which is rotated 180 deg
+/// about the (1,-1,0) diagonal relative to the drone arrow-forward body
+/// frame. See `config::BMI088_CHIP_TO_DRONE_ROT` and the
+/// `project_imu_axis_mounting` memory (verified 2026-04-21 via
+/// level_check tilt test).
+async fn override_imu_rot() {
+    use common::tasks::imu_reader::params;
+    use common::utils::rot_matrix::Rotation;
+    use micoairh743v2::config::BMI088_CHIP_TO_DRONE_ROT;
+
+    let mut p = params::TABLE.params.write().await;
+    p.rot = Rotation::Custom(BMI088_CHIP_TO_DRONE_ROT);
+    drop(p);
+
+    ulog::log("[flight] IMU rotation set (chip -> drone NED)");
+}
+
 /// Wait for Madgwick AHRS to settle after IMU calibration.
 /// Monitors roll/pitch variance over a sliding window and returns once
 /// attitude is stable. Logs the final attitude so a human reader can
@@ -401,69 +421,6 @@ async fn wait_for_ahrs_ready() {
 /// Runtime IMU calibration: average 2000 accel+gyro samples (~2 seconds)
 /// while the drone sits level and still. Writes bias and axis scale to
 /// imu_reader params. Must be called after imu_reader task is running.
-async fn apply_imu_calibration() {
-    use common::tasks::imu_reader;
-
-    const N: u32 = 2000;
-    let mut rcv = common::signals::RAW_MULTI_IMU_DATA[0].receiver();
-
-    ulog::log("[cal] hold level and still (2s)...");
-
-    // Wait for first reading to ensure IMU is producing data.
-    rcv.changed().await;
-
-    let mut sum_acc = [0.0_f64; 3];
-    let mut sum_gyr = [0.0_f64; 3];
-    for _ in 0..N {
-        let d = rcv.changed().await;
-        sum_acc[0] += d.acc[0] as f64;
-        sum_acc[1] += d.acc[1] as f64;
-        sum_acc[2] += d.acc[2] as f64;
-        sum_gyr[0] += d.gyr[0] as f64;
-        sum_gyr[1] += d.gyr[1] as f64;
-        sum_gyr[2] += d.gyr[2] as f64;
-    }
-
-    let n = N as f64;
-    let acc_bias = [
-        (sum_acc[0] / n) as f32,
-        (sum_acc[1] / n) as f32,
-        (sum_acc[2] / n) as f32 - common::consts::GRAVITY,
-    ];
-    let gyr_bias = [
-        (sum_gyr[0] / n) as f32,
-        (sum_gyr[1] / n) as f32,
-        (sum_gyr[2] / n) as f32,
-    ];
-
-    {
-        let mut p = imu_reader::params::TABLE.params.write().await;
-        p.cal_acc.bias = acc_bias;
-        p.cal_gyr.bias = gyr_bias;
-        p.cal_acc.scale = [1.0, -1.0, -1.0];
-        p.cal_gyr.scale = [1.0, -1.0, -1.0];
-    }
-
-    imu_reader::CHANNEL[0]
-        .sender()
-        .send(imu_reader::Message::ReloadParams)
-        .await;
-
-    let mut s: heapless::String<64> = heapless::String::new();
-    let _ = write!(
-        s, "[cal] acc=[{:.3},{:.3},{:.3}]",
-        acc_bias[0], acc_bias[1], acc_bias[2]
-    );
-    ulog::log(s.as_str());
-
-    let mut s: heapless::String<64> = heapless::String::new();
-    let _ = write!(
-        s, "[cal] gyr=[{:.4},{:.4},{:.4}]",
-        gyr_bias[0], gyr_bias[1], gyr_bias[2]
-    );
-    ulog::log(s.as_str());
-}
-
 // ------------------------------------------------------------------
 // UART + SD card log writer.
 // Drains the log channel, writes each message to UART1 and (if the SD
@@ -1010,15 +967,18 @@ async fn flip_kill() -> ! {
     // At 1kHz IMU rate: cnt=10 = 10ms. Filters motor vibration spikes
     // (1-2ms) while catching real flips (50-100ms) within 10ms.
     const FLIP_COUNT_THRESHOLD: u32 = 10;
-    // Z acceleration below this threshold means inverted (gravity pointing up).
-    const AZ_INVERTED_THRESHOLD: f32 = -3.0;
+    // NED body frame (post override_imu_rot): level reads az = -g, inverted
+    // reads az = +g. Detect inverted by az exceeding a positive threshold.
+    // The old `< -3.0` check was chip-Z-up convention and fires on boot
+    // under NED (level az = -9.8).
+    const AZ_INVERTED_THRESHOLD: f32 = 3.0;
 
     let mut inverted_count: u32 = 0;
 
     loop {
         let d = rcv.changed().await;
 
-        if d.acc[2] < AZ_INVERTED_THRESHOLD {
+        if d.acc[2] > AZ_INVERTED_THRESHOLD {
             inverted_count += 1;
             if inverted_count >= FLIP_COUNT_THRESHOLD {
                 COMMAD_ARM_VEHICLE.send(false);

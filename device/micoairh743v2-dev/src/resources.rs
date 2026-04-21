@@ -42,17 +42,19 @@ use crate::dshot_driver::{DshotDriver, UpDmaWaveform};
 //   2. Combine CSVs via `python3 tools/mag_cal_fit.py D*/000001.CSV`
 //   3. Paste the ellipsoid output into these two constants
 //
-// Fit provenance: D000115/116/117/119/120 (5 runs, 14319 samples),
-// ellipsoid residual 5.27% of radius. Off-diagonal terms ~1% of diagonal --
-// distortion is nearly axis-aligned, dominated by hard-iron offset.
+// Fit provenance: D000073 (1 run, 8680 samples, 2026-04-21 post-rewire),
+// ellipsoid residual 4.53% of radius. Sphere coverage 95.3% within 15 deg
+// (+y/-y/+z cardinals each at 5-8 deg -- marginal, widen those on next run).
+// Hard-iron bias ~17x Earth field (50 uT) -- large but stable, dominated
+// by FC/battery ferrous parts near the QMC5883L.
 // Re-fit required whenever battery mount or high-current cable routing
 // changes relative to the FC.
 // ================================================================================
-pub const MAG_BIAS_UT: [f32; 3] = [-7.3602e+02, -5.9836e+01, 4.5067e+02];
+pub const MAG_BIAS_UT: [f32; 3] = [-8.7396e+02, -6.5483e+02, 3.3176e+02];
 pub const MAG_CAL_MAT: [[f32; 3]; 3] = [
-    [7.707206e-04, 8.502019e-06, 2.517288e-06],
-    [8.502019e-06, 7.344869e-04, 1.303383e-06],
-    [2.517288e-06, 1.303383e-06, 7.878521e-04],
+    [ 6.606139e-04, -1.258174e-05, -5.539052e-06],
+    [-1.258174e-05,  6.938219e-04,  3.041682e-05],
+    [-5.539052e-06,  3.041682e-05,  7.432046e-04],
 ];
 
 assign_resources! {

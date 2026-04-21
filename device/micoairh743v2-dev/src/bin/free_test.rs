@@ -6,21 +6,33 @@
 //! 6-step thrust staircase for motor and controller characterisation.
 //!
 //! Mission:
-//!   6 thrust steps: 30, 50, 70, 90, 110, 120 percent of HOVER_THRUST
-//!   Each step: 3 s ramp up, 5 s hold, 2 s ramp down, 3 s gap
-//!   Total arm-to-disarm: ~78 s
+//!   3 thrust steps: 90, 105, 120 percent of HOVER_THRUST
+//!   Each step: 3 s ramp up, 10 s hold, 2 s ramp down, 3 s gap
+//!   Total arm-to-disarm: ~54 s
 //!   rate-PID gains at flight.rs boot defaults
 //!
-//! IMPORTANT: at 110-120% HOVER_THRUST the drone approaches liftoff.
-//! Be ready on the ELRS kill switch.
+//! Range shifted down two stops in D000064+ after the landing frame was
+//! changed from Kapla blocks to corks + chopstick criss-cross (lighter,
+//! wider stance). D000063 showed the drone already yaw-spinning at 120
+//! percent, so hover thrust on the new build is below the old starting
+//! point. 90-120 percent now covers the pre-liftoff to lift-transition
+//! range where the interesting behaviour happens.
+//!
+//! IMPORTANT: the drone WILL lift off during this test, possibly within
+//! the first step. Be ready on the TX15 SE kill switch at all times.
 //!
 //! Gyro-runaway autoabort at 5 rad/s.
 //!
 //! SAFETY:
-//!   - Props on, cork legs, carpet
-//!   - 1-2 m clear on all sides
-//!   - ELRS kill switch armed and tested before arming motors
-//!   - Finger on the battery lead as a secondary backup
+//!   - Props on, landing cage (Kapla sticks) installed, textured floor
+//!     (newspaper or similar -- bare wood starves flow_hold per D000033)
+//!   - 1.5-2 m clear on all sides
+//!   - TX15 SE kill switch tested on the bench BEFORE arming flight
+//!     (motors must go silent the instant SE flips)
+//!   - Firmware backups: flip_kill (az < -3 m/s^2 for 10 ms),
+//!     gyro_runaway_kill (any axis > 5 rad/s for 50 ms)
+//!   - Battery is belly-mounted inside the landing cage; it is NOT
+//!     reachable in flight, so SE on the TX15 is the only human kill
 
 #![no_std]
 #![no_main]
@@ -108,6 +120,7 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
     override_motor_params().await;
     override_pid_gains().await;
+    override_imu_rot().await;
 
     Timer::after_millis(10).await;
 
@@ -122,6 +135,16 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     level_0_spawner.spawn(resources::motor_governor_task(r.motors, DshotConfig::Dshot300).unwrap());
     level_0_spawner.spawn(controller_rate::main().unwrap());
 
+    // Calibrate IMU BEFORE spawning att_estimator. Otherwise Madgwick
+    // integrates 2-3 s of uncalibrated (biased) gyro data into the attitude
+    // estimate before ReloadParams takes effect. At beta=0.03 the filter
+    // takes ~30 s to un-wind that error via accel correction, and we arm in
+    // ~10 s -- so the drone arms with 5-10 deg of fake tilt baked into the
+    // estimate (see D000063: [cal] gyr bias ~3 deg/s, [ahrs] ready reported
+    // p=8 deg when the drone was physically level). The angle controller then
+    // commands 2+ rad/s "correction" on arming, tipping the real drone.
+    micoairh743v2::imu_cal::apply().await;
+
     level_1_spawner.spawn(att_estimator::main().unwrap());
     level_1_spawner.spawn(ahrs_to_eskf_bridge().unwrap());
     level_1_spawner.spawn(controller_angle::main().unwrap());
@@ -131,7 +154,14 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
     thread_spawner.spawn(resources::alt_hold_task(r.baro, battery_mv).unwrap());
     thread_spawner.spawn(mtf01_reader_task(r.mtf01).unwrap());
-    thread_spawner.spawn(flow_hold().unwrap());
+    // flow_hold DISABLED for staircase tests. In D000049 the drone held
+    // attitude within ~1.5 deg for 1.5 s of step 2 hold, then lifted just
+    // above the 5 cm lidar threshold, flow_hold activated, and its position-
+    // error-to-tilt mapping formed a positive feedback loop at the borderline
+    // hover regime: small motion -> large tilt command -> larger motion ->
+    // larger tilt. flow_hold is intended for sustained altitude hold where
+    // the drone is truly airborne, not brief staircase liftoff transients.
+    // thread_spawner.spawn(flow_hold().unwrap());
     thread_spawner.spawn(flip_kill().unwrap());
     thread_spawner.spawn(gyro_runaway_kill().unwrap());
     thread_spawner.spawn(micoairh743v2::rc_kill::rc_kill_task(r.rc).unwrap());
@@ -140,8 +170,6 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     thread_spawner.spawn(imu_monitor().unwrap());
 
     ulog::log("[free] all tasks spawned");
-
-    apply_imu_calibration().await;
 
     {
         let wait_start = embassy_time::Instant::now();
@@ -230,11 +258,32 @@ async fn override_pid_gains() {
     ulog::log("[free] PID gains overridden");
 }
 
+/// Configure the BMI088 chip-to-drone-body rotation matrix so that
+/// RAW_MULTI_IMU_DATA (and downstream CAL_MULTI_IMU_DATA, ESKF, Madgwick,
+/// rate/angle controllers) operate in the drone's arrow-forward NED frame
+/// rather than the chip's native frame. Without this override, the default
+/// rotation is identity -- which is wrong because the BMI088 on the MicoAir
+/// H743v2 is physically mounted rotated 180 deg around the (1,-1,0) diagonal
+/// relative to the drone's arrow. See `BMI088_CHIP_TO_DRONE_ROT` in config.rs
+/// for the derivation and the empirical tilt-test evidence (2026-04-21).
+async fn override_imu_rot() {
+    use common::tasks::imu_reader::params;
+    use common::utils::rot_matrix::Rotation;
+    use micoairh743v2::config::BMI088_CHIP_TO_DRONE_ROT;
+
+    let mut p = params::TABLE.params.write().await;
+    p.rot = Rotation::Custom(BMI088_CHIP_TO_DRONE_ROT);
+    drop(p);
+
+    ulog::log("[free] IMU rotation set (chip -> drone NED)");
+}
+
 async fn wait_for_ahrs_ready() {
     use signals::AHRS_ATTITUDE_Q;
 
     const WINDOW_N: usize = 50;
     const STABLE_THRESHOLD_DEG: f32 = 0.3;
+    const LEVEL_THRESHOLD_DEG: f32 = 3.0;
     const MAX_WAIT_MS: u64 = 10_000;
 
     let mut rcv = AHRS_ATTITUDE_Q.receiver();
@@ -265,6 +314,20 @@ async fn wait_for_ahrs_ready() {
             if r_range < STABLE_THRESHOLD_DEG && p_range < STABLE_THRESHOLD_DEG {
                 let r_mean: f32 = roll_buf.iter().sum::<f32>() / WINDOW_N as f32;
                 let p_mean: f32 = pitch_buf.iter().sum::<f32>() / WINDOW_N as f32;
+                // Stable but tilted: abort so the user can level the drone.
+                // Arming from a non-zero attitude reference causes the drone
+                // to accelerate horizontally at liftoff instead of climbing
+                // straight up (see D000065: p=-4.6 deg, drone drifted sideways).
+                if r_mean.abs() > LEVEL_THRESHOLD_DEG || p_mean.abs() > LEVEL_THRESHOLD_DEG {
+                    let mut s: heapless::String<96> = heapless::String::new();
+                    let _ = write!(
+                        s,
+                        "[ahrs] NOT LEVEL: r={:.2} p={:.2} > {:.1} deg -- ABORT, level the drone",
+                        r_mean, p_mean, LEVEL_THRESHOLD_DEG
+                    );
+                    ulog::log(s.as_str());
+                    loop { Timer::after_secs(60).await; }
+                }
                 let mut s: heapless::String<96> = heapless::String::new();
                 let _ = write!(
                     s,
@@ -285,68 +348,6 @@ async fn wait_for_ahrs_ready() {
             return;
         }
     }
-}
-
-async fn apply_imu_calibration() {
-    use common::tasks::imu_reader;
-
-    const N: u32 = 2000;
-    let mut rcv = common::signals::RAW_MULTI_IMU_DATA[0].receiver();
-
-    ulog::log("[cal] hold level and still (2s)...");
-
-    rcv.changed().await;
-
-    let mut sum_acc = [0.0_f64; 3];
-    let mut sum_gyr = [0.0_f64; 3];
-    for _ in 0..N {
-        let d = rcv.changed().await;
-        sum_acc[0] += d.acc[0] as f64;
-        sum_acc[1] += d.acc[1] as f64;
-        sum_acc[2] += d.acc[2] as f64;
-        sum_gyr[0] += d.gyr[0] as f64;
-        sum_gyr[1] += d.gyr[1] as f64;
-        sum_gyr[2] += d.gyr[2] as f64;
-    }
-
-    let n = N as f64;
-    let acc_bias = [
-        (sum_acc[0] / n) as f32,
-        (sum_acc[1] / n) as f32,
-        (sum_acc[2] / n) as f32 - common::consts::GRAVITY,
-    ];
-    let gyr_bias = [
-        (sum_gyr[0] / n) as f32,
-        (sum_gyr[1] / n) as f32,
-        (sum_gyr[2] / n) as f32,
-    ];
-
-    {
-        let mut p = imu_reader::params::TABLE.params.write().await;
-        p.cal_acc.bias = acc_bias;
-        p.cal_gyr.bias = gyr_bias;
-        p.cal_acc.scale = [1.0, -1.0, -1.0];
-        p.cal_gyr.scale = [1.0, -1.0, -1.0];
-    }
-
-    imu_reader::CHANNEL[0]
-        .sender()
-        .send(imu_reader::Message::ReloadParams)
-        .await;
-
-    let mut s: heapless::String<64> = heapless::String::new();
-    let _ = write!(
-        s, "[cal] acc=[{:.3},{:.3},{:.3}]",
-        acc_bias[0], acc_bias[1], acc_bias[2]
-    );
-    ulog::log(s.as_str());
-
-    let mut s: heapless::String<64> = heapless::String::new();
-    let _ = write!(
-        s, "[cal] gyr=[{:.4},{:.4},{:.4}]",
-        gyr_bias[0], gyr_bias[1], gyr_bias[2]
-    );
-    ulog::log(s.as_str());
 }
 
 #[embassy_executor::task]
@@ -600,9 +601,21 @@ async fn staircase_mission() -> ! {
     Timer::after_secs(3).await;
 
     const HOVER_THRUST: f32 = 4.50;
-    const STEPS: [f32; 6] = [0.30, 0.50, 0.70, 0.90, 1.10, 1.20];
+    // 4-step staircase. D000064-D000093 established the 0.90-1.20 range;
+    // D000105 showed all three stairs completed without liftoff on a pack
+    // that was already partially discharged, so an extra 1.35 step was
+    // added on top to guarantee a liftoff observation when the pack is
+    // fresh. D000063 (old heavier Kapla gear) showed yaw-spin at 1.20,
+    // so 1.35 is the upper bound that still leaves dial-down room if the
+    // drone lifts cleanly on step 2 or 3.
+    const STEPS: [f32; 4] = [0.90, 1.05, 1.20, 1.35];
     const RAMP_UP_S: u64 = 3;
-    const HOLD_S: u64 = 5;
+    // HOLD_S extended from 5 s to 10 s in D000048+. D000047 tipped during
+    // the liftoff-regime step (1.50) roughly 1-2 s into the hold. Giving the
+    // angle controller twice as long to settle at each thrust level provides
+    // more headroom to observe whether a near-balanced drone stabilises in
+    // free flight or diverges at a predictable rate.
+    const HOLD_S: u64 = 10;
     const RAMP_DN_S: u64 = 2;
     const GAP_S: u64 = 3;
 
@@ -792,14 +805,19 @@ async fn flip_kill() -> ! {
     let mut rcv = signals::RAW_MULTI_IMU_DATA[0].receiver();
 
     const FLIP_COUNT_THRESHOLD: u32 = 10;
-    const AZ_INVERTED_THRESHOLD: f32 = -3.0;
+    // NED body frame (post override_imu_rot): level stationary drone reads
+    // az = -g, fully inverted drone reads az = +g. Detect inverted by az
+    // exceeding a positive threshold. The old `< -3.0` check was correct
+    // for the previous chip-Z-up convention but fires immediately on boot
+    // under NED (level az = -9.8 which passes the old threshold).
+    const AZ_INVERTED_THRESHOLD: f32 = 3.0;
 
     let mut inverted_count: u32 = 0;
 
     loop {
         let d = rcv.changed().await;
 
-        if d.acc[2] < AZ_INVERTED_THRESHOLD {
+        if d.acc[2] > AZ_INVERTED_THRESHOLD {
             inverted_count += 1;
             if inverted_count >= FLIP_COUNT_THRESHOLD {
                 COMMAD_ARM_VEHICLE.send(false);

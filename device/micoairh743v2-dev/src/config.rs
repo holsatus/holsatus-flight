@@ -87,3 +87,28 @@ pub const MOTOR_REVERSE_FLAGS: Reverse = Reverse::MOTOR_0.union(Reverse::MOTOR_1
 /// Measured flat on the desk (imu_cal, 2026-04-17). az relative to +g.
 /// Re-run imu_cal binary if the FC is remounted or the frame changes.
 pub const BMI088_ACC_BIAS: [f32; 3] = [-0.0154, -0.6074, -0.0071];
+
+/// Rotation matrix that maps BMI088 chip-native readings to drone NED body
+/// frame (arrow-forward = drone +X, drone right = +Y, drone down = +Z).
+/// Empirically verified 2026-04-21 via `level_check` tilt test (see
+/// `project_imu_axis_mounting.md` memory).
+///
+/// Chip mounting on MicoAir H743v2 (right-handed, BMI088 standard labels):
+///   chip +X axis points to drone's LEFT (drone -Y)
+///   chip +Y axis points to drone's BACKWARD (drone -X)
+///   chip +Z axis points UP (drone -Z in NED convention)
+///
+/// The matrix is column-major (nalgebra convention). Equivalent row-major:
+///   drone_ax_forward = -chip_ay
+///   drone_ay_right   = -chip_ax
+///   drone_az_down    = -chip_az
+///
+/// Wire into `imu_reader::params::rot` at startup via `override_imu_rot()`
+/// in each flight binary. When this is set correctly, `cal_acc.scale` /
+/// `cal_gyr.scale` should be `[1.0, 1.0, 1.0]` (identity) -- the rotation
+/// handles the axis mapping; scale is just per-axis gain (unity for BMI088).
+pub const BMI088_CHIP_TO_DRONE_ROT: [[f32; 3]; 3] = [
+    [ 0.0, -1.0,  0.0],
+    [-1.0,  0.0,  0.0],
+    [ 0.0,  0.0, -1.0],
+];
