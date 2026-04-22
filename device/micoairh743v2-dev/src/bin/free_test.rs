@@ -8,7 +8,8 @@
 //! Mission:
 //!   P0: 1 s open-loop thrust ramp to BASE_THRUST (pushes through stick-slip)
 //!   P1: 3 s closed-loop climb 0 -> 1.0 m (alt_hold takes over TRUE_Z_THRUST_SP)
-//!   P2: 15 s hover at 1.0 m (flow damping observed here)
+//!   P2: 1 s hover at 1.0 m (shortened from 15 s to avoid drift into walls
+//!       before we solve flow-induced lateral drift)
 //!   P3: 1 s fast descent 1.0 -> 0.25 m, then 1 s slow approach 0.25 -> 0.05 m,
 //!       with lidar-based ground-detect disarm (h<0.15m for 300 ms) and a
 //!       5 s safety timeout. flow_hold silent below 25 cm.
@@ -642,7 +643,12 @@ async fn staircase_mission() -> ! {
     const TARGET_ALT: f32 = 1.0;
     const P0_RAMP_MS: u64 = 1_000;
     const P1_RAMP_MS: u64 = 3_000;
-    const P2_HOVER_S: u64 = 15;
+    // Hover shortened 15s -> 1s after D000028: with flow-induced drift
+    // still unresolved, a 15 s hover window gives the drone time to
+    // wander into a wall before P3 descent begins. 1 s is enough to
+    // confirm altitude hold reached setpoint before triggering landing.
+    // Extend again once drift is under control.
+    const P2_HOVER_S: u64 = 1;
 
     ulog::log("[mission] P0: thrust ramp 0 -> base (1s, open-loop)");
     let ramp_start = embassy_time::Instant::now();
