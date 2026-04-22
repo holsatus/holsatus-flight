@@ -6,9 +6,11 @@
 //! 6-step thrust staircase for motor and controller characterisation.
 //!
 //! Mission:
-//!   3 thrust steps: 90, 105, 120 percent of HOVER_THRUST
-//!   Each step: 3 s ramp up, 10 s hold, 2 s ramp down, 3 s gap
-//!   Total arm-to-disarm: ~54 s
+//!   P0: 1 s open-loop thrust ramp to BASE_THRUST (pushes through stick-slip)
+//!   P1: 3 s closed-loop climb 0 -> 1.0 m (alt_hold takes over TRUE_Z_THRUST_SP)
+//!   P2: 15 s hover at 1.0 m (flow damping observed here)
+//!   P3: 3 s closed-loop descent 1.0 -> 0.0 m
+//!   Total arm-to-disarm: ~25 s
 //!   rate-PID gains at flight.rs boot defaults
 //!
 //! Range shifted down two stops in D000064+ after the landing frame was
@@ -60,6 +62,7 @@ use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_time::Timer;
+use micoairh743v2::alt_hold::ALTITUDE_SETPOINT;
 use micoairh743v2::log as ulog;
 use micoairh743v2::mtf01;
 use micoairh743v2::resources::{
@@ -101,6 +104,11 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     thread_spawner.spawn(uart_writer_task(r.uart_log, r.sdmmc).unwrap());
 
     ulog::log("[free] board init ok");
+    // Git provenance line: every flight log now starts with the short SHA
+    // that produced the binary (plus "-dirty" if the tree was not clean at
+    // build time). Combined with the Makefile's `git-clean` pre-flash gate,
+    // this gives end-to-end version tracing from log back to a commit.
+    ulog::log(concat!("[free] git=", env!("GIT_SHA")));
 
     signals::CONTROL_FREQUENCY.store(1000, Ordering::Relaxed);
 
@@ -154,14 +162,13 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
     thread_spawner.spawn(resources::alt_hold_task(r.baro, battery_mv).unwrap());
     thread_spawner.spawn(mtf01_reader_task(r.mtf01).unwrap());
-    // flow_hold DISABLED for staircase tests. In D000049 the drone held
-    // attitude within ~1.5 deg for 1.5 s of step 2 hold, then lifted just
-    // above the 5 cm lidar threshold, flow_hold activated, and its position-
-    // error-to-tilt mapping formed a positive feedback loop at the borderline
-    // hover regime: small motion -> large tilt command -> larger motion ->
-    // larger tilt. flow_hold is intended for sustained altitude hold where
-    // the drone is truly airborne, not brief staircase liftoff transients.
-    // thread_spawner.spawn(flow_hold().unwrap());
+    // flow_hold re-enabled 2026-04-22 in velocity-damping-only mode (KP_POS=0)
+    // to counter the steady left-drift seen in D000116 without triggering the
+    // D000049 positive-feedback failure at borderline liftoff. The activation
+    // threshold in mtf01_reader_task was also raised from 5 cm to 10 cm so
+    // flow only engages once the drone is solidly airborne, not in the
+    // transition regime. See also: flow_hold::KP_POS = 0.0 below.
+    thread_spawner.spawn(flow_hold().unwrap());
     thread_spawner.spawn(flip_kill().unwrap());
     thread_spawner.spawn(gyro_runaway_kill().unwrap());
     thread_spawner.spawn(micoairh743v2::rc_kill::rc_kill_task(r.rc).unwrap());
@@ -605,69 +612,74 @@ async fn staircase_mission() -> ! {
     COMMAD_ARM_VEHICLE.send(true);
     Timer::after_secs(3).await;
 
-    const HOVER_THRUST: f32 = 4.50;
-    // 4-step staircase. D000064-D000093 established the 0.90-1.20 range;
-    // D000105 showed all three stairs completed without liftoff on a pack
-    // that was already partially discharged, so an extra 1.35 step was
-    // added on top to guarantee a liftoff observation when the pack is
-    // fresh. D000063 (old heavier Kapla gear) showed yaw-spin at 1.20,
-    // so 1.35 is the upper bound that still leaves dial-down room if the
-    // drone lifts cleanly on step 2 or 3.
-    const STEPS: [f32; 4] = [0.90, 1.05, 1.20, 1.35];
-    // Fast ramp-up: traverse the stick-slip ground-contact zone (~85-105% of
-    // actual hover thrust) before friction builds a motor-differential load
-    // large enough to snap into yaw runaway when the leg releases. D000108/
-    // D000110 both failed at step 1 (104%) with RAMP_UP_S=3, which spent
-    // ~0.57 s in that band; 1 s shrinks it to ~0.19 s and is robust to
-    // pack-voltage drift that would otherwise shift the bad zone onto
-    // whichever step sits at the instantaneous hover throttle.
-    const RAMP_UP_S: u64 = 1;
-    // HOLD_S extended from 5 s to 10 s in D000048+. D000047 tipped during
-    // the liftoff-regime step (1.50) roughly 1-2 s into the hold. Giving the
-    // angle controller twice as long to settle at each thrust level provides
-    // more headroom to observe whether a near-balanced drone stabilises in
-    // free flight or diverges at a predictable rate.
-    const HOLD_S: u64 = 10;
-    const RAMP_DN_S: u64 = 2;
-    const GAP_S: u64 = 3;
+    // Closed-loop altitude-hold mission. Replaces the open-loop thrust
+    // staircase used through D000128. The staircase was always going to
+    // bounce in and out of ground effect: open-loop thrust at a fixed
+    // multiple of the firmware's hover-thrust estimate has no authority to
+    // compensate for (a) pack-voltage sag, (b) ground-effect lift boost, or
+    // (c) thrust-to-weight-estimate mismatch. Altitude-hold closes the loop
+    // on lidar altitude and commands whatever thrust is needed to reach and
+    // hold a target height, so we don't have to guess.
+    //
+    // Sequence:
+    //   P0: 1 s open-loop ramp to BASE_THRUST (4.5). Gets through the
+    //       stick-slip ground-contact zone fast before alt_hold takes over.
+    //   P1: 3 s ramp of ALTITUDE_SETPOINT from 0 -> 1.0 m. alt_hold's PID
+    //       grabs TRUE_Z_THRUST_SP at its 10 Hz rate once we start signalling
+    //       setpoints. 3 s is fast enough to clear ground effect quickly,
+    //       slow enough to avoid a climb-rate overshoot.
+    //   P2: 15 s hover at 1.0 m. Long enough for flow damping to reach
+    //       steady state and for any residual drift to be observable.
+    //   P3: 3 s ramp setpoint 1.0 -> 0.0 m. Gentle descent.
+    //   P4: setpoint = 0, wait 2 s, disarm.
+    // Keep in sync with alt_hold::BASE_THRUST. Lowered 8.50 -> 8.00 after
+    // D000018 over-climbed at ~1-2 m/s (baseline thrust 7.8 post-v_comp at
+    // BASE=8.5 was ~10% above the drone's actual out-of-ground-effect
+    // hover of ~7.0-7.3). See alt_hold.rs for the full calibration chain.
+    const BASE_THRUST: f32 = 8.00;
+    const TARGET_ALT: f32 = 1.0;
+    const P0_RAMP_MS: u64 = 1_000;
+    const P1_RAMP_MS: u64 = 3_000;
+    const P2_HOVER_S: u64 = 15;
+    const P3_RAMP_MS: u64 = 3_000;
 
-    for (idx, &frac) in STEPS.iter().enumerate() {
-        let target = HOVER_THRUST * frac;
-        let pct = (frac * 100.0) as u32;
-
-        let mut s: heapless::String<48> = heapless::String::new();
-        let _ = write!(s, "[mission] step={} frac={}% target={:.2}", idx, pct, target);
-        ulog::log(s.as_str());
-
-        let ramp_start = embassy_time::Instant::now();
-        loop {
-            let elapsed = ramp_start.elapsed().as_millis();
-            if elapsed >= RAMP_UP_S * 1000 { break; }
-            let f = elapsed as f32 / (RAMP_UP_S * 1000) as f32;
-            signals::TRUE_Z_THRUST_SP.send(target * f);
-            Timer::after_millis(20).await;
-        }
-
-        let hold_start = embassy_time::Instant::now();
-        while hold_start.elapsed().as_millis() < HOLD_S * 1000 {
-            signals::TRUE_Z_THRUST_SP.send(target);
-            Timer::after_millis(20).await;
-        }
-
-        let dn_start = embassy_time::Instant::now();
-        loop {
-            let elapsed = dn_start.elapsed().as_millis();
-            if elapsed >= RAMP_DN_S * 1000 { break; }
-            let f = 1.0 - elapsed as f32 / (RAMP_DN_S * 1000) as f32;
-            signals::TRUE_Z_THRUST_SP.send(target * f);
-            Timer::after_millis(20).await;
-        }
-        signals::TRUE_Z_THRUST_SP.send(0.0);
-
-        Timer::after_secs(GAP_S).await;
+    ulog::log("[mission] P0: thrust ramp 0 -> base (1s, open-loop)");
+    let ramp_start = embassy_time::Instant::now();
+    loop {
+        let elapsed = ramp_start.elapsed().as_millis() as u64;
+        if elapsed >= P0_RAMP_MS { break; }
+        let f = elapsed as f32 / P0_RAMP_MS as f32;
+        signals::TRUE_Z_THRUST_SP.send(BASE_THRUST * f);
+        Timer::after_millis(20).await;
     }
 
-    ulog::log("[mission] staircase complete, disarming");
+    ulog::log("[mission] P1: climb 0 -> 1.0m (3s, alt_hold owns thrust)");
+    let climb_start = embassy_time::Instant::now();
+    loop {
+        let elapsed = climb_start.elapsed().as_millis() as u64;
+        if elapsed >= P1_RAMP_MS { break; }
+        let sp = TARGET_ALT * (elapsed as f32 / P1_RAMP_MS as f32);
+        ALTITUDE_SETPOINT.signal(sp);
+        Timer::after_millis(100).await;
+    }
+    ALTITUDE_SETPOINT.signal(TARGET_ALT);
+
+    ulog::log("[mission] P2: hover 1.0m (15s)");
+    Timer::after_secs(P2_HOVER_S).await;
+
+    ulog::log("[mission] P3: descend 1.0 -> 0.0m (3s)");
+    let desc_start = embassy_time::Instant::now();
+    loop {
+        let elapsed = desc_start.elapsed().as_millis() as u64;
+        if elapsed >= P3_RAMP_MS { break; }
+        let sp = TARGET_ALT * (1.0 - elapsed as f32 / P3_RAMP_MS as f32);
+        ALTITUDE_SETPOINT.signal(sp);
+        Timer::after_millis(100).await;
+    }
+    ALTITUDE_SETPOINT.signal(0.0);
+    Timer::after_secs(2).await;
+
+    ulog::log("[mission] disarming");
     COMMAD_ARM_VEHICLE.send(false);
 
     ulog::log("[mission] test complete");
@@ -894,8 +906,18 @@ async fn flow_hold() -> ! {
 
     let mut snd_att = signals::TRUE_ATTITUDE_Q_SP.sender();
 
-    const KP_POS: f32 = 0.30;
-    const KD_VEL: f32 = 0.25;
+    // KP_POS reverted 0.05 -> 0.0 after D000145. Confirmed in D000147 that
+    // position hold was not the driver: with KP_POS=0 the drone still
+    // oscillated at altitude and tripped the 5 rad/s gyro-runaway kill.
+    // KD_VEL now lowered 0.25 -> 0.10 to reduce the flow-velocity -> tilt
+    // gain. At D000147's ~0.5 m peak, flow reported vx = +/-0.8 m/s which
+    // with KD_VEL=0.25 produced pitch commands at the +/-0.17 rad clamp.
+    // With 0.10 the same input yields 0.08 rad (~4.6 deg) -- well below the
+    // clamp and small enough that the body-rotation-driven feedback loop
+    // cannot close. Proper structural fix is gyro-comp on the flow reading
+    // (subtract omega*h), but this buys stability without changing shape.
+    const KP_POS: f32 = 0.0;
+    const KD_VEL: f32 = 0.10;
     const MAX_TILT_RAD: f32 = 0.17;
 
     let mut est_x = 0.0_f32;
@@ -1014,7 +1036,18 @@ async fn mtf01_reader_task(r: Mtf01Resources) -> ! {
             }
             Some(mtf01::Frame::Flow(f)) => {
                 FLOW_QUALITY.store(f.quality, Ordering::Relaxed);
-                if f.quality > 30 && last_height_m > 0.05 {
+                // Gate on 10 cm AND quality >= 60 (was >= 30 through D000136).
+                // 10 cm keeps flow silent during the liftoff transient
+                // (D000049 positive-feedback failure). The quality bump from
+                // 30 -> 60 rejects marginal readings over bare wood: D000136
+                // wobbled out of control as the drone drifted off the
+                // newspaper because MTF-01 kept returning quality in the
+                // 30-50 range with noisy velocity, and flow_hold's KD_VEL
+                // amplified that noise straight into tilt commands. At >= 60
+                // we only trust flow over genuinely textured surfaces and
+                // fall through to attitude-only control when the sensor
+                // can't actually see motion.
+                if f.quality > 60 && last_height_m > 0.10 {
                     const FLOW_SCALE: f32 = 0.25;
                     let vx = f.motion_y as f32 * FLOW_SCALE * last_height_m;
                     let vy = -(f.motion_x as f32) * FLOW_SCALE * last_height_m;

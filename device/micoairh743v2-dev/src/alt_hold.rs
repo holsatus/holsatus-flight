@@ -27,10 +27,23 @@ pub static LIDAR_ALT_M: Watch<CriticalSectionRawMutex, f32, 2> = Watch::new();
 /// Used by the flow_hold controller for velocity damping.
 pub static FLOW_VEL_MS: Watch<CriticalSectionRawMutex, [f32; 2], 2> = Watch::new();
 
-/// Base collective thrust for hovering (dimensionless 0..1) at NOMINAL_MV.
+/// Base collective thrust for hovering (dimensionless) at NOMINAL_MV.
 /// Voltage compensation scales this so the physical thrust stays constant
 /// regardless of battery charge state.
-const BASE_THRUST: f32 = 4.50;
+///
+/// Calibration history: 4.50 -> 6.00 -> 7.50 -> 8.50 -> 8.00. Each upward
+/// step was driven by a run where the drone got stuck in ground effect
+/// (D000130, D000134, D000136) or descended with controller saturated
+/// (D000004). 8.50 was an over-correction: D000009 rocketed to the
+/// ceiling because of a stuck lidar, and D000018 showed the baseline
+/// itself is well above hover -- at BASE=8.5 with v_comp~0.918 the
+/// err=0 output is 7.80 post-v_comp, which is ~10% above the ~7.0-7.3
+/// post-v_comp needed for out-of-ground-effect hover. Net: drone
+/// continuously accelerates upward and the D-term cannot pull it back
+/// below hover. At 8.00 the err=0 baseline becomes 7.34 -- closer to
+/// hover, small climb authority from PID alone, drone should track the
+/// setpoint ramp instead of outrunning it.
+const BASE_THRUST: f32 = 8.00;
 
 /// Nominal battery voltage (mV) at which BASE_THRUST was tuned.
 /// 4S storage voltage = 15200 mV (3.80 V/cell).
@@ -49,6 +62,35 @@ const DT: f32 = 0.1;
 /// alpha = 0.3 gives ~230 ms effective lag at 10 Hz, which is fast enough
 /// for altitude hold while rejecting sensor noise and indoor pressure drafts.
 const EWMA_ALPHA: f32 = 0.3;
+
+/// Hard altitude ceiling (m, above baseline). Baro-based safety net.
+/// D000009 incident (2026-04-22): the MTF-01 lidar got stuck reporting
+/// ~0.05 m while the drone physically rocketed past ceiling height. Since
+/// alt_hold only consulted baro as a lidar-miss fallback, the stuck-but-
+/// reporting lidar silently locked the PID into max-thrust and there was
+/// no independent safety net. Baro is now read every cycle and if it ever
+/// shows the drone above HARD_CEILING_M, the controller forces descent
+/// regardless of what lidar says.
+///
+/// Sized to 2.0 m instead of sp+0.5 because baro propwash noise on a quad
+/// is ~+/-0.3 m during hover (and spikes to ~+/-0.5 m). At setpoint 1.0 m
+/// a tighter ceiling (1.5 m) would false-trip on a propwash peak. 2.0 m
+/// gives ~3 sigma of propwash headroom while still well below a typical
+/// room ceiling (~2.4-2.6 m).
+const HARD_CEILING_M: f32 = 2.0;
+
+/// Post-v_comp thrust used during a HARD_CEILING_M breach -- well below
+/// typical hover thrust so the drone sinks at a bounded terminal rate
+/// instead of falling free. With BASE_THRUST ~= 8.5 at baseline, 4.0 is
+/// about half of hover thrust, giving a gentle but decisive descent.
+const CEILING_EMERGENCY_THRUST: f32 = 4.0;
+
+/// If baro says the drone is more than this far above what lidar reports,
+/// assume lidar is lying (D000009 failure mode: stuck at 0.05 m while drone
+/// climbing). Switch the PID measurement source to baro rather than
+/// believing the lidar. 0.5 m is larger than typical baro propwash noise
+/// (~0.1-0.3 m) but small enough to catch lidar-stuck-at-zero cases early.
+const LIDAR_DISAGREE_M: f32 = 0.5;
 
 /// Number of baro readings to average for the baseline pressure.
 const BASELINE_SAMPLES: usize = 20;
@@ -138,31 +180,76 @@ pub async fn main(i2c: impl I2c, addr: u8, battery_mv: u32) -> ! {
             setpoint_m = sp;
         }
 
-        // Prefer lidar if available and valid (0-8m range, positive value).
-        let alt_raw = if let Some(lidar_m) = lidar_rcv.try_changed() {
-            if lidar_m >= 0.0 && lidar_m <= 8.0 {
+        // Always read baro -- it is the independent safety witness for the
+        // primary lidar measurement. D000009 showed that a "stuck but still
+        // publishing" lidar could silently lock the PID into max thrust
+        // because baro was only consulted on a lidar miss.
+        let baro_alt = baro
+            .read()
+            .await
+            .ok()
+            .map(|d| pressure_to_altitude(d.pressure_pa, baseline_pa));
+
+        // SAFETY: hard baro-based ceiling. If the drone is above
+        // HARD_CEILING_M regardless of what lidar says, force a gentle
+        // descent and skip the normal PID for this cycle. The drone will
+        // keep sinking until baro reads below the ceiling, at which point
+        // normal control resumes.
+        if let Some(b) = baro_alt {
+            if b > HARD_CEILING_M {
+                let mut s: heapless::String<64> = heapless::String::new();
+                let _ = write!(
+                    s, "[alt] CEILING BREACH baro={:.2}m -- forced descent", b
+                );
+                crate::log::log(s.as_str());
+                snd_thrust.send(CEILING_EMERGENCY_THRUST);
+                Timer::after_millis((DT * 1000.0) as u64).await;
+                continue;
+            }
+        }
+
+        // Primary altitude from lidar (0-8 m range check).
+        let lidar_valid = lidar_rcv
+            .try_changed()
+            .filter(|&l| (0.0..=8.0).contains(&l));
+
+        // Measurement-source selection with a baro cross-check:
+        //   - lidar + baro agree (or baro not available): use lidar
+        //   - baro is notably higher than lidar (D000009 failure mode):
+        //     switch to baro as the measurement source
+        //   - lidar missing this cycle: fall back to baro
+        //   - neither source: sleep and retry
+        let alt_raw = match (lidar_valid, baro_alt) {
+            (Some(lidar), Some(baro)) if baro > lidar + LIDAR_DISAGREE_M => {
+                if use_lidar {
+                    let mut s: heapless::String<64> = heapless::String::new();
+                    let _ = write!(
+                        s,
+                        "[alt] LIDAR DISAGREE lid={:.2} bar={:.2} -- using baro",
+                        lidar, baro
+                    );
+                    crate::log::log(s.as_str());
+                    use_lidar = false;
+                }
+                baro
+            }
+            (Some(lidar), _) => {
                 if !use_lidar {
                     crate::log::log("[alt] switching to lidar");
                     use_lidar = true;
                 }
-                Some(lidar_m)
-            } else {
-                None
+                lidar
             }
-        } else {
-            None
-        };
-
-        // Fall back to baro if no lidar reading this cycle.
-        let alt_raw = match alt_raw {
-            Some(a) => a,
-            None => {
-                if let Ok(d) = baro.read().await {
-                    pressure_to_altitude(d.pressure_pa, baseline_pa)
-                } else {
-                    Timer::after_millis((DT * 1000.0) as u64).await;
-                    continue;
+            (None, Some(baro)) => {
+                if use_lidar {
+                    crate::log::log("[alt] lidar lost -- using baro");
+                    use_lidar = false;
                 }
+                baro
+            }
+            (None, None) => {
+                Timer::after_millis((DT * 1000.0) as u64).await;
+                continue;
             }
         };
 
@@ -171,11 +258,27 @@ pub async fn main(i2c: impl I2c, addr: u8, battery_mv: u32) -> ! {
         let err = setpoint_m - alt_filtered;
         let vel = (alt_filtered - prev_alt) / DT; // positive = climbing
         prev_alt = alt_filtered;
-        integral = (integral + err * DT).clamp(-3.0, 3.0);
+        // Integral clamp tightened 3.0 -> 1.0 after D000020: the drone
+        // integrated a full 6 s of err>0 during P1 climb, saturated the
+        // +/-3.0 window, then overshot by 0.22 m AND couldn't unwind fast
+        // enough to command a clean descent (at err=-0.2 the integrator
+        // bleeds off at just 0.02/cycle, ~15 s to unwind). With +/-1.0
+        // the max integral contribution is 0.1 pre-v_comp (instead of 0.3),
+        // overshoot shrinks proportionally, and unwind is 3x faster in
+        // the same time-scale -- so descent becomes responsive rather than
+        // the current "thrust slowly fades for 15 s" behaviour.
+        integral = (integral + err * DT).clamp(-1.0, 1.0);
         // D-term damps vertical velocity: climbing too fast reduces thrust,
         // descending too fast increases thrust. Prevents overshoot at liftoff.
         let thrust = (BASE_THRUST + KP * err + KI * integral - KD * vel) * v_comp;
-        snd_thrust.send(thrust.clamp(0.0, 5.0));
+        // Upper clamp raised from 5.0 -> 10.0 after D000130: alt_hold output
+        // was pinned at 4.96 with sp=1.0m and h=0.05m, so the drone could not
+        // climb out of ground effect. Motors were at ~750 DShot (~37% of 2047)
+        // so the ESC/mechanical headroom is large; 5.0 was an over-conservative
+        // software cap from an era before the closed-loop was trusted. 10.0
+        // is 2.2x BASE_THRUST, plenty for normal climb while still bounded
+        // well below full motor authority.
+        snd_thrust.send(thrust.clamp(0.0, 10.0));
 
         // Log to UART at 5 Hz (every 2 cycles at 10 Hz).
         // Higher rate than before (was 1 Hz) to capture D-term dynamics.
@@ -183,9 +286,16 @@ pub async fn main(i2c: impl I2c, addr: u8, battery_mv: u32) -> ! {
         if log_counter >= 2 {
             log_counter = 0;
             let src = if use_lidar { "lid" } else { "bar" };
-            let mut s: heapless::String<64> = heapless::String::new();
-            let _ = write!(s, "[alt:{}] h={:.3}m sp={:.1}m v={:.2} thr={:.3}",
-                src, alt_filtered, setpoint_m, vel, thrust);
+            // Include baro reading in every log line so the D000009-style
+            // lidar-lying failure is visible at a glance in post-flight
+            // analysis. baro=NaN if read failed this cycle.
+            let baro_disp = baro_alt.unwrap_or(f32::NAN);
+            let mut s: heapless::String<96> = heapless::String::new();
+            let _ = write!(
+                s,
+                "[alt:{}] h={:.3}m sp={:.1}m v={:.2} baro={:.2}m thr={:.3}",
+                src, alt_filtered, setpoint_m, vel, baro_disp, thrust
+            );
             crate::log::log(s.as_str());
         }
 
