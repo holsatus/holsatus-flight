@@ -1,0 +1,243 @@
+[package]
+name = "micoairh743v2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+embassy-executor     = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-stm32        = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["stm32h743vi", "time-driver-tim2", "exti", "defmt", "unstable-pac"] }
+embassy-time         = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
+embassy-sync         = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["defmt"] }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260", features = ["defmt"] }
+embassy-futures      = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+
+cortex-m           = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt        = "0.7"
+defmt              = "1.0.1"
+defmt-rtt          = "1.0.0"
+embedded-hal       = "1.0"
+embedded-hal-async = "1.0"
+heapless           = { version = "0.9.2", default-features = false }
+libm               = "0.2"
+panic-probe        = { version = "1.0.0", features = ["print-defmt"] }
+static_cell        = "2"
+
+dshot-encoder    = { git = "https://github.com/peterkrull/dshot-encoder" }
+assign-resources = "0.5.0"
+
+aligned             = "0.4.2"
+serde               = { version = "1.0", default-features = false, features = ["derive"] }
+postcard            = { version = "1.0.10", default-features = false }
+embedded-fatfs      = { git = "https://github.com/MabezDev/embedded-fatfs", rev = "428ad03", default-features = false, features = ["defmt"] }
+block-device-adapters = { version = "0.2.0", features = ["defmt"] }
+# embedded-fatfs uses embedded-io-async 0.6.1; alias matches common's convention
+embedded-io-async-061 = { package = "embedded-io-async", version = "0.6.1" }
+
+[dependencies.common]
+path = "../../common"
+default-features = false
+features = ["defmt"]
+
+# cargo build/run --release
+[profile.release]
+panic = "abort"
+codegen-units = 1
+debug = true
+debug-assertions = false
+incremental = false
+lto = 'fat'
+opt-level = 3
+overflow-checks = false
+
+# cargo build/run (debug)
+[profile.dev]
+codegen-units = 1
+debug = true
+debug-assertions = true
+incremental = false
+lto = 'fat'
+opt-level = 'z'
+overflow-checks = true
+
+[[bin]]
+name = "motor_pwm"
+path = "src/bin/motor_pwm.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "motor_dshot"
+path = "src/bin/motor_dshot.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "imu_data"
+path = "src/bin/imu_data.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "imu_bmi270_data"
+path = "src/bin/imu_bmi270_data.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "baro_data"
+path = "src/bin/baro_data.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "battery_data"
+path = "src/bin/battery_data.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "compass_data"
+path = "src/bin/compass_data.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "kill_test"
+path = "src/bin/kill_test.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "flow_test"
+path = "src/bin/flow_test.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "motor_ramp"
+path = "src/bin/motor_ramp.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "flow_data"
+path = "src/bin/flow_data.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "sensors"
+path = "src/bin/sensors.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "i2c_scan"
+path = "src/bin/i2c_scan.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "flight"
+path = "src/bin/flight.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "sub_hover_test"
+path = "src/bin/sub_hover_test.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "pid_sweep_test"
+path = "src/bin/pid_sweep_test.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "free_test"
+path = "src/bin/free_test.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "mag_cal"
+path = "src/bin/mag_cal.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "flight_diag"
+path = "src/bin/flight_diag.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "motor_dir_test"
+path = "src/bin/motor_dir_test.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "motor_probe"
+path = "src/bin/motor_probe.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "motor_waveform_up"
+path = "src/bin/motor_waveform_up.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "gps_data"
+path = "src/bin/gps_data.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "esc_telemetry"
+path = "src/bin/esc_telemetry.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "imu_probe"
+path = "src/bin/imu_probe.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "rc_data"
+path = "src/bin/rc_data.rs"
+test = false
+doctest = false
+bench = false
