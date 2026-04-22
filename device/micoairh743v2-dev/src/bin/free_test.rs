@@ -9,8 +9,10 @@
 //!   P0: 1 s open-loop thrust ramp to BASE_THRUST (pushes through stick-slip)
 //!   P1: 3 s closed-loop climb 0 -> 1.0 m (alt_hold takes over TRUE_Z_THRUST_SP)
 //!   P2: 15 s hover at 1.0 m (flow damping observed here)
-//!   P3: 3 s closed-loop descent 1.0 -> 0.0 m
-//!   Total arm-to-disarm: ~25 s
+//!   P3: 1 s fast descent 1.0 -> 0.25 m, then 1 s slow approach 0.25 -> 0.05 m,
+//!       with lidar-based ground-detect disarm (h<0.15m for 300 ms) and a
+//!       5 s safety timeout. flow_hold silent below 25 cm.
+//!   Total arm-to-disarm: ~22 s
 //!   rate-PID gains at flight.rs boot defaults
 //!
 //! Range shifted down two stops in D000064+ after the landing frame was
@@ -641,7 +643,6 @@ async fn staircase_mission() -> ! {
     const P0_RAMP_MS: u64 = 1_000;
     const P1_RAMP_MS: u64 = 3_000;
     const P2_HOVER_S: u64 = 15;
-    const P3_RAMP_MS: u64 = 3_000;
 
     ulog::log("[mission] P0: thrust ramp 0 -> base (1s, open-loop)");
     let ramp_start = embassy_time::Instant::now();
@@ -667,17 +668,75 @@ async fn staircase_mission() -> ! {
     ulog::log("[mission] P2: hover 1.0m (15s)");
     Timer::after_secs(P2_HOVER_S).await;
 
-    ulog::log("[mission] P3: descend 1.0 -> 0.0m (3s)");
+    // P3 redesigned after D000026 flipped the drone at ~20 cm on descent:
+    //
+    //   - Fast phase: setpoint 1.0 -> 0.25 m over 1.0 s (~0.75 m/s). Brings
+    //     the drone down quickly from cruise altitude to flare-start height.
+    //   - Slow phase: setpoint 0.25 -> 0.05 m over 1.0 s (~0.20 m/s). Gentle
+    //     approach that trades descent speed for stability near the ground.
+    //   - Ground detection: any time lidar reads below 0.15 m continuously
+    //     for 300 ms, break out of the loop and disarm. This guards against
+    //     the drone sitting at the borderline altitude where flow_hold and
+    //     ground effect conspire to flip it.
+    //
+    // mtf01_reader_task's flow-activation threshold was also raised from
+    // 10 cm to 25 cm in the same change, so flow_hold goes silent before
+    // the slow phase even begins -- no tilt commands during the critical
+    // last metre.
+    ulog::log("[mission] P3: descend 1.0 -> 0.05m with ground-detect disarm");
+    const P3A_RAMP_MS: u64 = 1_000;
+    const P3A_FINAL: f32 = 0.25;
+    const P3B_RAMP_MS: u64 = 1_000;
+    const P3B_FINAL: f32 = 0.05;
+    const GROUND_DETECT_M: f32 = 0.15;
+    const GROUND_HOLD_MS: u64 = 300;
+    const DESCENT_TIMEOUT_MS: u64 = 5_000;
+
+    let mut lidar_rcv = micoairh743v2::alt_hold::LIDAR_ALT_M.receiver().unwrap();
+    let mut ground_since: Option<embassy_time::Instant> = None;
     let desc_start = embassy_time::Instant::now();
+    let mut landed = false;
     loop {
         let elapsed = desc_start.elapsed().as_millis() as u64;
-        if elapsed >= P3_RAMP_MS { break; }
-        let sp = TARGET_ALT * (1.0 - elapsed as f32 / P3_RAMP_MS as f32);
+        if elapsed >= DESCENT_TIMEOUT_MS { break; }
+
+        let sp = if elapsed < P3A_RAMP_MS {
+            let f = elapsed as f32 / P3A_RAMP_MS as f32;
+            TARGET_ALT * (1.0 - f) + P3A_FINAL * f
+        } else if elapsed < P3A_RAMP_MS + P3B_RAMP_MS {
+            let f = (elapsed - P3A_RAMP_MS) as f32 / P3B_RAMP_MS as f32;
+            P3A_FINAL * (1.0 - f) + P3B_FINAL * f
+        } else {
+            P3B_FINAL
+        };
         ALTITUDE_SETPOINT.signal(sp);
-        Timer::after_millis(100).await;
+
+        if let Some(h) = lidar_rcv.try_get() {
+            if h < GROUND_DETECT_M {
+                let below = ground_since
+                    .map(|t| t.elapsed().as_millis() as u64 >= GROUND_HOLD_MS)
+                    .unwrap_or(false);
+                if below {
+                    let mut s: heapless::String<64> = heapless::String::new();
+                    let _ = write!(s, "[mission] P3: ground detected at h={:.2}m, disarming", h);
+                    ulog::log(s.as_str());
+                    landed = true;
+                    break;
+                }
+                if ground_since.is_none() {
+                    ground_since = Some(embassy_time::Instant::now());
+                }
+            } else {
+                ground_since = None;
+            }
+        }
+
+        Timer::after_millis(50).await;
+    }
+    if !landed {
+        ulog::log("[mission] P3: descent timeout, disarming anyway");
     }
     ALTITUDE_SETPOINT.signal(0.0);
-    Timer::after_secs(2).await;
 
     ulog::log("[mission] disarming");
     COMMAD_ARM_VEHICLE.send(false);
@@ -1036,18 +1095,20 @@ async fn mtf01_reader_task(r: Mtf01Resources) -> ! {
             }
             Some(mtf01::Frame::Flow(f)) => {
                 FLOW_QUALITY.store(f.quality, Ordering::Relaxed);
-                // Gate on 10 cm AND quality >= 60 (was >= 30 through D000136).
-                // 10 cm keeps flow silent during the liftoff transient
-                // (D000049 positive-feedback failure). The quality bump from
-                // 30 -> 60 rejects marginal readings over bare wood: D000136
-                // wobbled out of control as the drone drifted off the
-                // newspaper because MTF-01 kept returning quality in the
-                // 30-50 range with noisy velocity, and flow_hold's KD_VEL
-                // amplified that noise straight into tilt commands. At >= 60
-                // we only trust flow over genuinely textured surfaces and
-                // fall through to attitude-only control when the sensor
-                // can't actually see motion.
-                if f.quality > 60 && last_height_m > 0.10 {
+                // Gate on 25 cm AND quality >= 60.
+                // Raised 10 cm -> 25 cm after D000026 flipped the drone at
+                // ~20 cm during descent: flow_hold's tilt commands (+/-4-6
+                // deg from velocity-induced-by-body-rotation noise) destabi-
+                // lise the drone in the final landing approach, where the
+                // drone cannot tolerate any lateral excursion without tip-
+                // ping into a prop-down crash. Silencing flow below 25 cm
+                // means the last metre of descent is attitude-only control,
+                // which is stable enough to land without wobbling. The 25 cm
+                // floor is also above the typical lidar minimum-range stuck
+                // regime (D000009), so flow genuinely stops when descent
+                // begins rather than receiving noisy data near ground.
+                // Quality >= 60 threshold unchanged from D000136 fix.
+                if f.quality > 60 && last_height_m > 0.25 {
                     const FLOW_SCALE: f32 = 0.25;
                     let vx = f.motion_y as f32 * FLOW_SCALE * last_height_m;
                     let vy = -(f.motion_x as f32) * FLOW_SCALE * last_height_m;
