@@ -1116,7 +1116,13 @@ async fn flow_position_logger() -> ! {
 /// jumps with throttle that's motor-current interference on the mag.
 #[embassy_executor::task]
 async fn mag_yaw_logger() -> ! {
-    let mut mag_rcv = common::signals::CAL_MAG_DATA.receiver();
+    // Bug fix 2026-04-23: this task was originally reading CAL_MAG_DATA,
+    // which is declared in common::signals but nothing writes to it on this
+    // board. The device-side compass_reader publishes the calibrated mag
+    // vector to CAL_MULTI_MAG_DATA[0] (a multi_watch of [f32;3]). That's
+    // what we actually need to subscribe to. D000079-D000082 produced zero
+    // [mag] log lines because of this mismatch.
+    let mut mag_rcv = common::signals::CAL_MULTI_MAG_DATA[0].receiver();
     let mut att_rcv = signals::AHRS_ATTITUDE_Q.receiver();
     loop {
         Timer::after_millis(500).await;
@@ -1127,9 +1133,9 @@ async fn mag_yaw_logger() -> ! {
         let (roll, pitch, yaw_gyro_rad) = q.euler_angles();
         let yaw_gyro = yaw_gyro_rad.to_degrees();
 
-        let mx = mag.mag[0];
-        let my = mag.mag[1];
-        let mz = mag.mag[2];
+        let mx = mag[0];
+        let my = mag[1];
+        let mz = mag[2];
         let b_mag = libm::sqrtf(mx * mx + my * my + mz * mz);
 
         // Tilt-compensated heading for body frame (x-forward, y-right,
