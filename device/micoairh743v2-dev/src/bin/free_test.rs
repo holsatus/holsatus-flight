@@ -42,13 +42,23 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
 use defmt_rtt as _;
 use panic_probe as _;
 
 /// Latest optical flow quality, shared between mtf01_reader and flow_hold for logging.
 static FLOW_QUALITY: AtomicU8 = AtomicU8::new(0);
+
+/// Unclamped flow-integrated body-frame displacement since the first flow
+/// sample (mm). Updated by `flow_position_logger`, read at disarm by the
+/// mission sequencer for landing-distance estimation. Separate from
+/// `flow_hold`'s internal est_x/est_y because flow_hold clamps at +/-0.5 m,
+/// which would saturate for the ~2 m drifts we see in practice and lose
+/// information. These atomics are pure telemetry -- nothing in the control
+/// loop reads them.
+static FLOW_EST_X_MM: AtomicI32 = AtomicI32::new(0);
+static FLOW_EST_Y_MM: AtomicI32 = AtomicI32::new(0);
 
 use core::fmt::Write;
 
@@ -178,6 +188,8 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     thread_spawner.spawn(staircase_mission().unwrap());
     thread_spawner.spawn(motor_monitor().unwrap());
     thread_spawner.spawn(imu_monitor().unwrap());
+    thread_spawner.spawn(flow_position_logger().unwrap());
+    thread_spawner.spawn(mag_yaw_logger().unwrap());
 
     ulog::log("[free] all tasks spawned");
 
@@ -744,6 +756,21 @@ async fn staircase_mission() -> ! {
     }
     ALTITUDE_SETPOINT.signal(0.0);
 
+    // Log the flow-integrated body-frame displacement before disarming so
+    // each flight report includes a dead-reckoned "how far did I land from
+    // where I took off" number. Compare against the operator's tape-measure
+    // reading to ground-truth the flow scale factor over time.
+    let dx = FLOW_EST_X_MM.load(Ordering::Relaxed) as f32 / 1000.0;
+    let dy = FLOW_EST_Y_MM.load(Ordering::Relaxed) as f32 / 1000.0;
+    let dist = libm::sqrtf(dx * dx + dy * dy);
+    let mut s: heapless::String<96> = heapless::String::new();
+    let _ = write!(
+        s,
+        "[mission] flow_disp dx={:.2}m dy={:.2}m |d|={:.2}m (body frame, fwd/right)",
+        dx, dy, dist
+    );
+    ulog::log(s.as_str());
+
     ulog::log("[mission] disarming");
     COMMAD_ARM_VEHICLE.send(false);
 
@@ -1045,6 +1072,95 @@ async fn flow_hold() -> ! {
             );
             ulog::log(s.as_str());
         }
+    }
+}
+
+/// Integrate flow-reported body-frame velocity into a displacement estimate,
+/// independent of `flow_hold` so we don't clamp at +/-0.5 m. Pure telemetry.
+/// Uses actual elapsed time between samples rather than a nominal DT, so
+/// dropped flow frames don't bias the integration.
+#[embassy_executor::task]
+async fn flow_position_logger() -> ! {
+    let mut rcv = micoairh743v2::alt_hold::FLOW_VEL_MS.receiver().unwrap();
+    let mut est_x = 0.0_f32;
+    let mut est_y = 0.0_f32;
+    let mut last_t: Option<embassy_time::Instant> = None;
+    loop {
+        let [vx, vy] = rcv.changed().await;
+        let now = embassy_time::Instant::now();
+        if let Some(prev) = last_t {
+            let dt = (now - prev).as_micros() as f32 / 1_000_000.0;
+            // Sanity: reject absurd gaps (task paused, first sample after a
+            // long idle, etc.) to keep the integration honest.
+            if (0.001..0.5).contains(&dt) {
+                est_x += vx * dt;
+                est_y += vy * dt;
+                FLOW_EST_X_MM.store((est_x * 1000.0) as i32, Ordering::Relaxed);
+                FLOW_EST_Y_MM.store((est_y * 1000.0) as i32, Ordering::Relaxed);
+            }
+        }
+        last_t = Some(now);
+    }
+}
+
+/// Compute a tilt-compensated magnetic heading and log it alongside the
+/// Madgwick-derived gyro yaw. Pure read-only telemetry tap: does not feed
+/// into any controller. The mag is already calibrated (bias + soft-iron
+/// matrix applied in `resources::compass_reader`). The `diff` column is
+/// the quantity to watch: if it stays roughly constant over a flight, the
+/// gyro-based yaw is not drifting. If it walks, we have empirical
+/// quantification of gyro-yaw drift rate.
+///
+/// Field magnitude |B| is logged as a sanity check. Earth's field indoors
+/// typically reads 25-60 uT depending on latitude and shielding; if |B|
+/// jumps with throttle that's motor-current interference on the mag.
+#[embassy_executor::task]
+async fn mag_yaw_logger() -> ! {
+    let mut mag_rcv = common::signals::CAL_MAG_DATA.receiver();
+    let mut att_rcv = signals::AHRS_ATTITUDE_Q.receiver();
+    loop {
+        Timer::after_millis(500).await;
+
+        let Some(mag) = mag_rcv.try_get() else { continue };
+        let Some(q) = att_rcv.try_get() else { continue };
+
+        let (roll, pitch, yaw_gyro_rad) = q.euler_angles();
+        let yaw_gyro = yaw_gyro_rad.to_degrees();
+
+        let mx = mag.mag[0];
+        let my = mag.mag[1];
+        let mz = mag.mag[2];
+        let b_mag = libm::sqrtf(mx * mx + my * my + mz * mz);
+
+        // Tilt-compensated heading for body frame (x-forward, y-right,
+        // z-down). Standard formula (see Honeywell AN-203):
+        //   Xh = mx*cos(p) + my*sin(r)*sin(p) + mz*cos(r)*sin(p)
+        //   Yh = my*cos(r) - mz*sin(r)
+        //   yaw = atan2(-Yh, Xh)
+        // atan2(-Yh, Xh) returns yaw positive CW viewed from above, matching
+        // NED body-frame yaw convention. If the drone is actually aligned
+        // with magnetic north at arm time, yaw_mag == 0.
+        let cr = libm::cosf(roll);
+        let sr = libm::sinf(roll);
+        let cp = libm::cosf(pitch);
+        let sp = libm::sinf(pitch);
+        let xh = mx * cp + my * sr * sp + mz * cr * sp;
+        let yh = my * cr - mz * sr;
+        let yaw_mag = libm::atan2f(-yh, xh).to_degrees();
+
+        // Wrap diff to (-180, 180] so growing drift is readable as a
+        // continuously-changing value rather than a ±360 jump.
+        let mut diff = yaw_mag - yaw_gyro;
+        while diff > 180.0 { diff -= 360.0; }
+        while diff < -180.0 { diff += 360.0; }
+
+        let mut s: heapless::String<96> = heapless::String::new();
+        let _ = write!(
+            s,
+            "[mag] yaw_mag={:.1} yaw_gyro={:.1} diff={:.1} |B|={:.1}uT",
+            yaw_mag, yaw_gyro, diff, b_mag
+        );
+        ulog::log(s.as_str());
     }
 }
 
