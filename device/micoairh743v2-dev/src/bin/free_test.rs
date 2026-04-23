@@ -1256,17 +1256,25 @@ async fn bmi270_logger_task(r: Bmi270Resources) -> ! {
     const GYR_SCALE_RADS: f32 =
         (2000.0_f32 * core::f32::consts::PI / 180.0) / 32768.0;
 
+    // BMI270 is mounted rotated 180 deg around its X axis relative to the
+    // BMI088 / drone body frame. Empirical observation in D000086: roll
+    // rates (gx) match across the two IMUs, pitch (gy) and yaw (gz) are
+    // inverted. Applying [+1, -1, -1] to BMI270 readings brings its C-row
+    // logs into the same NED body frame as the A-row BMI088 logs, so
+    // side-by-side comparison is apples-to-apples.
+    const BMI270_CHIP_TO_DRONE: [f32; 3] = [1.0, -1.0, -1.0];
+
     loop {
         Timer::after_millis(10).await; // 100 Hz logging cadence
         match imu.read().await {
             Ok(d) => {
                 let t = embassy_time::Instant::now().as_millis();
-                let ax = d.accel.x as f32 * ACC_SCALE_MS2;
-                let ay = d.accel.y as f32 * ACC_SCALE_MS2;
-                let az = d.accel.z as f32 * ACC_SCALE_MS2;
-                let gx = d.gyro.x as f32 * GYR_SCALE_RADS;
-                let gy = d.gyro.y as f32 * GYR_SCALE_RADS;
-                let gz = d.gyro.z as f32 * GYR_SCALE_RADS;
+                let ax = d.accel.x as f32 * ACC_SCALE_MS2 * BMI270_CHIP_TO_DRONE[0];
+                let ay = d.accel.y as f32 * ACC_SCALE_MS2 * BMI270_CHIP_TO_DRONE[1];
+                let az = d.accel.z as f32 * ACC_SCALE_MS2 * BMI270_CHIP_TO_DRONE[2];
+                let gx = d.gyro.x as f32 * GYR_SCALE_RADS * BMI270_CHIP_TO_DRONE[0];
+                let gy = d.gyro.y as f32 * GYR_SCALE_RADS * BMI270_CHIP_TO_DRONE[1];
+                let gz = d.gyro.z as f32 * GYR_SCALE_RADS * BMI270_CHIP_TO_DRONE[2];
                 let mut s: heapless::String<96> = heapless::String::new();
                 let _ = write!(
                     s,
