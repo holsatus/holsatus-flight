@@ -760,6 +760,13 @@ async fn staircase_mission() -> ! {
     // each flight report includes a dead-reckoned "how far did I land from
     // where I took off" number. Compare against the operator's tape-measure
     // reading to ground-truth the flow scale factor over time.
+    //
+    // log_critical (not log) because the regular log channel's 5-message
+    // flush policy would otherwise leave these final lines in the pending
+    // bucket when the operator yanks the LiPo after touchdown -- which is
+    // exactly what happened in D000079-D000082, all of which ended at the
+    // "ground detected" line with flow_disp lost. Critical-channel messages
+    // are drained + flushed immediately by uart_writer_task.
     let dx = FLOW_EST_X_MM.load(Ordering::Relaxed) as f32 / 1000.0;
     let dy = FLOW_EST_Y_MM.load(Ordering::Relaxed) as f32 / 1000.0;
     let dist = libm::sqrtf(dx * dx + dy * dy);
@@ -769,10 +776,14 @@ async fn staircase_mission() -> ! {
         "[mission] flow_disp dx={:.2}m dy={:.2}m |d|={:.2}m (body frame, fwd/right)",
         dx, dy, dist
     );
-    ulog::log(s.as_str());
+    ulog::log_critical(s.as_str()).await;
 
-    ulog::log("[mission] disarming");
+    ulog::log_critical("[mission] disarming").await;
     COMMAD_ARM_VEHICLE.send(false);
+
+    // Best-effort drain of the regular channel too, so any telemetry from
+    // the final descent isn't lost on power-off.
+    ulog::wait_for_drain(4, 500).await;
 
     ulog::log("[mission] test complete");
     loop {
