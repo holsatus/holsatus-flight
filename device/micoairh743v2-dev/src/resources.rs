@@ -42,19 +42,29 @@ use crate::dshot_driver::{DshotDriver, UpDmaWaveform};
 //   2. Combine CSVs via `python3 tools/mag_cal_fit.py D*/000001.CSV`
 //   3. Paste the ellipsoid output into these two constants
 //
-// Fit provenance: D000073 (1 run, 8680 samples, 2026-04-21 post-rewire),
-// ellipsoid residual 4.53% of radius. Sphere coverage 95.3% within 15 deg
-// (+y/-y/+z cardinals each at 5-8 deg -- marginal, widen those on next run).
-// Hard-iron bias ~17x Earth field (50 uT) -- large but stable, dominated
-// by FC/battery ferrous parts near the QMC5883L.
+// Fit provenance: D000098 (mag_cal_dynamic, motors spinning at DShot=400,
+// 8929 samples, 2026-04-23), ellipsoid residual 7.98% of radius. Sphere
+// coverage 99.0% within 10 deg, max gap 12.3 deg. +z cardinal 6.2 deg
+// (marginal, widen on next run). Higher residual than bench cal D000073
+// (4.53%) because motor PWM/commutation adds AC noise; the benefit is
+// hard-iron bias now reflects the in-flight magnetic environment.
 // Re-fit required whenever battery mount or high-current cable routing
 // changes relative to the FC.
+//
+// Prior bench cal (D000073, motors silent, 4.53% residual) kept here as
+// fallback reference:
+//   pub const MAG_BIAS_UT: [f32; 3] = [-8.7396e+02, -6.5483e+02, 3.3176e+02];
+//   pub const MAG_CAL_MAT: [[f32; 3]; 3] = [
+//       [ 6.606139e-04, -1.258174e-05, -5.539052e-06],
+//       [-1.258174e-05,  6.938219e-04,  3.041682e-05],
+//       [-5.539052e-06,  3.041682e-05,  7.432046e-04],
+//   ];
 // ================================================================================
-pub const MAG_BIAS_UT: [f32; 3] = [-8.7396e+02, -6.5483e+02, 3.3176e+02];
+pub const MAG_BIAS_UT: [f32; 3] = [-5.1719e+02, 1.4860e+02, 6.2322e+02];
 pub const MAG_CAL_MAT: [[f32; 3]; 3] = [
-    [ 6.606139e-04, -1.258174e-05, -5.539052e-06],
-    [-1.258174e-05,  6.938219e-04,  3.041682e-05],
-    [-5.539052e-06,  3.041682e-05,  7.432046e-04],
+    [7.424621e-04, 5.461799e-07, 2.812429e-05],
+    [5.461799e-07, 7.617944e-04, 6.740758e-06],
+    [2.812429e-05, 6.740758e-06, 7.475147e-04],
 ];
 
 assign_resources! {

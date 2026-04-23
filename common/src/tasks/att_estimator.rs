@@ -45,10 +45,30 @@ pub async fn main() {
                 let imu_data = rcv_imu_data.get().await;
                 let gyr_data = rot_x_180(imu_data.gyr.into());
                 let acc_data = rot_x_180(imu_data.acc.into());
-                let mag_data = rot_x_180(mag_data.into());
-                match ahrs.update(&gyr_data, &acc_data, &mag_data) {
-                    Err(_) => *ahrs.update_gyro(&gyr_data),
-                    Ok(attitude_q) => *attitude_q,
+
+                // |B|norm gate: compass_reader applies the ellipsoid cal so a
+                // clean sample lands on the unit sphere (|B| ~ 1.0). Motor-
+                // current EMI distorts the field direction, inflating or
+                // shrinking the norm. Fuse only when the norm is within
+                // +/- 10% of unit; otherwise fall back to IMU-only for this
+                // cycle. Cheap to compute (no sqrt-of-sqrt) and safe --
+                // skipping mag here reduces to the same gyro+accel path the
+                // Madgwick filter already runs in the Second arm below.
+                let mag_vec: Vector3<f32> = mag_data.into();
+                let b_norm_sq = mag_vec.norm_squared();
+                let use_mag = (0.81..=1.21).contains(&b_norm_sq);
+
+                if use_mag {
+                    let mag_rot = rot_x_180(mag_vec);
+                    match ahrs.update(&gyr_data, &acc_data, &mag_rot) {
+                        Err(_) => *ahrs.update_gyro(&gyr_data),
+                        Ok(attitude_q) => *attitude_q,
+                    }
+                } else {
+                    match ahrs.update_imu(&gyr_data, &acc_data) {
+                        Err(_) => *ahrs.update_gyro(&gyr_data),
+                        Ok(attitude_q) => *attitude_q,
+                    }
                 }
             }
             Either::Second(imu_data) => {
