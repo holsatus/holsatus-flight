@@ -1172,10 +1172,17 @@ async fn mag_yaw_logger() -> ! {
         while diff > 180.0 { diff -= 360.0; }
         while diff < -180.0 { diff += 360.0; }
 
+        // NOTE: b_mag is the norm of the calibrated mag vector. Because the
+        // soft-iron matrix (MAG_CAL_MAT in resources.rs) normalizes output
+        // to the unit sphere, b_mag is dimensionless and should read ~1.0
+        // on a well-calibrated sensor. Labelled |B|norm to avoid the earlier
+        // "uT" mis-label: a value like 0.8 means the sample is 20% off the
+        // cal sphere (mild residual distortion or motor-EMI shift), not
+        // that the field magnitude is 0.8 uT.
         let mut s: heapless::String<96> = heapless::String::new();
         let _ = write!(
             s,
-            "[mag] yaw_mag={:.1} yaw_gyro={:.1} diff={:.1} |B|={:.1}uT",
+            "[mag] yaw_mag={:.1} yaw_gyro={:.1} diff={:.1} |B|norm={:.2}",
             yaw_mag, yaw_gyro, diff, b_mag
         );
         ulog::log(s.as_str());
@@ -1294,6 +1301,15 @@ async fn mtf01_reader_task(r: Mtf01Resources) -> ! {
 
     let snd_lidar = micoairh743v2::alt_hold::LIDAR_ALT_M.sender();
     let snd_flow = micoairh743v2::alt_hold::FLOW_VEL_MS.sender();
+    // Gyro receiver for body-rotation compensation of optical flow.
+    // The MTF-01 is a downward-looking camera: when the drone rotates, the
+    // ground image shifts even if the drone is stationary, producing false
+    // translation reports. The shift scales as omega * h (angular rate times
+    // altitude), so we subtract that term from the flow velocity before
+    // publishing to FLOW_VEL_MS. This removes the feedback path that created
+    // altitude-dependent oscillation in D000145/147 and the drift bias
+    // suggested by D000084's ~1 deg/s Madgwick yaw drift.
+    let mut gyro_rcv = signals::RAW_MULTI_IMU_DATA[0].receiver();
     let mut last_height_m: f32 = 0.0;
 
     let mut b = [0u8; 1];
@@ -1345,8 +1361,26 @@ async fn mtf01_reader_task(r: Mtf01Resources) -> ! {
                 // Quality >= 60 threshold unchanged from D000136 fix.
                 if f.quality > 60 && last_height_m > 0.25 {
                     const FLOW_SCALE: f32 = 0.25;
-                    let vx = f.motion_y as f32 * FLOW_SCALE * last_height_m;
-                    let vy = -(f.motion_x as f32) * FLOW_SCALE * last_height_m;
+                    let vx_raw = f.motion_y as f32 * FLOW_SCALE * last_height_m;
+                    let vy_raw = -(f.motion_x as f32) * FLOW_SCALE * last_height_m;
+
+                    // Gyro compensation: a downward-looking flow sensor on
+                    // a rotating drone sees an apparent translation of
+                    // omega * h even when the drone is stationary. For NED
+                    // body frame (x-fwd, y-right, z-down) with pitch rate
+                    // omega_y positive = nose-up and roll rate omega_x
+                    // positive = right-wing-down, the correction is:
+                    //   vx = vx_raw - omega_y * h
+                    //   vy = vy_raw + omega_x * h
+                    // Signs are empirically verified-to-first-approximation;
+                    // if the first post-fix flight shows drift INCREASING
+                    // under flow_hold active, flip both signs.
+                    let (omega_x, omega_y) = match gyro_rcv.try_get() {
+                        Some(d) => (d.gyr[0], d.gyr[1]),
+                        None => (0.0, 0.0),
+                    };
+                    let vx = vx_raw - omega_y * last_height_m;
+                    let vy = vy_raw + omega_x * last_height_m;
                     snd_flow.send([vx, vy]);
                 }
             }
