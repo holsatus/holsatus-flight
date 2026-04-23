@@ -26,6 +26,8 @@ pub use config::BMI270_CONFIG_FILE;
 const REG_CHIP_ID: u8 = 0x00;
 const REG_ACC_DATA_X_LSB: u8 = 0x0C;
 const REG_INTERNAL_STATUS: u8 = 0x21;
+const REG_ACC_RANGE: u8 = 0x41;
+const REG_GYR_RANGE: u8 = 0x43;
 const REG_INIT_CTRL: u8 = 0x59;
 const REG_INIT_ADDR_0: u8 = 0x5B;
 const REG_INIT_DATA: u8 = 0x5E;
@@ -174,6 +176,39 @@ impl<SPI: SpiDevice> Bmi270<SPI> {
         Timer::after_millis(100).await;
 
         Ok(())
+    }
+
+    /// Set the accelerometer full-scale range.
+    ///
+    /// Values (per BMI270 datasheet §5.2.27):
+    ///   0x00 = +/-2 g    (1 g = 16384 LSB)   ← best resolution, default after reset
+    ///   0x01 = +/-4 g    (1 g = 8192 LSB)
+    ///   0x02 = +/-8 g    (1 g = 4096 LSB)    ← *actual* default after init() config blob
+    ///   0x03 = +/-16 g   (1 g = 2048 LSB)
+    ///
+    /// The config blob that init() uploads to the sensor sets this to 0x02
+    /// (+/-8 g), not the register-reset default of +/-2 g. Callers that rely
+    /// on specific LSB-to-m/s^2 scaling MUST explicitly call this after
+    /// init() to pin the range. Empirical discovery D000087-090: the
+    /// in-crate comment claim of "1 g at default +/-2 g range" was wrong;
+    /// stationary reports showed 2.4 units per g, matching 4096 LSB/g.
+    pub async fn set_acc_range(&mut self, range: u8) -> Result<(), Error> {
+        self.write_reg(REG_ACC_RANGE, range).await
+    }
+
+    /// Set the gyroscope full-scale range.
+    ///
+    /// Values (per BMI270 datasheet §5.2.28):
+    ///   0x00 = +/-2000 dps (1 dps = 16.384 LSB)   ← default, suits racing/acro
+    ///   0x01 = +/-1000 dps
+    ///   0x02 = +/- 500 dps
+    ///   0x03 = +/- 250 dps
+    ///   0x04 = +/- 125 dps
+    ///
+    /// Explicit-is-better-than-implicit: call this after init() to avoid
+    /// depending on the config-blob default.
+    pub async fn set_gyr_range(&mut self, range: u8) -> Result<(), Error> {
+        self.write_reg(REG_GYR_RANGE, range).await
     }
 
     /// Read one accelerometer + gyroscope sample.

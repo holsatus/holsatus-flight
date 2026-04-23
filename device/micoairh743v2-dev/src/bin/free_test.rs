@@ -1250,6 +1250,14 @@ async fn bmi270_logger_task(r: Bmi270Resources) -> ! {
         }
     }
 
+    // Pin ranges explicitly so the ACC_SCALE / GYR_SCALE constants below
+    // are guaranteed correct. The config blob defaults to ±8g accel, which
+    // makes the stationary-az reading come out at ~2.4 instead of ~9.8
+    // and is the cause of the BMI088-vs-BMI270 factor-of-4 scale mismatch
+    // seen in D000087-090. See bmi270::set_acc_range for the full context.
+    imu.set_acc_range(0x00).await.ok(); // +/-2g  -> 1 g = 16384 LSB
+    imu.set_gyr_range(0x00).await.ok(); // +/-2000 dps (explicit)
+
     // Scale: accel +-2g range, 16384 LSB/g -> g per LSB = 1/16384
     // Gyro: +-2000 dps, 16.384 LSB/dps, wrapped to rad/s.
     const ACC_SCALE_MS2: f32 = 9.80665 / 16384.0;
