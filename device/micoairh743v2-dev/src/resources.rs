@@ -122,6 +122,15 @@ assign_resources! {
         d2:     PC10,
         d3:     PC11,
     }
+    bmi270: Bmi270Resources {
+        spi:    SPI3,
+        sclk:   PB3,
+        mosi:   PD6,
+        miso:   PB4,
+        cs:     PA15,
+        dma_tx: DMA2_CH1,
+        dma_rx: DMA2_CH0,
+    }
 }
 
 pub fn split(p: Peripherals) -> AssignedResources {

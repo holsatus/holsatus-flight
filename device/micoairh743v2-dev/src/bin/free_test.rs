@@ -79,7 +79,7 @@ use micoairh743v2::alt_hold::ALTITUDE_SETPOINT;
 use micoairh743v2::log as ulog;
 use micoairh743v2::mtf01;
 use micoairh743v2::resources::{
-    self, BatteryResources, Mtf01Resources, SdmmcLogResources, UartLogResources,
+    self, BatteryResources, Bmi270Resources, Mtf01Resources, SdmmcLogResources, UartLogResources,
 };
 use micoairh743v2::sdlog::SdmmcResources;
 
@@ -190,6 +190,7 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     thread_spawner.spawn(imu_monitor().unwrap());
     thread_spawner.spawn(flow_position_logger().unwrap());
     thread_spawner.spawn(mag_yaw_logger().unwrap());
+    thread_spawner.spawn(bmi270_logger_task(r.bmi270).unwrap());
 
     ulog::log("[free] all tasks spawned");
 
@@ -1178,6 +1179,101 @@ async fn mag_yaw_logger() -> ! {
             yaw_mag, yaw_gyro, diff, b_mag
         );
         ulog::log(s.as_str());
+    }
+}
+
+/// Passive second-IMU logger. Reads the BMI270 on SPI3 at 100 Hz and emits
+/// `C,t,ax,ay,az,gx,gy,gz` rows (same units/format as the BMI088 `A` rows
+/// from imu_monitor). Does not publish to any shared signal, does not feed
+/// the attitude estimator, does not influence control. Purpose: build up
+/// a side-by-side dataset comparing BMI088 and BMI270 so we can later
+/// decide whether to fuse the two or use BMI270 as a BMI088 fallback.
+///
+/// Notes:
+/// - BMI270 init uploads a ~8 KB config blob over SPI; takes ~200 ms.
+///   The task logs `[bmi270] init OK` on success or `init FAILED` and
+///   parks itself on failure (no retry loop, since the binary keeps
+///   flying on BMI088 regardless).
+/// - Units match BMI088: m/s^2 and rad/s. Scales from datasheet: accel
+///   +-2g -> 16384 LSB/g; gyro +-2000 dps -> 16.384 LSB/dps.
+/// - Currently reads ONLY BMI270 -- no chip-to-drone rotation applied,
+///   no calibration bias removal. The raw comparison is what we want
+///   for the "could we trust it?" question; cal can come later if we
+///   decide to use it.
+#[embassy_executor::task]
+async fn bmi270_logger_task(r: Bmi270Resources) -> ! {
+    use embassy_embedded_hal::shared_bus::asynch::spi::SpiDeviceWithConfig;
+    use embassy_stm32::mode::Async;
+    use embassy_stm32::spi::{mode::Master, Config as SpiConfig, Spi};
+    use embassy_stm32::time::Hertz;
+    use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+    use embassy_sync::mutex::Mutex;
+    use micoairh743v2::bmi270::{Bmi270, BMI270_CONFIG_FILE};
+    use static_cell::StaticCell;
+
+    type Spi3Bus = Mutex<NoopRawMutex, Spi<'static, Async, Master>>;
+    static SPI3_BUS: StaticCell<Spi3Bus> = StaticCell::new();
+
+    let mut spi_cfg = SpiConfig::default();
+    spi_cfg.frequency = Hertz(8_000_000);
+    spi_cfg.mode = embassy_stm32::spi::MODE_3;
+    spi_cfg.miso_pull = embassy_stm32::gpio::Pull::Up;
+
+    let spi = Spi::new(
+        r.spi, r.sclk, r.mosi, r.miso,
+        r.dma_tx, r.dma_rx,
+        resources::Spi3Irqs,
+        spi_cfg,
+    );
+
+    let bus = SPI3_BUS.init(Mutex::new(spi));
+    let cs = Output::new(r.cs, Level::High, Speed::High);
+    let spi_dev = SpiDeviceWithConfig::new(bus, cs, spi_cfg);
+
+    let mut imu = Bmi270::new(spi_dev);
+
+    ulog::log("[bmi270] initializing (config blob ~200 ms)...");
+    match imu.init(&BMI270_CONFIG_FILE).await {
+        Ok(()) => ulog::log("[bmi270] init OK"),
+        Err(_) => {
+            ulog::log("[bmi270] init FAILED -- logger disabled");
+            loop {
+                Timer::after_secs(60).await;
+            }
+        }
+    }
+
+    // Scale: accel +-2g range, 16384 LSB/g -> g per LSB = 1/16384
+    // Gyro: +-2000 dps, 16.384 LSB/dps, wrapped to rad/s.
+    const ACC_SCALE_MS2: f32 = 9.80665 / 16384.0;
+    const GYR_SCALE_RADS: f32 =
+        (2000.0_f32 * core::f32::consts::PI / 180.0) / 32768.0;
+
+    loop {
+        Timer::after_millis(10).await; // 100 Hz logging cadence
+        match imu.read().await {
+            Ok(d) => {
+                let t = embassy_time::Instant::now().as_millis();
+                let ax = d.accel.x as f32 * ACC_SCALE_MS2;
+                let ay = d.accel.y as f32 * ACC_SCALE_MS2;
+                let az = d.accel.z as f32 * ACC_SCALE_MS2;
+                let gx = d.gyro.x as f32 * GYR_SCALE_RADS;
+                let gy = d.gyro.y as f32 * GYR_SCALE_RADS;
+                let gz = d.gyro.z as f32 * GYR_SCALE_RADS;
+                let mut s: heapless::String<96> = heapless::String::new();
+                let _ = write!(
+                    s,
+                    "C,{},{:.1},{:.1},{:.1},{:.2},{:.2},{:.2}",
+                    t, ax, ay, az, gx, gy, gz
+                );
+                ulog::log(s.as_str());
+            }
+            Err(_) => {
+                // Swallow silently; BMI270 occasionally returns bad SPI on
+                // contention. Logging each error would spam. If reliability
+                // becomes a concern we can count + periodically report.
+            }
+        }
     }
 }
 
