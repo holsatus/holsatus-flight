@@ -9,7 +9,7 @@ use core::fmt::Write;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_sync::watch::Watch;
-use embassy_time::Timer;
+use embassy_time::{Instant, Timer};
 use embedded_hal_async::i2c::I2c;
 use libm::powf;
 
@@ -95,6 +95,25 @@ const LIDAR_DISAGREE_M: f32 = 0.5;
 /// Number of baro readings to average for the baseline pressure.
 const BASELINE_SAMPLES: usize = 20;
 
+/// Altitude the drone must have cleared at least once before landing-mode
+/// can arm. Prevents the trigger from firing during the P1 takeoff ramp
+/// (alt and setpoint both start <0.3 m on the pad).
+const LANDING_ARM_M: f32 = 0.5;
+
+/// Enter landing mode when setpoint drops below this AND altitude is
+/// also below LANDING_TRIGGER_ALT_M (mission is committed to landing
+/// AND we are already close to the ground).
+const LANDING_TRIGGER_SP_M: f32 = 0.20;
+const LANDING_TRIGGER_ALT_M: f32 = 0.35;
+
+/// Duration of the open-loop thrust ramp, seconds. Thrust goes from the
+/// anchor captured at entry to zero over this window.
+/// Tuned observation D000105: drone takes ~0.8 s to traverse the last
+/// ~0.3 m when PID is out of the way, so 0.8 s keeps the ramp finishing
+/// roughly when the drone touches down. Too fast = hard landing; too
+/// slow = PID-like "hover in ground effect forever" behaviour.
+const LANDING_DURATION_S: f32 = 0.8;
+
 fn pressure_to_altitude(p: f32, p0: f32) -> f32 {
     44330.0 * (1.0 - powf(p / p0, 0.1903))
 }
@@ -160,6 +179,17 @@ pub async fn main(i2c: impl I2c, addr: u8, battery_mv: u32) -> ! {
     let mut alt_filtered = 0.0_f32;
     let mut lidar_rcv = LIDAR_ALT_M.receiver().unwrap();
     let mut use_lidar = false;
+
+    // Landing-ramp state. The PID cannot cleanly land on this airframe:
+    // at low altitude ground effect lifts the drone just as the KD term
+    // (designed to damp liftoff overshoot) adds thrust in response to
+    // descent velocity, so every flight in D000087-D000105 ended with a
+    // bounce at 0.15-0.20 m. Once we are committed to landing (mission
+    // setpoint near zero AND we are already near the ground), stop
+    // running the PID and ramp thrust linearly to zero over
+    // LANDING_DURATION_S. Sticky once entered.
+    let mut landing_armed = false;
+    let mut landing_state: Option<(Instant, f32)> = None;
 
     let mut snd_thrust = common::signals::TRUE_Z_THRUST_SP.sender();
 
@@ -270,7 +300,48 @@ pub async fn main(i2c: impl I2c, addr: u8, battery_mv: u32) -> ! {
         integral = (integral + err * DT).clamp(-1.0, 1.0);
         // D-term damps vertical velocity: climbing too fast reduces thrust,
         // descending too fast increases thrust. Prevents overshoot at liftoff.
-        let thrust = (BASE_THRUST + KP * err + KI * integral - KD * vel) * v_comp;
+        let pid_thrust = (BASE_THRUST + KP * err + KI * integral - KD * vel) * v_comp;
+
+        // Arm landing-mode once the drone has actually flown. Without this
+        // guard the trigger below would fire during P1 takeoff where alt
+        // and setpoint are both near zero.
+        if alt_filtered > LANDING_ARM_M {
+            landing_armed = true;
+        }
+
+        // Latch into landing mode on the first cycle where the mission has
+        // commanded a low setpoint AND we are close to ground. Anchor the
+        // ramp to the PID's current output for a seamless switchover
+        // (no step change when we swap out the controller). Cap the
+        // anchor at hover so an above-hover PID spike at entry cannot
+        // prolong the ramp.
+        if landing_state.is_none()
+            && landing_armed
+            && setpoint_m < LANDING_TRIGGER_SP_M
+            && alt_filtered < LANDING_TRIGGER_ALT_M
+        {
+            let anchor = pid_thrust.clamp(0.0, BASE_THRUST * v_comp);
+            landing_state = Some((Instant::now(), anchor));
+            let mut s: heapless::String<64> = heapless::String::new();
+            let _ = write!(
+                s, "[alt] LANDING RAMP start h={:.2}m anchor={:.3}",
+                alt_filtered, anchor,
+            );
+            crate::log::log(s.as_str());
+        }
+
+        let thrust = match landing_state {
+            Some((start, anchor)) => {
+                // Open-loop linear ramp to zero. Altitude-independent: if
+                // lidar drops out mid-flare the drone still lands because
+                // thrust is driven to zero regardless of what altitude
+                // says. PID is bypassed entirely.
+                let t = start.elapsed().as_millis() as f32 / 1000.0;
+                let factor = (1.0 - t / LANDING_DURATION_S).clamp(0.0, 1.0);
+                anchor * factor
+            }
+            None => pid_thrust,
+        };
         // Upper clamp raised from 5.0 -> 10.0 after D000130: alt_hold output
         // was pinned at 4.96 with sp=1.0m and h=0.05m, so the drone could not
         // climb out of ground effect. Motors were at ~750 DShot (~37% of 2047)
