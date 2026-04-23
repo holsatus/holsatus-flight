@@ -29,12 +29,54 @@ fn main() {
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let dirty = Command::new("git")
-        .args(["status", "--porcelain"])
+    // Only check firmware-critical paths for dirtiness, matching the Makefile
+    // `git-clean` target's `GIT_CRITICAL_PATHS` list. Without this restriction,
+    // the whole-repo `git status --porcelain` tags every build as "-dirty"
+    // because of legitimately-uncommitted sibling directories (flight-data/,
+    // .bin artefacts, .DS_Store, etc.) that have zero effect on firmware.
+    // Keep this list in sync with the Makefile.
+    const CRITICAL_PATHS: &[&str] = &[
+        "device/micoairh743v2-dev/src",
+        "device/micoairh743v2-dev/build.rs",
+        "device/micoairh743v2-dev/Cargo.toml",
+        "device/micoairh743v2-dev/Cargo.lock",
+        "device/micoairh743v2-dev/Makefile",
+        "device/micoairh743v2-dev/memory.x",
+        "device/micoairh743v2-dev/.cargo",
+        "common/src",
+        "common/Cargo.toml",
+        "common/Cargo.lock",
+    ];
+
+    // git status resolves pathspecs relative to CWD; the cargo invocation
+    // CWD is the crate dir, but our paths are repo-root-relative. Run from
+    // repo root so pathspec resolution matches the Makefile.
+    let repo_root = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
         .output()
         .ok()
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false);
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| s.trim().to_string());
+
+    let dirty = if let Some(root) = &repo_root {
+        let mut args: Vec<&str> = vec!["status", "--porcelain", "--"];
+        args.extend(CRITICAL_PATHS.iter().copied());
+        Command::new("git")
+            .current_dir(root)
+            .args(&args)
+            .output()
+            .ok()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false)
+    } else {
+        false
+    };
 
     let version = if dirty {
         format!("{sha}-dirty")
