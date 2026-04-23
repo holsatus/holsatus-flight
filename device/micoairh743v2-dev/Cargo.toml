@@ -187,6 +187,13 @@ doctest = false
 bench = false
 
 [[bin]]
+name = "mag_cal_dynamic"
+path = "src/bin/mag_cal_dynamic.rs"
+test = false
+doctest = false
+bench = false
+
+[[bin]]
 name = "flight_diag"
 path = "src/bin/flight_diag.rs"
 test = false
