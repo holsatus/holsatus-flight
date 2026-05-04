@@ -185,7 +185,7 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     thread_spawner.spawn(flip_kill().unwrap());
     thread_spawner.spawn(gyro_runaway_kill().unwrap());
     thread_spawner.spawn(micoairh743v2::rc_kill::rc_kill_task(r.rc).unwrap());
-    thread_spawner.spawn(staircase_mission().unwrap());
+    thread_spawner.spawn(mission_fsm_task().unwrap());
     thread_spawner.spawn(motor_monitor().unwrap());
     thread_spawner.spawn(imu_monitor().unwrap());
     thread_spawner.spawn(flow_position_logger().unwrap());
@@ -592,10 +592,341 @@ impl common::embedded_storage_async::nor_flash::NorFlash for DummyFlash {
     }
 }
 
-/// Thrust staircase mission. Identical boilerplate to flight.rs's
-/// mission_sequencer through the arm + 3s wait; replaces the single 10s
-/// thrust ramp and altitude-hold climb/hover/descend with a 6-step
-/// staircase over ~78 s.
+/// Mission FSM. Single owner of TRUE_RATE_SP / TRUE_ATTITUDE_Q_SP /
+/// TRUE_Z_THRUST_SP / ALTITUDE_SETPOINT. Consumes RC channel state and
+/// edge events from `rc_kill` and routes between GroundIdle, Manual,
+/// AutoTakeoff, AutoHover, AutoLand, Fault. See mission_fsm.md for the
+/// state diagram and SOP.
+#[embassy_executor::task]
+async fn mission_fsm_task() -> ! {
+    use micoairh743v2::rc_kill::{Maneuver, Mode, RcEvent, RC_CHANNELS, RC_EVENT};
+
+    #[derive(Copy, Clone, PartialEq, Eq, Debug)]
+    enum State {
+        GroundIdle,
+        Manual,
+        AutoTakeoff,
+        AutoHover,
+        AutoLand,
+    }
+
+    fn label(s: State) -> &'static str {
+        match s {
+            State::GroundIdle => "GroundIdle",
+            State::Manual => "Manual",
+            State::AutoTakeoff => "AutoTakeoff",
+            State::AutoHover => "AutoHover",
+            State::AutoLand => "AutoLand",
+        }
+    }
+
+    ulog::log("[fsm] waiting 5s for cal + sensors...");
+    Timer::after_secs(5).await;
+
+    if ulog::SD_MOUNTED.load(Ordering::Relaxed) != 1 {
+        ulog::log("[fsm] ABORT: no SD card, not arming");
+        loop { Timer::after_secs(60).await; }
+    }
+
+    wait_for_ahrs_ready().await;
+
+    {
+        ulog::log("[fsm] waiting for RC link (30 s timeout)...");
+        let start = embassy_time::Instant::now();
+        const RC_WAIT_MS: u64 = 30_000;
+        while !micoairh743v2::rc_kill::RC_LINK_READY.load(Ordering::Relaxed) {
+            if start.elapsed().as_millis() >= RC_WAIT_MS {
+                ulog::log("[fsm] ABORT: no RC link after 30 s -- motors will NOT arm");
+                loop { Timer::after_secs(60).await; }
+            }
+            Timer::after_millis(100).await;
+        }
+        ulog::log("[fsm] RC link established");
+    }
+
+    let mut rc_rcv = RC_CHANNELS.receiver().expect("RC_CHANNELS");
+    let mut lidar_rcv = micoairh743v2::alt_hold::LIDAR_ALT_M.receiver().unwrap();
+    let mut motors_rcv = signals::MOTORS_STATE.receiver();
+
+    // -- tunables --
+    const BASE_THRUST: f32 = 8.00;
+    const TARGET_ALT: f32 = 1.0;
+    const P0_RAMP_MS: u64 = 1_000;
+    const P1_RAMP_MS: u64 = 3_000;
+    const AUTO_HOVER_TIMEOUT_S: u64 = 8;
+    const P3A_RAMP_MS: u64 = 1_000;
+    const P3A_FINAL: f32 = 0.25;
+    const P3B_RAMP_MS: u64 = 1_000;
+    const P3B_FINAL: f32 = 0.05;
+    const GROUND_DETECT_M: f32 = 0.15;
+    const GROUND_HOLD_MS: u64 = 300;
+    const DESCENT_TIMEOUT_MS: u64 = 5_000;
+
+    const ON_GROUND_LIDAR_M: f32 = 0.10;
+    const MANUAL_MAX_TILT_RAD: f32 = 25.0_f32 * core::f32::consts::PI / 180.0;
+    const MANUAL_MAX_YAW_RATE: f32 = 2.0;
+    const MANUAL_THRUST_GAIN: f32 = BASE_THRUST * 1.4;
+    const MANUAL_IDLE_DWELL_MS: u64 = 500;
+
+    fn drain_rc_events() {
+        while let Ok(_) = RC_EVENT.try_receive() {}
+    }
+
+    fn zero_setpoints() {
+        signals::TRUE_RATE_SP.send([0.0_f32; 3]);
+        signals::TRUE_Z_THRUST_SP.send(0.0_f32);
+        signals::TRUE_ATTITUDE_Q_SP.send(UnitQuaternion::identity());
+        ALTITUDE_SETPOINT.signal(0.0);
+    }
+
+    let mut state = State::GroundIdle;
+    let mut entered_at = embassy_time::Instant::now();
+    drain_rc_events();
+    zero_setpoints();
+    ulog::log("[fsm] state=GroundIdle");
+
+    // For Manual exit detection: how long the throttle stick has been
+    // in the idle deadband AND MODE has been Idle. Reset to None when
+    // either condition is broken.
+    let mut manual_idle_since: Option<embassy_time::Instant> = None;
+
+    loop {
+        // Per-tick: pull latest RC channels and lidar. Watches return None
+        // only if no value has ever been sent; after RC_LINK_READY+lidar
+        // active they are reliably populated.
+        let ch = match rc_rcv.try_get() {
+            Some(c) => c,
+            None => { Timer::after_millis(20).await; continue; }
+        };
+        let lidar = lidar_rcv.try_get().unwrap_or(99.0);
+        let armed = motors_rcv.try_get().map(|m| m.is_armed()).unwrap_or(false);
+
+        match state {
+            State::GroundIdle => {
+                // On-ground gate: armed must be false, lidar low, AHRS ready
+                // is implicit (we don't transition into GroundIdle until
+                // wait_for_ahrs_ready returned). Mode level is sampled here.
+                let on_ground = !armed && lidar < ON_GROUND_LIDAR_M;
+
+                // Drain edge events; we only act on the *current* level for
+                // mode, and on a fresh Trigger event for Auto takeoff.
+                let mut trigger_pressed = false;
+                while let Ok(ev) = RC_EVENT.try_receive() {
+                    if let RcEvent::TriggerPressed = ev {
+                        trigger_pressed = true;
+                    }
+                }
+
+                if !on_ground {
+                    // Cannot leave GroundIdle until physically grounded.
+                    // (e.g. just-landed; lidar still settling.)
+                    Timer::after_millis(50).await;
+                    continue;
+                }
+
+                match ch.mode {
+                    Mode::Manual => {
+                        ulog::log("[fsm] GroundIdle -> Manual (gate OK)");
+                        state = State::Manual;
+                        entered_at = embassy_time::Instant::now();
+                        manual_idle_since = Some(embassy_time::Instant::now());
+                        zero_setpoints();
+                        // Arm only when throttle stick rises out of the idle
+                        // deadband; the Manual tick handles that.
+                    }
+                    Mode::Auto => {
+                        if trigger_pressed && ch.maneuver == Maneuver::Takeoff {
+                            ulog::log("[fsm] GroundIdle -> AutoTakeoff (trigger)");
+                            state = State::AutoTakeoff;
+                            entered_at = embassy_time::Instant::now();
+                            zero_setpoints();
+                            COMMAD_ARM_VEHICLE.send(true);
+                        }
+                    }
+                    Mode::Idle => { /* stay */ }
+                }
+
+                Timer::after_millis(50).await;
+            }
+
+            State::Manual => {
+                // Drain events; we don't currently act on them in Manual,
+                // but draining keeps the channel from filling up.
+                drain_rc_events();
+
+                // Stick -> setpoint mapping. Roll/pitch via attitude Watch,
+                // yaw via rate Watch (rate controller integrates yaw_rate
+                // directly, no angle-target).
+                let roll_n = micoairh743v2::rc_kill::stick_norm(ch.raw[0]);
+                let pitch_n = micoairh743v2::rc_kill::stick_norm(ch.raw[1]);
+                let yaw_n = micoairh743v2::rc_kill::stick_norm(ch.raw[3]);
+                let thr_n = micoairh743v2::rc_kill::stick_throttle(ch.raw[2]);
+
+                fn expo(n: f32, k: f32) -> f32 {
+                    (1.0 - k) * n + k * n * n * n
+                }
+                let roll_sp = expo(roll_n, 0.3) * MANUAL_MAX_TILT_RAD;
+                let pitch_sp = expo(pitch_n, 0.3) * MANUAL_MAX_TILT_RAD;
+                let yaw_rate_sp = expo(yaw_n, 0.3) * MANUAL_MAX_YAW_RATE;
+                let thrust_sp = thr_n * MANUAL_THRUST_GAIN;
+
+                signals::TRUE_ATTITUDE_Q_SP.send(UnitQuaternion::from_euler_angles(
+                    roll_sp, pitch_sp, 0.0,
+                ));
+                signals::TRUE_RATE_SP.send([0.0, 0.0, yaw_rate_sp]);
+                signals::TRUE_Z_THRUST_SP.send(thrust_sp);
+
+                // Arm on first non-idle throttle.
+                if !armed && thr_n > 0.0 {
+                    ulog::log("[fsm] Manual: throttle raised -- arming");
+                    COMMAD_ARM_VEHICLE.send(true);
+                }
+
+                // Exit Manual: throttle in idle AND MODE=Idle continuously
+                // for MANUAL_IDLE_DWELL_MS.
+                let throttle_idle = thr_n == 0.0;
+                let mode_idle = ch.mode == Mode::Idle;
+                if throttle_idle && mode_idle {
+                    let since = manual_idle_since.get_or_insert_with(embassy_time::Instant::now);
+                    if since.elapsed().as_millis() as u64 >= MANUAL_IDLE_DWELL_MS {
+                        ulog::log("[fsm] Manual -> GroundIdle (throttle+mode idle)");
+                        COMMAD_ARM_VEHICLE.send(false);
+                        zero_setpoints();
+                        state = State::GroundIdle;
+                        entered_at = embassy_time::Instant::now();
+                        manual_idle_since = None;
+                    }
+                } else {
+                    manual_idle_since = None;
+                }
+
+                Timer::after_millis(10).await;
+            }
+
+            State::AutoTakeoff => {
+                let elapsed = entered_at.elapsed().as_millis() as u64;
+                if elapsed < P0_RAMP_MS {
+                    let f = elapsed as f32 / P0_RAMP_MS as f32;
+                    signals::TRUE_Z_THRUST_SP.send(BASE_THRUST * f);
+                    Timer::after_millis(20).await;
+                } else if elapsed < P0_RAMP_MS + P1_RAMP_MS {
+                    let t = (elapsed - P0_RAMP_MS) as f32 / P1_RAMP_MS as f32;
+                    let sp = TARGET_ALT * t;
+                    ALTITUDE_SETPOINT.signal(sp);
+                    Timer::after_millis(50).await;
+                } else {
+                    ALTITUDE_SETPOINT.signal(TARGET_ALT);
+                    ulog::log("[fsm] AutoTakeoff -> AutoHover");
+                    drain_rc_events();
+                    state = State::AutoHover;
+                    entered_at = embassy_time::Instant::now();
+                }
+            }
+
+            State::AutoHover => {
+                ALTITUDE_SETPOINT.signal(TARGET_ALT);
+
+                let mut go_land = false;
+                let mut refresh = false;
+                while let Ok(ev) = RC_EVENT.try_receive() {
+                    if let RcEvent::TriggerPressed = ev {
+                        match ch.maneuver {
+                            Maneuver::Land => go_land = true,
+                            Maneuver::Hover => refresh = true,
+                            Maneuver::Takeoff => { /* ignore */ }
+                        }
+                    }
+                }
+
+                if refresh {
+                    ulog::log("[fsm] AutoHover: timeout refreshed");
+                    entered_at = embassy_time::Instant::now();
+                }
+
+                if go_land || ch.mode == Mode::Idle
+                    || entered_at.elapsed().as_secs() >= AUTO_HOVER_TIMEOUT_S
+                {
+                    let reason = if go_land {
+                        "trigger=Land"
+                    } else if ch.mode == Mode::Idle {
+                        "mode=Idle"
+                    } else {
+                        "timeout"
+                    };
+                    let mut s: heapless::String<64> = heapless::String::new();
+                    let _ = write!(s, "[fsm] AutoHover -> AutoLand ({})", reason);
+                    ulog::log(s.as_str());
+                    state = State::AutoLand;
+                    entered_at = embassy_time::Instant::now();
+                } else {
+                    Timer::after_millis(50).await;
+                }
+            }
+
+            State::AutoLand => {
+                let elapsed = entered_at.elapsed().as_millis() as u64;
+                if elapsed >= DESCENT_TIMEOUT_MS {
+                    ulog::log("[fsm] AutoLand: descent timeout, disarming");
+                    COMMAD_ARM_VEHICLE.send(false);
+                    zero_setpoints();
+                    state = State::GroundIdle;
+                    entered_at = embassy_time::Instant::now();
+                    drain_rc_events();
+                    ulog::log("[fsm] state=GroundIdle");
+                    continue;
+                }
+
+                let sp = if elapsed < P3A_RAMP_MS {
+                    let f = elapsed as f32 / P3A_RAMP_MS as f32;
+                    TARGET_ALT * (1.0 - f) + P3A_FINAL * f
+                } else if elapsed < P3A_RAMP_MS + P3B_RAMP_MS {
+                    let f = (elapsed - P3A_RAMP_MS) as f32 / P3B_RAMP_MS as f32;
+                    P3A_FINAL * (1.0 - f) + P3B_FINAL * f
+                } else {
+                    P3B_FINAL
+                };
+                ALTITUDE_SETPOINT.signal(sp);
+
+                if lidar < GROUND_DETECT_M {
+                    // Reuse entered_at as ground-since timer once we cross
+                    // the threshold; reset entered_at on first crossing.
+                    // To avoid clobbering the descent timer, use a separate
+                    // tracking variable. Hold for GROUND_HOLD_MS continuous.
+                    static GROUND_FIRST_HIT: AtomicI32 = AtomicI32::new(-1);
+                    let now_ms = embassy_time::Instant::now().as_millis() as i32;
+                    let first = GROUND_FIRST_HIT.load(Ordering::Relaxed);
+                    if first < 0 {
+                        GROUND_FIRST_HIT.store(now_ms, Ordering::Relaxed);
+                    } else if (now_ms - first) as u64 >= GROUND_HOLD_MS {
+                        let mut s: heapless::String<64> = heapless::String::new();
+                        let _ = write!(s, "[fsm] AutoLand: ground at h={:.2}m, disarming", lidar);
+                        ulog::log(s.as_str());
+                        COMMAD_ARM_VEHICLE.send(false);
+                        zero_setpoints();
+                        GROUND_FIRST_HIT.store(-1, Ordering::Relaxed);
+                        state = State::GroundIdle;
+                        entered_at = embassy_time::Instant::now();
+                        drain_rc_events();
+                        ulog::log("[fsm] state=GroundIdle");
+                        continue;
+                    }
+                } else {
+                    static GROUND_FIRST_HIT: AtomicI32 = AtomicI32::new(-1);
+                    GROUND_FIRST_HIT.store(-1, Ordering::Relaxed);
+                }
+
+                Timer::after_millis(50).await;
+            }
+        }
+
+        let _ = label;  // keep label() reachable for future log refactors
+    }
+}
+
+/// Original 6-step thrust staircase mission. Kept as a reference for the
+/// old behaviour; not spawned in main(). The FSM (mission_fsm_task)
+/// supersedes it.
+#[allow(dead_code)]
 #[embassy_executor::task]
 async fn staircase_mission() -> ! {
     ulog::log("[mission] waiting 5s for cal + sensors...");
