@@ -39,6 +39,30 @@ pub static CRITICAL_CHANNEL: Channel<CriticalSectionRawMutex, String<LOG_LEN>, 4
 /// card means no telemetry -- flying without learning costs props.
 pub static SD_MOUNTED: AtomicU8 = AtomicU8::new(255);
 
+/// Bitmask of sensor-init-complete flags, set by sensor-init code:
+///   bit 0 = compass (QMC5883L) init OK     (I2C2)
+///   bit 1 = baro DPS310 init OK            (I2C2)
+///   bit 2 = bmi270 init OK                 (SPI3)
+///
+/// Used by `rc_kill_task` to gate USART6 init: starting the CRSF DMA
+/// stream while ANY of these inits are still running wedges them via
+/// AHB-matrix bus contention. D000156/158 verified the I2C2 piece
+/// (compass + DPS310). D000164 then halted at t~8.4s mid-bmi270-init
+/// because the original 2-bit gate cleared as soon as the I2C inits
+/// finished, but bmi270's 8 KB SPI3 config-blob upload was still
+/// running -- USART6 RX DMA came up and the SPI3 transaction never
+/// completed (no [bmi270] init OK line ever appeared).
+///
+/// All three bits must be set before rc_kill is free to bring USART6
+/// up. A 5-second hard timeout in rc_kill is the safety fallback so a
+/// stuck sensor doesn't deadlock the kill switch.
+pub static SENSORS_READY: AtomicU8 = AtomicU8::new(0);
+pub const SENSOR_COMPASS_BIT: u8 = 1 << 0;
+pub const SENSOR_BARO_BIT: u8 = 1 << 1;
+pub const SENSOR_BMI270_BIT: u8 = 1 << 2;
+pub const SENSORS_READY_ALL: u8 =
+    SENSOR_COMPASS_BIT | SENSOR_BARO_BIT | SENSOR_BMI270_BIT;
+
 /// Send a `&str` to the log channel. Truncated to `LOG_LEN` if too long.
 /// Drops the message silently if the channel is full.
 pub fn log(msg: &str) {

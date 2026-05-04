@@ -1,38 +1,38 @@
 //! RC frontend: kill switch + channel publisher.
 //!
-//! Reads CRSF frames from an ExpressLRS receiver on USART6 (PC7, 420000 baud)
-//! and acts on SE / SF switch transitions from the TX15. Also decodes the
-//! mode / select / trigger switches and publishes channel state + edge
-//! events for the mission FSM to consume.
+//! Owns USART6 RX (PC7, 420 kbps CRSF) and is the only CRSF reader on
+//! the board. Decodes RcChannelsPacked frames with a small inline
+//! framer (the upstream `common::parsers::crsf::CrsfParser` halts the
+//! H743v2 thread executor on production CRSF traffic from the RP3
+//! receiver -- see `mission_fsm.md` and the project memory for the
+//! bisection that pinpointed `push_bytes`). The framer is small and
+//! self-contained: SYNC=0xC8, length 2..=62, CRC8 polynomial 0xD5
+//! over [type, payload], type 0x16 = RcChannelsPacked. Other CRSF
+//! frame types (LinkStatistics 0x14, telemetry, etc.) are
+//! CRC-validated and dropped silently.
 //!
-//!   SE (CH5) changes -> permanent kill (disarm + latch forever, same
-//!                       semantics as flip_kill / gyro_runaway_kill)
-//!   SF (CH6) changes -> disarm, then software reset of the MCU, which
-//!                       restarts the whole binary from boot (IMU cal,
-//!                       AHRS settle, RC-link re-acquire, re-arm)
-//!   SA (CH7) level   -> MODE: Idle (Low) / Manual (Mid) / Auto (High)
-//!   SB (CH8) level   -> SELECT: Takeoff (Low) / Hover (Mid) / Land (High)
-//!   SH (CH9) edge    -> TRIGGER (rising edge fires selected maneuver)
+//! TX15 EdgeTX channel map (must match Model Setup -> Mixes):
+//!   CH1=Ail  CH2=Ele  CH3=Thr  CH4=Rud
+//!   CH5=SE  (KILL, 2-state button)
+//!   CH6=SA  (MODE: Idle / Manual / Auto)
+//!   CH7=SB  (SELECT: Takeoff / Hover / Land)
+//!   CH8=SC  (reserved)
+//!   CH9=SD  (TRIGGER, 3-pos used as a stiff momentary; HIGH = press)
+//!   CH10=SF (RESTART, 2-state button -- requires `CH10 = source SF`
+//!            mix and ELRS Switch Mode = 12ch wide / 16ch wide)
 //!
-//! See `mission_fsm.md` for the full channel map and operating procedure.
-//!
-//! Baseline positions for SE/SF are recorded from the first RcChannelsPacked
-//! packet received, so the pilot can start with either switch in any
-//! position. Mode/select/trigger have no baseline -- they are reported in
-//! absolute terms.
-//!
-//! On the TX15 (EdgeTX) the corresponding mixes must exist:
-//!   CH5=SE, CH6=SF, CH7=SA, CH8=SB, CH9=SH.
-//!
-//! If the RC link never establishes, this task simply sits waiting for bytes
-//! and never triggers -- motor safety in that scenario is the responsibility
-//! of flip_kill / gyro_runaway_kill.
+//! On every valid RcChannelsPacked frame the task:
+//!   1. Records an SE/SF baseline on the very first frame and sets
+//!      `RC_LINK_READY` so the FSM can proceed.
+//!   2. Compares SE / SF raw values against baseline with a 100-LSB
+//!      hysteresis (button outputs may not cross the 3-pos LOW/MID/HIGH
+//!      thresholds). Any change disarms; SF then `SCB::sys_reset()`s.
+//!   3. Decodes SA/SB/SD into Mode / Maneuver / TriggerPressed and
+//!      publishes RC_CHANNELS + edge events on RC_EVENT.
 
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use common::parsers::crsf::packet_containers::Packet;
-use common::parsers::crsf::CrsfParser;
 use common::tasks::commander::COMMAD_ARM_VEHICLE;
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::peripherals;
@@ -51,31 +51,35 @@ bind_interrupts!(pub struct RcIrqs {
     DMA2_STREAM2 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH2>;
 });
 
-/// Set to true by the RC kill task after the first valid CRSF packet establishes
-/// a baseline. Mission sequencers must wait for this before arming so that the
-/// kill switch is functional before any motor spins.
+/// True after the first valid CRSF frame establishes the SE/SF baseline.
+/// Mission sequencers must wait for this before arming, so the kill
+/// switch is functional before any motor spins.
 pub static RC_LINK_READY: AtomicBool = AtomicBool::new(false);
 
-/// Latest decoded RC channel state. Bumped per CRSF packet. Receivers:
-/// the mission FSM, optional debug loggers. Must be initialised on link
-/// acquire so `try_get()` does not return None.
+/// Latest decoded RC channel state. Bumped per CRSF frame.
 pub static RC_CHANNELS: Watch<CriticalSectionRawMutex, RcChannels, 4> = Watch::new();
 
-/// Edge events derived from RC channels: mode level changes, select
-/// level changes, trigger rising edges. Bounded queue so a non-running
-/// FSM cannot stall the RC reader -- old events drop on overflow.
+/// Edge events: mode level changes, select level changes, trigger
+/// rising edges. Bounded queue; old events drop on overflow if the FSM
+/// is slow.
 pub static RC_EVENT: Channel<CriticalSectionRawMutex, RcEvent, 8> = Channel::new();
 
 pub const BAUD: u32 = 420_000;
 
-// Channel indices (0-based) of the watched switches.
-const SE_IDX: usize = 4; // CH5 = AUX1
-const SF_IDX: usize = 5; // CH6 = AUX2
-const SA_IDX: usize = 6; // CH7 = AUX3 (MODE)
-const SB_IDX: usize = 7; // CH8 = AUX4 (SELECT)
-const SH_IDX: usize = 8; // CH9 = AUX5 (TRIGGER)
+// CRSF channel indices (0-based) on this radio's EdgeTX mix.
+const SE_IDX: usize = 4;
+const SA_IDX: usize = 5;
+const SB_IDX: usize = 6;
+const SD_IDX: usize = 8;
+const SF_IDX: usize = 9;
 
-// CRSF 11-bit channel calibration (Betaflight / ELRS convention).
+// Stick channel indices (CRSF AETR convention).
+pub const ROLL_IDX: usize = 0;
+pub const PITCH_IDX: usize = 1;
+pub const THROTTLE_IDX: usize = 2;
+pub const YAW_IDX: usize = 3;
+
+// CRSF 11-bit channel calibration values.
 const CRSF_LOW: i32 = 172;
 const CRSF_MID: i32 = 992;
 const CRSF_HIGH: i32 = 1811;
@@ -95,14 +99,6 @@ fn decode(raw: u16) -> Pos {
         Pos::High
     } else {
         Pos::Mid
-    }
-}
-
-fn label(p: Pos) -> &'static str {
-    match p {
-        Pos::Low => "LOW",
-        Pos::Mid => "MID",
-        Pos::High => "HIGH",
     }
 }
 
@@ -156,13 +152,9 @@ impl Maneuver {
 
 #[derive(Copy, Clone)]
 pub struct RcChannels {
-    /// Raw 11-bit CRSF channel values, indices 0..15.
     pub raw: [u16; 16],
-    /// Monotonic packet counter; bumps every CRSF frame received.
     pub seq: u32,
-    /// Pre-decoded MODE level (SA / CH7).
     pub mode: Mode,
-    /// Pre-decoded SELECT level (SB / CH8).
     pub maneuver: Maneuver,
 }
 
@@ -184,10 +176,7 @@ pub enum RcEvent {
     TriggerPressed,
 }
 
-/// Convert a stick channel to a normalised [-1, 1] value with deadband
-/// applied at the centre. Returns 0 inside the deadband. Used by the
-/// FSM Manual state for roll/pitch/yaw sticks; throttle uses
-/// `stick_throttle` instead since it ranges [0, 1].
+/// Stick channel -> normalised [-1, 1] with 4% deadband. For roll/pitch/yaw.
 pub fn stick_norm(raw: u16) -> f32 {
     let v = raw as i32 - CRSF_MID;
     let span = (CRSF_HIGH - CRSF_LOW) as f32 / 2.0;
@@ -201,8 +190,7 @@ pub fn stick_norm(raw: u16) -> f32 {
     }
 }
 
-/// Convert the throttle channel to [0, 1] with a small bottom deadband
-/// so noise at idle does not produce thrust.
+/// Throttle channel -> [0, 1] with 5% bottom deadband.
 pub fn stick_throttle(raw: u16) -> f32 {
     let v = (raw as i32 - CRSF_LOW) as f32 / (CRSF_HIGH - CRSF_LOW) as f32;
     let v = v.clamp(0.0, 1.0);
@@ -214,8 +202,157 @@ pub fn stick_throttle(raw: u16) -> f32 {
     }
 }
 
+// CRSF framer constants.
+const CRSF_SYNC: u8 = 0xC8;
+const CRSF_LEN_MIN: u8 = 2;
+const CRSF_LEN_MAX: u8 = 62;
+const CRSF_RC_CHANNELS_TYPE: u8 = 0x16;
+const CRSF_RC_CHANNELS_TOTAL: usize = 26;
+const CRSF_BUF_LEN: usize = 64;
+
+enum FrameState {
+    SeekSync,
+    ReadLen,
+    ReadPayload,
+}
+
+/// Minimal CRSF byte-level framer. Feed bytes one at a time via
+/// [`feed_byte`]; on a validated RcChannelsPacked frame it returns
+/// `Some([u16; 16])`. Other frame types are CRC-validated and silently
+/// dropped (returns None).
+struct CrsfFramer {
+    state: FrameState,
+    frame: [u8; CRSF_BUF_LEN],
+    frame_idx: usize,
+    expected_total: usize,
+}
+
+impl CrsfFramer {
+    const fn new() -> Self {
+        Self {
+            state: FrameState::SeekSync,
+            frame: [0u8; CRSF_BUF_LEN],
+            frame_idx: 0,
+            expected_total: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.state = FrameState::SeekSync;
+        self.frame_idx = 0;
+        self.expected_total = 0;
+    }
+
+    fn feed_byte(&mut self, byte: u8) -> Option<[u16; 16]> {
+        match self.state {
+            FrameState::SeekSync => {
+                if byte == CRSF_SYNC {
+                    self.frame[0] = byte;
+                    self.frame_idx = 1;
+                    self.state = FrameState::ReadLen;
+                }
+                None
+            }
+            FrameState::ReadLen => {
+                if (CRSF_LEN_MIN..=CRSF_LEN_MAX).contains(&byte) {
+                    self.frame[1] = byte;
+                    self.frame_idx = 2;
+                    self.expected_total = 2 + byte as usize;
+                    self.state = FrameState::ReadPayload;
+                } else {
+                    self.reset();
+                }
+                None
+            }
+            FrameState::ReadPayload => {
+                if self.frame_idx >= self.frame.len() {
+                    self.reset();
+                    return None;
+                }
+                self.frame[self.frame_idx] = byte;
+                self.frame_idx += 1;
+                if self.frame_idx < self.expected_total {
+                    return None;
+                }
+
+                let result = self.try_decode();
+                self.reset();
+                result
+            }
+        }
+    }
+
+    fn try_decode(&self) -> Option<[u16; 16]> {
+        // CRC8 (poly 0xD5) over [type, payload], excludes CRC byte.
+        let crc_input = &self.frame[2..self.expected_total - 1];
+        let received_crc = self.frame[self.expected_total - 1];
+        if crc8_d5(crc_input) != received_crc {
+            return None;
+        }
+
+        if self.frame[2] != CRSF_RC_CHANNELS_TYPE
+            || self.expected_total != CRSF_RC_CHANNELS_TOTAL
+        {
+            return None;
+        }
+
+        let payload: &[u8; 22] = (&self.frame[3..25]).try_into().ok()?;
+        Some(common::parsers::crsf::packet_definitions::rc_channels_packed::raw_decode(payload).0)
+    }
+}
+
+fn crc8_d5(data: &[u8]) -> u8 {
+    let mut crc: u8 = 0;
+    for &byte in data {
+        crc ^= byte;
+        for _ in 0..8 {
+            crc = if crc & 0x80 != 0 {
+                (crc << 1) ^ 0xD5
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
+
+/// SE/SF buttons may not cross the 3-pos LOW/MID/HIGH thresholds when
+/// the EdgeTX mix scales them tightly. Compare raw u16 values against
+/// baseline with a 100-LSB hysteresis to catch any meaningful press.
+const BUTTON_HYSTERESIS: i32 = 100;
+fn raw_changed(prev: u16, cur: u16) -> bool {
+    (cur as i32 - prev as i32).abs() >= BUTTON_HYSTERESIS
+}
+
 #[embassy_executor::task]
 pub async fn rc_kill_task(r: RcResources) -> ! {
+    // Wait for I2C2 (compass + DPS310) and SPI3 (bmi270) sensor inits
+    // before bringing USART6 up. Concurrent USART6 RX DMA traffic
+    // wedges those inits on the H743v2 via AHB-matrix bus contention.
+    // 5 s timeout fallback so a stuck sensor never deadlocks the kill
+    // switch -- USART6 init proceeds anyway and SE/SF still work.
+    {
+        const SENSOR_WAIT_TIMEOUT_MS: u64 = 5_000;
+        let start = embassy_time::Instant::now();
+        loop {
+            let mask = ulog::SENSORS_READY.load(Ordering::Acquire);
+            if mask & ulog::SENSORS_READY_ALL == ulog::SENSORS_READY_ALL {
+                break;
+            }
+            if start.elapsed().as_millis() as u64 >= SENSOR_WAIT_TIMEOUT_MS {
+                let mut s: String<96> = String::new();
+                let _ = write!(
+                    s,
+                    "[rc_kill] sensor-ready timeout (mask=0x{:02x}) -- starting USART6 anyway",
+                    mask,
+                );
+                ulog::log(s.as_str());
+                break;
+            }
+            Timer::after_millis(100).await;
+        }
+    }
+
     let mut cfg = UartConfig::default();
     cfg.baudrate = BAUD;
 
@@ -229,17 +366,14 @@ pub async fn rc_kill_task(r: RcResources) -> ! {
         }
     };
 
-    ulog::log("[rc_kill] USART6@420000 ready, watching SE (CH5) and SF (CH6)");
-
-    let mut parser = CrsfParser::new();
-    let mut buf = [0u8; 64];
-    let mut baseline: Option<(Pos, Pos)> = None;
-    // Latched once an SE flip has killed the vehicle. Prevents repeated
-    // kill-log spam on subsequent SE wiggles, but we *keep running* the
-    // read loop so SF (restart) still works after SE has been pressed.
-    let mut killed = false;
+    ulog::log("[rc_kill] USART6@420000 ready, watching SE (CH5) and SF (CH10)");
 
     let snd_channels = RC_CHANNELS.sender();
+    let mut framer = CrsfFramer::new();
+    let mut buf = [0u8; 64];
+
+    let mut baseline: Option<(u16, u16)> = None;
+    let mut killed = false;
     let mut seq: u32 = 0;
     let mut last_mode: Option<Mode> = None;
     let mut last_maneuver: Option<Maneuver> = None;
@@ -251,117 +385,81 @@ pub async fn rc_kill_task(r: RcResources) -> ! {
             _ => continue,
         };
 
-        let mut remaining: &[u8] = &buf[..n];
-        while !remaining.is_empty() {
-            let (result, rest) = parser.push_bytes(remaining);
-            remaining = rest;
-
-            let packet = match result {
-                Some(Ok(raw)) => raw.to_packet(),
-                Some(Err(_)) => {
-                    parser.reset();
-                    continue;
-                }
-                None => break,
-            };
-
-            let Ok(Packet::RcChannelsPacked(pkt)) = packet else {
+        for i in 0..n {
+            let Some(channels) = framer.feed_byte(buf[i]) else {
                 continue;
             };
 
-            let se = decode(pkt.0[SE_IDX]);
-            let sf = decode(pkt.0[SF_IDX]);
+            let se_raw = channels[SE_IDX];
+            let sf_raw = channels[SF_IDX];
+            let mode = Mode::from_pos(decode(channels[SA_IDX]));
+            let maneuver = Maneuver::from_pos(decode(channels[SB_IDX]));
+            let sd_pos = decode(channels[SD_IDX]);
 
-            match baseline {
+            // First frame: record baseline + announce link.
+            let (se0, sf0) = match baseline {
                 None => {
-                    baseline = Some((se, sf));
-                    // Seed the channel watch before declaring link ready,
-                    // so any FSM that races on RC_LINK_READY -> RC_CHANNELS
-                    // sees a populated value on the first try_get().
+                    baseline = Some((se_raw, sf_raw));
                     snd_channels.send(RcChannels {
-                        raw: pkt.0,
+                        raw: channels,
                         seq: 0,
-                        mode: Mode::from_pos(decode(pkt.0[SA_IDX])),
-                        maneuver: Maneuver::from_pos(decode(pkt.0[SB_IDX])),
+                        mode,
+                        maneuver,
                     });
                     RC_LINK_READY.store(true, Ordering::Relaxed);
                     let mut s: String<96> = String::new();
                     let _ = write!(
                         s,
-                        "[rc_kill] baseline SE={} SF={} -- any change triggers kill",
-                        label(se),
-                        label(sf),
+                        "[rc_kill] baseline SE_raw={} SF_raw={} mode={} sel={}",
+                        se_raw,
+                        sf_raw,
+                        mode.label(),
+                        maneuver.label(),
                     );
                     ulog::log(s.as_str());
+                    (se_raw, sf_raw)
                 }
-                Some((se0, sf0)) => {
-                    // SF = RESTART. Checked first so it *always* works,
-                    // including after SE has already killed the vehicle.
-                    // Disarms, lets the motor governor send disarm DShot
-                    // frames and the log writer flush, then software-
-                    // resets the MCU -- equivalent to a power cycle.
-                    if sf != sf0 {
-                        COMMAD_ARM_VEHICLE.send(false);
+                Some(b) => b,
+            };
 
-                        // Use log_reliable so this announcement is guaranteed
-                        // to reach miniterm / SD even when the log channel is
-                        // saturated by imu_monitor at ~200 Hz.
-                        let mut s: String<96> = String::new();
-                        let _ = write!(
-                            s,
-                            "[kill] RC RESTART: SF {} -> {} -- rebooting when drained",
-                            label(sf0),
-                            label(sf),
-                        );
-                        ulog::log_critical(s.as_str()).await;
-
-                        // Wait for the channel to substantially drain before
-                        // resetting, so any earlier [kill] SE message AND the
-                        // restart announcement above actually reach the UART
-                        // / SD writer. Capped at 3 s so we never hang.
-                        ulog::wait_for_drain(4, 3000).await;
-
-                        cortex_m::peripheral::SCB::sys_reset();
-                    }
-
-                    // SE = KILL. Latches disarm on first flip. We do NOT
-                    // exit the read loop here -- that would prevent SF
-                    // from being observed for the remainder of the run.
-                    // Subsequent SE wiggles are ignored once `killed`.
-                    if se != se0 && !killed {
-                        COMMAD_ARM_VEHICLE.send(false);
-                        killed = true;
-
-                        let mut s: String<96> = String::new();
-                        let _ = write!(
-                            s,
-                            "[kill] RC ABORT: SE {} -> {} -- motors disarmed (flip SF to restart)",
-                            label(se0),
-                            label(se),
-                        );
-                        ulog::log_critical(s.as_str()).await;
-                    }
-                }
+            // SF = RESTART. Checked first so it always works, even
+            // after SE has latched a kill.
+            if raw_changed(sf0, sf_raw) {
+                COMMAD_ARM_VEHICLE.send(false);
+                let mut s: String<96> = String::new();
+                let _ = write!(
+                    s,
+                    "[kill] RC RESTART: SF raw {} -> {} -- rebooting when drained",
+                    sf0, sf_raw,
+                );
+                ulog::log_critical(s.as_str()).await;
+                ulog::wait_for_drain(4, 3000).await;
+                cortex_m::peripheral::SCB::sys_reset();
             }
 
-            // Decode mode / select / trigger and publish channel state +
-            // edge events to the FSM. Done unconditionally so the FSM
-            // sees a stream from the moment the link is up, including
-            // after a kill (so the FSM can return to GroundIdle).
-            let sa_pos = decode(pkt.0[SA_IDX]);
-            let sb_pos = decode(pkt.0[SB_IDX]);
-            let sh_pos = decode(pkt.0[SH_IDX]);
-            let mode = Mode::from_pos(sa_pos);
-            let maneuver = Maneuver::from_pos(sb_pos);
+            // SE = KILL. Latches disarm on first press.
+            if raw_changed(se0, se_raw) && !killed {
+                COMMAD_ARM_VEHICLE.send(false);
+                killed = true;
+                let mut s: String<96> = String::new();
+                let _ = write!(
+                    s,
+                    "[kill] RC ABORT: SE raw {} -> {} -- motors disarmed (press SF to restart)",
+                    se0, se_raw,
+                );
+                ulog::log_critical(s.as_str()).await;
+            }
 
+            // Publish current channel state.
             seq = seq.wrapping_add(1);
             snd_channels.send(RcChannels {
-                raw: pkt.0,
+                raw: channels,
                 seq,
                 mode,
                 maneuver,
             });
 
+            // Mode change edge.
             if last_mode != Some(mode) {
                 last_mode = Some(mode);
                 let _ = RC_EVENT.try_send(RcEvent::ModeChanged(mode));
@@ -369,6 +467,8 @@ pub async fn rc_kill_task(r: RcResources) -> ! {
                 let _ = write!(s, "[rc] mode={}", mode.label());
                 ulog::log(s.as_str());
             }
+
+            // Maneuver-select change edge.
             if last_maneuver != Some(maneuver) {
                 last_maneuver = Some(maneuver);
                 let _ = RC_EVENT.try_send(RcEvent::ManeuverSelected(maneuver));
@@ -376,15 +476,15 @@ pub async fn rc_kill_task(r: RcResources) -> ! {
                 let _ = write!(s, "[rc] select={}", maneuver.label());
                 ulog::log(s.as_str());
             }
-            // SH rising edge: any -> High. Treat Low and Mid as "released",
-            // so a non-momentary 3-pos in Mid still counts as not-pressed.
-            let trig_now_high = sh_pos == Pos::High;
+
+            // SD trigger rising edge: any -> High.
+            let trig_now_high = sd_pos == Pos::High;
             let trig_was_high = matches!(last_trigger, Some(Pos::High));
             if trig_now_high && !trig_was_high {
                 let _ = RC_EVENT.try_send(RcEvent::TriggerPressed);
                 ulog::log("[rc] trigger");
             }
-            last_trigger = Some(sh_pos);
+            last_trigger = Some(sd_pos);
         }
     }
 }

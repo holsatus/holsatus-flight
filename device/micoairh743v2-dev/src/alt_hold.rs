@@ -156,6 +156,10 @@ pub async fn main(i2c: impl I2c, addr: u8, battery_mv: u32) -> ! {
             Ok(()) => {
                 defmt::info!("[alt_hold] DPS310 initialized");
                 crate::log::log("[baro] DPS310 init OK");
+                crate::log::SENSORS_READY.fetch_or(
+                    crate::log::SENSOR_BARO_BIT,
+                    core::sync::atomic::Ordering::Release,
+                );
                 break;
             }
             Err(e) => {

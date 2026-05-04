@@ -508,6 +508,10 @@ async fn compass_reader(i2c: impl embedded_hal_async::i2c::I2c) -> ! {
         match compass.init().await {
             Ok(()) => {
                 crate::log::log("[compass] QMC5883L init OK");
+                crate::log::SENSORS_READY.fetch_or(
+                    crate::log::SENSOR_COMPASS_BIT,
+                    core::sync::atomic::Ordering::Release,
+                );
                 break;
             }
             Err(_) => {
