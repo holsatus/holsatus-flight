@@ -42,13 +42,20 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 
 use defmt_rtt as _;
 use panic_probe as _;
 
 /// Latest optical flow quality, shared between mtf01_reader and flow_hold for logging.
 static FLOW_QUALITY: AtomicU8 = AtomicU8::new(0);
+
+/// True while the FSM is in the Manual (ACRO) state. The
+/// `angle_to_rate_bridge` task checks this and skips its write to
+/// `TRUE_RATE_SP` so that Manual's rate setpoints from the sticks are
+/// not racing with `controller_angle`'s output. Set/cleared per-tick
+/// at the top of `mission_fsm_task`.
+static MANUAL_BYPASS: AtomicBool = AtomicBool::new(false);
 
 /// Unclamped flow-integrated body-frame displacement since the first flow
 /// sample (mm). Updated by `flow_position_logger`, read at disarm by the
@@ -737,10 +744,18 @@ async fn mission_fsm_task() -> ! {
     const DESCENT_TIMEOUT_MS: u64 = 5_000;
 
     const ON_GROUND_LIDAR_M: f32 = 0.10;
-    const MANUAL_MAX_TILT_RAD: f32 = 25.0_f32 * core::f32::consts::PI / 180.0;
-    const MANUAL_MAX_YAW_RATE: f32 = 2.0;
+    // Pure ACRO (rate-mode) defaults for Manual. Bardwell-style: drone
+    // does not self-level; sticks command angular rates directly. Roll
+    // and pitch share a max rate; yaw is slower because most airframes
+    // have less yaw authority. EXPO=0.3 gives a softer center for
+    // small precise corrections, near-linear at the extremes.
+    const MANUAL_MAX_ROLL_RATE: f32 = 3.0;  // rad/s, ~170 deg/s
+    const MANUAL_MAX_PITCH_RATE: f32 = 3.0; // rad/s
+    const MANUAL_MAX_YAW_RATE: f32 = 2.0;   // rad/s, ~115 deg/s
+    const MANUAL_EXPO: f32 = 0.3;
     const MANUAL_THRUST_GAIN: f32 = BASE_THRUST * 1.4;
     const MANUAL_IDLE_DWELL_MS: u64 = 500;
+    const MANUAL_LOG_PERIOD_MS: u64 = 200;
 
     fn drain_rc_events() {
         while let Ok(_) = RC_EVENT.try_receive() {}
@@ -772,6 +787,7 @@ async fn mission_fsm_task() -> ! {
     // in the idle deadband AND MODE has been Idle. Reset to None when
     // either condition is broken.
     let mut manual_idle_since: Option<embassy_time::Instant> = None;
+    let mut manual_log_throttle = embassy_time::Instant::now();
 
     loop {
         // Per-tick: pull latest RC channels and lidar. Watches return None
@@ -783,6 +799,11 @@ async fn mission_fsm_task() -> ! {
         };
         let lidar = lidar_rcv.try_get().unwrap_or(99.0);
         let armed = motors_rcv.try_get().map(|m| m.is_armed()).unwrap_or(false);
+
+        // Tell `angle_to_rate_bridge` whether Manual owns TRUE_RATE_SP.
+        // Set every tick so any state change (including unexpected exit
+        // via Fault / link-loss failsafe) is reflected immediately.
+        MANUAL_BYPASS.store(matches!(state, State::Manual), Ordering::Relaxed);
 
         // RC freshness check. If seq is bumping, the link is healthy.
         // If it has not advanced for >RC_LINK_TIMEOUT_MS while armed, we
@@ -870,13 +891,13 @@ async fn mission_fsm_task() -> ! {
             }
 
             State::Manual => {
-                // Drain events; we don't currently act on them in Manual,
-                // but draining keeps the channel from filling up.
+                // Pure ACRO (rate mode). Sticks drive angular rates on
+                // all three axes directly; no self-levelling. The
+                // angle_to_rate_bridge is bypassed via MANUAL_BYPASS so
+                // controller_angle's output does not race our writes
+                // to TRUE_RATE_SP.
                 drain_rc_events();
 
-                // Stick -> setpoint mapping. Roll/pitch via attitude Watch,
-                // yaw via rate Watch (rate controller integrates yaw_rate
-                // directly, no angle-target).
                 let roll_n = micoairh743v2::rc_kill::stick_norm(ch.raw[0]);
                 let pitch_n = micoairh743v2::rc_kill::stick_norm(ch.raw[1]);
                 let yaw_n = micoairh743v2::rc_kill::stick_norm(ch.raw[3]);
@@ -885,16 +906,29 @@ async fn mission_fsm_task() -> ! {
                 fn expo(n: f32, k: f32) -> f32 {
                     (1.0 - k) * n + k * n * n * n
                 }
-                let roll_sp = expo(roll_n, 0.3) * MANUAL_MAX_TILT_RAD;
-                let pitch_sp = expo(pitch_n, 0.3) * MANUAL_MAX_TILT_RAD;
-                let yaw_rate_sp = expo(yaw_n, 0.3) * MANUAL_MAX_YAW_RATE;
+                let roll_rate_sp = expo(roll_n, MANUAL_EXPO) * MANUAL_MAX_ROLL_RATE;
+                let pitch_rate_sp = expo(pitch_n, MANUAL_EXPO) * MANUAL_MAX_PITCH_RATE;
+                let yaw_rate_sp = expo(yaw_n, MANUAL_EXPO) * MANUAL_MAX_YAW_RATE;
                 let thrust_sp = thr_n * MANUAL_THRUST_GAIN;
 
-                signals::TRUE_ATTITUDE_Q_SP.send(UnitQuaternion::from_euler_angles(
-                    roll_sp, pitch_sp, 0.0,
-                ));
-                signals::TRUE_RATE_SP.send([0.0, 0.0, yaw_rate_sp]);
+                signals::TRUE_RATE_SP.send([roll_rate_sp, pitch_rate_sp, yaw_rate_sp]);
                 signals::TRUE_Z_THRUST_SP.send(thrust_sp);
+
+                // 5 Hz bench-debug log: stick normals + computed rates +
+                // thrust + armed. Lets the operator verify polarity and
+                // amplitude with props OFF before any flight.
+                if manual_log_throttle.elapsed().as_millis() as u64 >= MANUAL_LOG_PERIOD_MS {
+                    manual_log_throttle = embassy_time::Instant::now();
+                    let mut s: heapless::String<128> = heapless::String::new();
+                    let _ = write!(
+                        s,
+                        "[manual] r={:+.2} p={:+.2} y={:+.2} thr={:.2} | rate r={:+.2} p={:+.2} y={:+.2} thrust={:.1} armed={}",
+                        roll_n, pitch_n, yaw_n, thr_n,
+                        roll_rate_sp, pitch_rate_sp, yaw_rate_sp, thrust_sp,
+                        armed as u8,
+                    );
+                    ulog::log(s.as_str());
+                }
 
                 // Arm on first non-idle throttle.
                 if !armed && thr_n > 0.0 {
@@ -1286,7 +1320,12 @@ async fn angle_to_rate_bridge() -> ! {
     let mut snd = signals::TRUE_RATE_SP.sender();
     loop {
         let [roll, pitch, _yaw] = rcv.changed().await;
-        snd.send([roll, pitch, 0.0]);
+        // While the FSM is in Manual (ACRO), the sticks own
+        // TRUE_RATE_SP directly; bridging here would race and lose
+        // yaw. Bypass.
+        if !MANUAL_BYPASS.load(Ordering::Relaxed) {
+            snd.send([roll, pitch, 0.0]);
+        }
     }
 }
 
