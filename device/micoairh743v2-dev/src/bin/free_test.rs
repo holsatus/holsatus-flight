@@ -45,7 +45,104 @@
 use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
 use defmt_rtt as _;
-use panic_probe as _;
+// NOTE: panic_probe is intentionally NOT used in this binary; we provide
+// our own #[panic_handler] below that writes "!!! PANIC !!! file:line"
+// directly to USART1 via raw register pokes, then halts. See
+// `panic_handler` near the bottom of this file.
+
+/// Custom panic handler. Writes "!!! PANIC !!! file:line\r\n" to USART1
+/// via raw register pokes (NOT the embassy driver) and halts in WFI.
+///
+/// Constraints (deliberate, to avoid panic-during-panic):
+///   - First instruction disables interrupts (CPSID I via cortex_m).
+///   - No allocations, no `format!` / `write!`, no PAC abstractions.
+///     Integer-to-decimal is done by hand into a fixed [u8; 12] stack
+///     buffer. Bounded loops only.
+///   - Direct volatile writes to USART1 TDR (0x4001_1028) with a polled
+///     wait on the TXE_TXFNF bit (bit 7 of ISR at 0x4001_101C). Spin
+///     counter caps each wait so a wedged UART can never deadlock the
+///     handler.
+///   - Brief NOP delay up front so any in-flight DMA write from the
+///     embassy UART driver has time to drain before we start poking
+///     TDR ourselves; otherwise our bytes interleave with the DMA's.
+///   - Loop ends in WFI; no further code paths to fault on.
+#[panic_handler]
+fn panic_handler(info: &core::panic::PanicInfo) -> ! {
+    cortex_m::interrupt::disable();
+
+    // Wait for any in-flight UART DMA byte to drain. ~10 ms at 100 MHz.
+    // Generous; we're already halted, no rush.
+    for _ in 0..1_000_000u32 {
+        cortex_m::asm::nop();
+    }
+
+    // STM32H743 USART1 register addresses.
+    const USART1_ISR: *mut u32 = 0x4001_101C as *mut u32;
+    const USART1_TDR: *mut u32 = 0x4001_1028 as *mut u32;
+    const TXE_TXFNF: u32 = 1 << 7;
+
+    fn putc(b: u8) {
+        // Spin until the transmit register/FIFO has room, with a hard
+        // cap so a wedged peripheral can't hold us here forever.
+        let mut spin: u32 = 0;
+        loop {
+            let isr = unsafe { core::ptr::read_volatile(USART1_ISR) };
+            if isr & TXE_TXFNF != 0 {
+                break;
+            }
+            spin = spin.wrapping_add(1);
+            if spin > 1_000_000 {
+                return;
+            }
+        }
+        unsafe { core::ptr::write_volatile(USART1_TDR, b as u32) };
+    }
+
+    fn puts(s: &[u8]) {
+        for &b in s {
+            putc(b);
+        }
+    }
+
+    puts(b"\r\n!!! PANIC !!!\r\n");
+
+    if let Some(loc) = info.location() {
+        puts(loc.file().as_bytes());
+        putc(b':');
+
+        // Manual integer-to-decimal of loc.line() into a 12-byte buffer.
+        let line = loc.line();
+        let mut buf = [0u8; 12];
+        let mut idx: usize = 0;
+        if line == 0 {
+            buf[0] = b'0';
+            idx = 1;
+        } else {
+            let mut n = line;
+            while n > 0 && idx < buf.len() {
+                buf[idx] = (n % 10) as u8 + b'0';
+                idx += 1;
+                n /= 10;
+            }
+            // Reverse in place.
+            let mut i = 0;
+            let mut j = idx - 1;
+            while i < j {
+                buf.swap(i, j);
+                i += 1;
+                j = j.saturating_sub(1);
+            }
+        }
+        puts(&buf[..idx]);
+    }
+
+    putc(b'\r');
+    putc(b'\n');
+
+    loop {
+        cortex_m::asm::wfi();
+    }
+}
 
 /// Latest optical flow quality, shared between mtf01_reader and flow_hold for logging.
 static FLOW_QUALITY: AtomicU8 = AtomicU8::new(0);
