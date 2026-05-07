@@ -219,18 +219,29 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
         }
     }
 
+    // Visual executor-liveness heartbeat at 1 Hz (LED toggles every 500 ms,
+    // 1 full blink per second). Decoupled from the log -- if the writer
+    // task dies but the executor is still alive, the LED keeps blinking
+    // and the drone is fine; if the LED freezes, the whole executor has
+    // panicked. The dshot-rate log line still fires every 2 s through
+    // the log channel as a separate signal.
     let mut prev_tx =
         micoairh743v2::dshot_driver::DSHOT_TX_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+    let mut log_count: u8 = 0;
     loop {
         led_green.toggle();
-        Timer::after_secs(2).await;
-        let cur_tx =
-            micoairh743v2::dshot_driver::DSHOT_TX_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-        let rate = (cur_tx - prev_tx) / 2;
-        prev_tx = cur_tx;
-        let mut s: heapless::String<64> = heapless::String::new();
-        let _ = write!(s, "[free] hb dshot={}Hz", rate);
-        ulog::log(s.as_str());
+        Timer::after_millis(500).await;
+        log_count = log_count.wrapping_add(1);
+        if log_count >= 4 {
+            log_count = 0;
+            let cur_tx = micoairh743v2::dshot_driver::DSHOT_TX_COUNT
+                .load(core::sync::atomic::Ordering::Relaxed);
+            let rate = (cur_tx - prev_tx) / 2;
+            prev_tx = cur_tx;
+            let mut s: heapless::String<64> = heapless::String::new();
+            let _ = write!(s, "[free] hb dshot={}Hz", rate);
+            ulog::log(s.as_str());
+        }
     }
 }
 
