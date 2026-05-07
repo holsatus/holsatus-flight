@@ -5,6 +5,7 @@
 //! is kept as a fallback and for altitude above 8m.
 
 use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -17,6 +18,14 @@ use crate::dps310_i2c::Dps310I2c;
 
 /// External setpoint written by the mission sequencer (metres above takeoff point).
 pub static ALTITUDE_SETPOINT: Signal<CriticalSectionRawMutex, f32> = Signal::new();
+
+/// When true, alt_hold's PID skips its `TRUE_Z_THRUST_SP` write so the
+/// FSM's Manual (ACRO) state can own thrust from the throttle stick
+/// without racing this task. The `angle_to_rate_bridge` in
+/// `free_test.rs` checks the same flag for `TRUE_RATE_SP` so all
+/// auto-control writes are silenced together. Updated per-tick by
+/// `mission_fsm_task` to `matches!(state, State::Manual)`.
+pub static MANUAL_BYPASS: AtomicBool = AtomicBool::new(false);
 
 /// Lidar distance in metres, published by the MTF-01 reader task at ~50 Hz.
 /// Negative value or quality=0 means invalid reading.
@@ -236,7 +245,9 @@ pub async fn main(i2c: impl I2c, addr: u8, battery_mv: u32) -> ! {
                     s, "[alt] CEILING BREACH baro={:.2}m -- forced descent", b
                 );
                 crate::log::log(s.as_str());
-                snd_thrust.send(CEILING_EMERGENCY_THRUST);
+                if !MANUAL_BYPASS.load(Ordering::Relaxed) {
+                    snd_thrust.send(CEILING_EMERGENCY_THRUST);
+                }
                 Timer::after_millis((DT * 1000.0) as u64).await;
                 continue;
             }
@@ -353,7 +364,9 @@ pub async fn main(i2c: impl I2c, addr: u8, battery_mv: u32) -> ! {
         // software cap from an era before the closed-loop was trusted. 10.0
         // is 2.2x BASE_THRUST, plenty for normal climb while still bounded
         // well below full motor authority.
-        snd_thrust.send(thrust.clamp(0.0, 10.0));
+        if !MANUAL_BYPASS.load(Ordering::Relaxed) {
+            snd_thrust.send(thrust.clamp(0.0, 10.0));
+        }
 
         // Log to UART at 5 Hz (every 2 cycles at 10 Hz).
         // Higher rate than before (was 1 Hz) to capture D-term dynamics.

@@ -42,20 +42,13 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
 use defmt_rtt as _;
 use panic_probe as _;
 
 /// Latest optical flow quality, shared between mtf01_reader and flow_hold for logging.
 static FLOW_QUALITY: AtomicU8 = AtomicU8::new(0);
-
-/// True while the FSM is in the Manual (ACRO) state. The
-/// `angle_to_rate_bridge` task checks this and skips its write to
-/// `TRUE_RATE_SP` so that Manual's rate setpoints from the sticks are
-/// not racing with `controller_angle`'s output. Set/cleared per-tick
-/// at the top of `mission_fsm_task`.
-static MANUAL_BYPASS: AtomicBool = AtomicBool::new(false);
 
 /// Unclamped flow-integrated body-frame displacement since the first flow
 /// sample (mm). Updated by `flow_position_logger`, read at disarm by the
@@ -811,10 +804,12 @@ async fn mission_fsm_task() -> ! {
         let lidar = lidar_rcv.try_get().unwrap_or(99.0);
         let armed = motors_rcv.try_get().map(|m| m.is_armed()).unwrap_or(false);
 
-        // Tell `angle_to_rate_bridge` whether Manual owns TRUE_RATE_SP.
-        // Set every tick so any state change (including unexpected exit
-        // via Fault / link-loss failsafe) is reflected immediately.
-        MANUAL_BYPASS.store(matches!(state, State::Manual), Ordering::Relaxed);
+        // Tell `angle_to_rate_bridge` and `alt_hold::main` whether
+        // Manual owns the setpoints (rate + thrust). Set every tick so
+        // any state change (including unexpected exit via Fault /
+        // link-loss failsafe) is reflected immediately.
+        micoairh743v2::alt_hold::MANUAL_BYPASS
+            .store(matches!(state, State::Manual), Ordering::Relaxed);
 
         // RC freshness check. If seq is bumping, the link is healthy.
         // If it has not advanced for >RC_LINK_TIMEOUT_MS while armed, we
@@ -1334,7 +1329,7 @@ async fn angle_to_rate_bridge() -> ! {
         // While the FSM is in Manual (ACRO), the sticks own
         // TRUE_RATE_SP directly; bridging here would race and lose
         // yaw. Bypass.
-        if !MANUAL_BYPASS.load(Ordering::Relaxed) {
+        if !micoairh743v2::alt_hold::MANUAL_BYPASS.load(Ordering::Relaxed) {
             snd.send([roll, pitch, 0.0]);
         }
     }
