@@ -710,9 +710,12 @@ async fn mission_fsm_task() -> ! {
             warned = true;
             if last_log.elapsed().as_secs() >= 2 {
                 last_log = embassy_time::Instant::now();
-                // Format kept inside LOG_LEN=64 (longest case = all-BAD,
-                // 63 chars). Critical so the operator can diagnose a
-                // hung preflight even if power is cut shortly after.
+                // Two lines back-to-back; each fits in LOG_LEN=64. The
+                // second line carries the actual stick normals so the
+                // operator can see how far off centre they are when
+                // `stk=BAD` persists. Threshold is `STICK_CENTER_TOL`
+                // (0.10) on |r|, |p|, |y|; throttle is `<=
+                // THROTTLE_BOTTOM_TOL` (0.02).
                 let mut s: heapless::String<64> = heapless::String::new();
                 let _ = write!(
                     s,
@@ -724,6 +727,14 @@ async fn mission_fsm_task() -> ! {
                     if sticks_ok { "ok" } else { "BAD" },
                 );
                 ulog::log_critical(s.as_str()).await;
+
+                let mut s2: heapless::String<64> = heapless::String::new();
+                let _ = write!(
+                    s2,
+                    "[fsm]   sticks r={:+.2} p={:+.2} y={:+.2} thr={:.2}",
+                    roll_n, pitch_n, yaw_n, thr_n,
+                );
+                ulog::log_critical(s2.as_str()).await;
             }
             Timer::after_millis(100).await;
         }
