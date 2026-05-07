@@ -636,7 +636,7 @@ async fn mission_fsm_task() -> ! {
     Timer::after_secs(5).await;
 
     if ulog::SD_MOUNTED.load(Ordering::Relaxed) != 1 {
-        ulog::log_critical("[fsm] ABORT: no SD card, not arming").await;
+        ulog::log("[fsm] ABORT: no SD card, not arming");
         loop { Timer::after_secs(60).await; }
     }
 
@@ -648,12 +648,12 @@ async fn mission_fsm_task() -> ! {
         const RC_WAIT_MS: u64 = 30_000;
         while !micoairh743v2::rc_kill::RC_LINK_READY.load(Ordering::Relaxed) {
             if start.elapsed().as_millis() >= RC_WAIT_MS {
-                ulog::log_critical("[fsm] ABORT: no RC link after 30 s -- no arm").await;
+                ulog::log("[fsm] ABORT: no RC link after 30 s -- no arm");
                 loop { Timer::after_secs(60).await; }
             }
             Timer::after_millis(100).await;
         }
-        ulog::log_critical("[fsm] RC link established").await;
+        ulog::log("[fsm] RC link established");
     }
 
     let mut rc_rcv = RC_CHANNELS.receiver().expect("RC_CHANNELS");
@@ -696,7 +696,7 @@ async fn mission_fsm_task() -> ! {
                 && yaw_n.abs() < STICK_CENTER_TOL;
             if mode_ok && select_ok && trigger_ok && throttle_ok && sticks_ok {
                 if warned {
-                    ulog::log_critical("[fsm] preflight OK -- proceeding").await;
+                    ulog::log("[fsm] preflight OK -- proceeding");
                 }
                 break;
             }
@@ -719,7 +719,7 @@ async fn mission_fsm_task() -> ! {
                     if throttle_ok { "ok" } else { "BAD" },
                     if sticks_ok { "ok" } else { "BAD" },
                 );
-                ulog::log_critical(s.as_str()).await;
+                ulog::log(s.as_str());
 
                 let mut s2: heapless::String<64> = heapless::String::new();
                 let _ = write!(
@@ -727,7 +727,7 @@ async fn mission_fsm_task() -> ! {
                     "[fsm]   sticks r={:+.2} p={:+.2} y={:+.2} thr={:.2}",
                     roll_n, pitch_n, yaw_n, thr_n,
                 );
-                ulog::log_critical(s2.as_str()).await;
+                ulog::log(s2.as_str());
             }
             Timer::after_millis(100).await;
         }
@@ -776,7 +776,7 @@ async fn mission_fsm_task() -> ! {
     let mut entered_at = embassy_time::Instant::now();
     drain_rc_events();
     zero_setpoints();
-    ulog::log_critical("[fsm] state=GroundIdle").await;
+    ulog::log("[fsm] state=GroundIdle");
 
     // RC freshness watchdog: track when ch.seq last advanced. While armed,
     // a stale link for >RC_LINK_TIMEOUT_MS is a Fault and triggers an
@@ -824,7 +824,7 @@ async fn mission_fsm_task() -> ! {
         if armed && state != State::Fault
             && last_seq_change.elapsed().as_millis() as u64 > RC_LINK_TIMEOUT_MS
         {
-            ulog::log_critical("[fsm] RC LINK LOST > 500ms while armed -- failsafe").await;
+            ulog::log("[fsm] RC LINK LOST > 500ms while armed -- failsafe");
             match state {
                 State::Manual => {
                     // Manual = sticks were the controller; without them, no
@@ -873,7 +873,7 @@ async fn mission_fsm_task() -> ! {
 
                 match ch.mode {
                     Mode::Manual => {
-                        ulog::log_critical("[fsm] GroundIdle -> Manual (gate OK)").await;
+                        ulog::log("[fsm] GroundIdle -> Manual (gate OK)");
                         state = State::Manual;
                         entered_at = embassy_time::Instant::now();
                         manual_idle_since = Some(embassy_time::Instant::now());
@@ -883,7 +883,7 @@ async fn mission_fsm_task() -> ! {
                     }
                     Mode::Auto => {
                         if trigger_pressed && ch.maneuver == Maneuver::Takeoff {
-                            ulog::log_critical("[fsm] GroundIdle -> AutoTakeoff (trigger)").await;
+                            ulog::log("[fsm] GroundIdle -> AutoTakeoff (trigger)");
                             state = State::AutoTakeoff;
                             entered_at = embassy_time::Instant::now();
                             zero_setpoints();
@@ -938,7 +938,7 @@ async fn mission_fsm_task() -> ! {
 
                 // Arm on first non-idle throttle.
                 if !armed && thr_n > 0.0 {
-                    ulog::log_critical("[fsm] Manual: throttle raised -- arming").await;
+                    ulog::log("[fsm] Manual: throttle raised -- arming");
                     COMMAD_ARM_VEHICLE.send(true);
                 }
 
@@ -949,7 +949,7 @@ async fn mission_fsm_task() -> ! {
                 if throttle_idle && mode_idle {
                     let since = manual_idle_since.get_or_insert_with(embassy_time::Instant::now);
                     if since.elapsed().as_millis() as u64 >= MANUAL_IDLE_DWELL_MS {
-                        ulog::log_critical("[fsm] Manual -> GroundIdle (throttle+mode idle)").await;
+                        ulog::log("[fsm] Manual -> GroundIdle (throttle+mode idle)");
                         COMMAD_ARM_VEHICLE.send(false);
                         zero_setpoints();
                         state = State::GroundIdle;
@@ -976,7 +976,7 @@ async fn mission_fsm_task() -> ! {
                     Timer::after_millis(50).await;
                 } else {
                     ALTITUDE_SETPOINT.signal(TARGET_ALT);
-                    ulog::log_critical("[fsm] AutoTakeoff -> AutoHover").await;
+                    ulog::log("[fsm] AutoTakeoff -> AutoHover");
                     drain_rc_events();
                     state = State::AutoHover;
                     entered_at = embassy_time::Instant::now();
@@ -1015,7 +1015,7 @@ async fn mission_fsm_task() -> ! {
                     };
                     let mut s: heapless::String<64> = heapless::String::new();
                     let _ = write!(s, "[fsm] AutoHover -> AutoLand ({})", reason);
-                    ulog::log_critical(s.as_str()).await;
+                    ulog::log(s.as_str());
                     state = State::AutoLand;
                     entered_at = embassy_time::Instant::now();
                 } else {
@@ -1026,13 +1026,13 @@ async fn mission_fsm_task() -> ! {
             State::AutoLand => {
                 let elapsed = entered_at.elapsed().as_millis() as u64;
                 if elapsed >= DESCENT_TIMEOUT_MS {
-                    ulog::log_critical("[fsm] AutoLand: descent timeout, disarming").await;
+                    ulog::log("[fsm] AutoLand: descent timeout, disarming");
                     COMMAD_ARM_VEHICLE.send(false);
                     zero_setpoints();
                     state = State::GroundIdle;
                     entered_at = embassy_time::Instant::now();
                     drain_rc_events();
-                    ulog::log_critical("[fsm] state=GroundIdle").await;
+                    ulog::log("[fsm] state=GroundIdle");
                     continue;
                 }
 
@@ -1060,14 +1060,14 @@ async fn mission_fsm_task() -> ! {
                     } else if (now_ms - first) as u64 >= GROUND_HOLD_MS {
                         let mut s: heapless::String<64> = heapless::String::new();
                         let _ = write!(s, "[fsm] AutoLand: ground at h={:.2}m, disarming", lidar);
-                        ulog::log_critical(s.as_str()).await;
+                        ulog::log(s.as_str());
                         COMMAD_ARM_VEHICLE.send(false);
                         zero_setpoints();
                         GROUND_FIRST_HIT.store(-1, Ordering::Relaxed);
                         state = State::GroundIdle;
                         entered_at = embassy_time::Instant::now();
                         drain_rc_events();
-                        ulog::log_critical("[fsm] state=GroundIdle").await;
+                        ulog::log("[fsm] state=GroundIdle");
                         continue;
                     }
                 } else {
@@ -1091,7 +1091,7 @@ async fn mission_fsm_task() -> ! {
                     last_seq_change.elapsed().as_millis() as u64 <= RC_LINK_TIMEOUT_MS;
                 let on_ground = !armed && lidar < 0.10;
                 if link_fresh && on_ground && ch.mode == Mode::Idle {
-                    ulog::log_critical("[fsm] Fault -> GroundIdle (link back, OK)").await;
+                    ulog::log("[fsm] Fault -> GroundIdle (link back, OK)");
                     drain_rc_events();
                     state = State::GroundIdle;
                     entered_at = embassy_time::Instant::now();
@@ -1289,9 +1289,9 @@ async fn staircase_mission() -> ! {
         "[mission] flow_disp dx={:.2}m dy={:.2}m |d|={:.2}m (body frame, fwd/right)",
         dx, dy, dist
     );
-    ulog::log_critical(s.as_str()).await;
+    ulog::log(s.as_str());
 
-    ulog::log_critical("[mission] disarming").await;
+    ulog::log("[mission] disarming");
     COMMAD_ARM_VEHICLE.send(false);
 
     // Best-effort drain of the regular channel too, so any telemetry from
