@@ -14,7 +14,7 @@
 BIN    ?= motor_pwm
 PORT   ?= /dev/cu.usbserial-A5069RR4
 BAUD   ?= 115200
-VERIFY ?= 1
+VERIFY ?= 0
 
 ifeq ($(VERIFY),1)
   VERIFY_FLAG := -v
