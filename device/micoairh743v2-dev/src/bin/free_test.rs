@@ -50,44 +50,43 @@ use defmt_rtt as _;
 // directly to USART1 via raw register pokes, then halts. See
 // `panic_handler` near the bottom of this file.
 
-/// Frame-chain LRs walked from `_defmt_panic` entry. Frame layout is the
-/// standard ARM Thumb `push {r7, lr}; mov r7, sp` prologue: r7 points to
-/// a `[prev_r7, saved_lr]` pair, with `prev_r7` continuing the chain.
-/// The immediate caller's LR is sometimes a scratch register holding
-/// a .rodata pointer rather than a return address; walking up gives us
-/// frames whose LRs are valid `.text` return addresses to feed into
-/// `addr2line`.
-const PANIC_FRAMES: usize = 8;
-static PANIC_LRS: [AtomicU32; PANIC_FRAMES] = [
+/// Stack scan from `_defmt_panic` entry. Frame-walking via `r7` is
+/// unreliable in optimized async code, so instead we scan the next N
+/// stack words upward and keep any that look like valid `.text`
+/// return addresses (low bit set for thumb, in `.text` VMA range).
+/// Some of those will be saved-LR slots from real frames.
+const PANIC_HITS: usize = 12;
+static PANIC_LRS: [AtomicU32; PANIC_HITS] = [
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
     AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
     AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
 ];
 
 #[export_name = "_defmt_panic"]
 extern "C" fn defmt_panic_override() -> ! {
-    let r7: u32;
+    let sp: u32;
     unsafe {
         core::arch::asm!(
-            "mov {0}, r7",
-            out(reg) r7,
+            "mov {0}, sp",
+            out(reg) sp,
             options(readonly, preserves_flags),
         );
     }
-    let mut fp = r7;
-    let stack_lo: u32 = 0x2400_0000;
-    let stack_hi: u32 = 0x2408_0000;
-    for slot in PANIC_LRS.iter() {
-        if fp < stack_lo || fp + 8 > stack_hi || (fp & 3) != 0 {
-            slot.store(0, Ordering::Relaxed);
-            break;
+    // .text VMA range from the linker: 0x08000298..0x08032f74. Use
+    // generous bounds to catch any future relayout.
+    const TEXT_LO: u32 = 0x0800_0298;
+    const TEXT_HI: u32 = 0x0803_3000;
+    const STACK_HI: u32 = 0x2408_0000;
+    let mut hits = 0usize;
+    let mut addr = sp;
+    while hits < PANIC_HITS && addr + 4 <= STACK_HI {
+        let v = unsafe { core::ptr::read_volatile(addr as *const u32) };
+        // Valid Thumb return addresses have bit 0 set and even bit 1.
+        if (v & 1) == 1 && (v & 0xFFFF_FFFE) >= TEXT_LO && (v & 0xFFFF_FFFE) < TEXT_HI {
+            PANIC_LRS[hits].store(v, Ordering::Relaxed);
+            hits += 1;
         }
-        let prev = unsafe { core::ptr::read_volatile(fp as *const u32) };
-        let saved_lr = unsafe { core::ptr::read_volatile((fp + 4) as *const u32) };
-        slot.store(saved_lr, Ordering::Relaxed);
-        if prev <= fp {
-            break;
-        }
-        fp = prev;
+        addr += 4;
     }
     core::panic!()
 }
