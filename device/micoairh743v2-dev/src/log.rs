@@ -63,22 +63,46 @@ pub const SENSOR_BMI270_BIT: u8 = 1 << 2;
 pub const SENSORS_READY_ALL: u8 =
     SENSOR_COMPASS_BIT | SENSOR_BARO_BIT | SENSOR_BMI270_BIT;
 
+/// Truncate `msg` to at most `LOG_LEN` bytes at a UTF-8 char boundary and
+/// copy into a fresh `String<LOG_LEN>`. Returns `None` for empty input so
+/// the caller can skip the channel send (the embassy-stm32 DMA driver
+/// asserts `mem_len > 0` and panics on empty writes).
+///
+/// `heapless::String::push_str` is atomic: on overflow it returns `Err`
+/// and leaves the destination unchanged. Without truncation here, an
+/// over-long `msg` would silently enqueue an empty string that later
+/// crashes `uart_writer_task` inside `Channel::configure`.
+fn make_log_string(msg: &str) -> Option<String<LOG_LEN>> {
+    if msg.is_empty() {
+        return None;
+    }
+    let mut end = msg.len().min(LOG_LEN);
+    while end > 0 && !msg.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    let mut s: String<LOG_LEN> = String::new();
+    let _ = s.push_str(&msg[..end]);
+    Some(s)
+}
+
 /// Send a `&str` to the log channel. Truncated to `LOG_LEN` if too long.
 /// Drops the message silently if the channel is full.
 pub fn log(msg: &str) {
-    let mut s: String<LOG_LEN> = String::new();
-    // push_str returns Err on truncation; we accept truncation silently
-    let _ = s.push_str(msg);
-    CHANNEL.try_send(s).ok();
+    if let Some(s) = make_log_string(msg) {
+        CHANNEL.try_send(s).ok();
+    }
 }
 
 /// Send a `&str` to the log channel, awaiting if the channel is full.
 /// Use for critical messages that must not be dropped under load (e.g. the
 /// kill / restart announcements before a software reset).
 pub async fn log_reliable(msg: &str) {
-    let mut s: String<LOG_LEN> = String::new();
-    let _ = s.push_str(msg);
-    CHANNEL.send(s).await;
+    if let Some(s) = make_log_string(msg) {
+        CHANNEL.send(s).await;
+    }
 }
 
 /// Send a `&str` to the priority CRITICAL_CHANNEL. Used by rc_kill_task for
@@ -87,9 +111,9 @@ pub async fn log_reliable(msg: &str) {
 /// drains it with priority over the regular CHANNEL so the message is
 /// printed immediately even while the regular channel is saturated.
 pub async fn log_critical(msg: &str) {
-    let mut s: String<LOG_LEN> = String::new();
-    let _ = s.push_str(msg);
-    CRITICAL_CHANNEL.send(s).await;
+    if let Some(s) = make_log_string(msg) {
+        CRITICAL_CHANNEL.send(s).await;
+    }
 }
 
 /// Waits until BOTH channels have drained to at most `target` pending

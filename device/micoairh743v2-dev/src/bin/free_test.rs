@@ -154,9 +154,11 @@ unsafe extern "C" fn defmt_panic_override() -> ! {
 
 extern "C" fn defmt_panic_thunk(sp_at_entry: u32) -> ! {
     // .text VMA range from the linker (objdump -h). Use generous bounds
-    // to catch any future relayout.
+    // to catch any future relayout. Upper bound is well above the
+    // current ~0x0804C000 .text end so binary growth doesn't silently
+    // make the scanner drop real return addresses.
     const TEXT_LO: u32 = 0x0800_0298;
-    const TEXT_HI: u32 = 0x0803_3300;
+    const TEXT_HI: u32 = 0x0808_0000;
     const STACK_HI: u32 = 0x2408_0000;
     let task_id = CURRENT_TASK_ID.load(Ordering::Relaxed);
     PANIC_TASK_ID.store(task_id, Ordering::Relaxed);
