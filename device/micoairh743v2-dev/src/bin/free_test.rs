@@ -62,6 +62,22 @@ static PANIC_LRS: [AtomicU32; PANIC_HITS] = [
     AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
 ];
 
+/// Set by each task at the top of its main work / before any await. The
+/// value at panic time tells us which task's body was last running. Tasks
+/// that don't set this read as 0 (TASK_NONE).
+pub static CURRENT_TASK_ID: AtomicU32 = AtomicU32::new(0);
+static PANIC_TASK_ID: AtomicU32 = AtomicU32::new(0);
+pub const TASK_FSM: u32 = 1;
+pub const TASK_BMI270: u32 = 2;
+pub const TASK_MAG_YAW: u32 = 3;
+pub const TASK_FLOW_POS_LOG: u32 = 4;
+pub const TASK_MOTOR_MON: u32 = 5;
+pub const TASK_IMU_MON: u32 = 6;
+pub const TASK_FLIP_KILL: u32 = 7;
+pub const TASK_GYRO_KILL: u32 = 8;
+pub const TASK_ANGLE_TO_RATE: u32 = 9;
+pub const TASK_FLOW_HOLD: u32 = 10;
+
 #[export_name = "_defmt_panic"]
 extern "C" fn defmt_panic_override() -> ! {
     let sp: u32;
@@ -77,6 +93,11 @@ extern "C" fn defmt_panic_override() -> ! {
     const TEXT_LO: u32 = 0x0800_0298;
     const TEXT_HI: u32 = 0x0803_3000;
     const STACK_HI: u32 = 0x2408_0000;
+    // Snapshot CURRENT_TASK_ID first; we reset it inside the loop so even
+    // if an awaited future preempts the panicking task before our handler
+    // runs, the value is preserved.
+    let task_id = CURRENT_TASK_ID.load(Ordering::Relaxed);
+    PANIC_TASK_ID.store(task_id, Ordering::Relaxed);
     let mut hits = 0usize;
     let mut addr = sp;
     while hits < PANIC_HITS && addr + 4 <= STACK_HI {
@@ -212,6 +233,30 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     if !any {
         puts(b"  no defmt frames\r\n");
     }
+    let tid = PANIC_TASK_ID.load(Ordering::Relaxed);
+    puts(b"  task_id=");
+    let mut buf = [0u8; 12];
+    let mut idx: usize = 0;
+    if tid == 0 {
+        buf[0] = b'0';
+        idx = 1;
+    } else {
+        let mut n = tid;
+        while n > 0 && idx < buf.len() {
+            buf[idx] = (n % 10) as u8 + b'0';
+            idx += 1;
+            n /= 10;
+        }
+        let mut i = 0;
+        let mut j = idx - 1;
+        while i < j {
+            buf.swap(i, j);
+            i += 1;
+            j = j.saturating_sub(1);
+        }
+    }
+    puts(&buf[..idx]);
+    puts(b"\r\n");
 
     loop {
         cortex_m::asm::wfi();
@@ -986,6 +1031,7 @@ async fn mission_fsm_task() -> ! {
     let mut manual_log_throttle = embassy_time::Instant::now();
 
     loop {
+        CURRENT_TASK_ID.store(TASK_FSM, Ordering::Relaxed);
         // Per-tick: pull latest RC channels and lidar. Watches return None
         // only if no value has ever been sent; after RC_LINK_READY+lidar
         // active they are reliably populated.
@@ -1518,6 +1564,7 @@ async fn angle_to_rate_bridge() -> ! {
     let mut rcv = signals::ANGLE_TO_RATE_SP.receiver();
     let mut snd = signals::TRUE_RATE_SP.sender();
     loop {
+        CURRENT_TASK_ID.store(TASK_ANGLE_TO_RATE, Ordering::Relaxed);
         let [roll, pitch, _yaw] = rcv.changed().await;
         // While the FSM is in Manual (ACRO), the sticks own
         // TRUE_RATE_SP directly; bridging here would race and lose
