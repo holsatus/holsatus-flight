@@ -78,31 +78,45 @@ pub const TASK_GYRO_KILL: u32 = 8;
 pub const TASK_ANGLE_TO_RATE: u32 = 9;
 pub const TASK_FLOW_HOLD: u32 = 10;
 
+/// The genuine BL+4 caller address, captured by the `#[naked]` `_defmt_panic`
+/// override before any compiler-generated code can clobber LR. Past attempts
+/// to read LR from a normal `extern "C"` function were unreliable: the
+/// compiler emitted prologue + literal-pool loads that scheduled `mov r0, lr`
+/// AFTER LR had been used as a scratch register, producing addresses that
+/// pointed into `.rodata` instead of `.text`.
+static PANIC_REAL_LR: AtomicU32 = AtomicU32::new(0);
+
+/// `#[naked]` override of defmt's `_defmt_panic`. With no compiler prologue,
+/// LR at function entry is unambiguously the caller's BL+4 return address.
+/// We snapshot it into `PANIC_REAL_LR`, save sp into r4 so the regular Rust
+/// thunk can scan the stack, and tail-branch into the thunk which performs
+/// the rest (CURRENT_TASK_ID snapshot, stack scan, core::panic!()).
+#[unsafe(naked)]
 #[export_name = "_defmt_panic"]
-extern "C" fn defmt_panic_override() -> ! {
-    let sp: u32;
-    unsafe {
-        core::arch::asm!(
-            "mov {0}, sp",
-            out(reg) sp,
-            options(readonly, preserves_flags),
-        );
-    }
-    // .text VMA range from the linker: 0x08000298..0x08032f74. Use
-    // generous bounds to catch any future relayout.
+unsafe extern "C" fn defmt_panic_override() -> ! {
+    core::arch::naked_asm!(
+        "mov r4, sp",                      // r4 = sp at entry, preserved into thunk
+        "ldr r0, ={panic_lr}",
+        "str lr, [r0]",                    // *PANIC_REAL_LR = lr (genuine caller)
+        "mov r0, r4",                      // r0 = sp at entry (arg to thunk)
+        "b {thunk}",
+        panic_lr = sym PANIC_REAL_LR,
+        thunk = sym defmt_panic_thunk,
+    )
+}
+
+extern "C" fn defmt_panic_thunk(sp_at_entry: u32) -> ! {
+    // .text VMA range from the linker (objdump -h). Use generous bounds
+    // to catch any future relayout.
     const TEXT_LO: u32 = 0x0800_0298;
-    const TEXT_HI: u32 = 0x0803_3000;
+    const TEXT_HI: u32 = 0x0803_3300;
     const STACK_HI: u32 = 0x2408_0000;
-    // Snapshot CURRENT_TASK_ID first; we reset it inside the loop so even
-    // if an awaited future preempts the panicking task before our handler
-    // runs, the value is preserved.
     let task_id = CURRENT_TASK_ID.load(Ordering::Relaxed);
     PANIC_TASK_ID.store(task_id, Ordering::Relaxed);
     let mut hits = 0usize;
-    let mut addr = sp;
+    let mut addr = sp_at_entry;
     while hits < PANIC_HITS && addr + 4 <= STACK_HI {
         let v = unsafe { core::ptr::read_volatile(addr as *const u32) };
-        // Valid Thumb return addresses have bit 0 set and even bit 1.
         if (v & 1) == 1 && (v & 0xFFFF_FFFE) >= TEXT_LO && (v & 0xFFFF_FFFE) < TEXT_HI {
             PANIC_LRS[hits].store(v, Ordering::Relaxed);
             hits += 1;
@@ -217,6 +231,15 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
             putc(c);
         }
     }
+    // Genuine BL+4 caller of `_defmt_panic`, captured by the naked-asm
+    // override. addr2line on this points directly at the panicking
+    // defmt::panic!/unwrap!/assert! call site.
+    let real_lr = PANIC_REAL_LR.load(Ordering::Relaxed);
+    if real_lr != 0 {
+        puts(b"  panic_lr=0x");
+        put_hex32(real_lr, putc);
+        puts(b"\r\n");
+    }
     let mut any = false;
     for (i, slot) in PANIC_LRS.iter().enumerate() {
         let v = slot.load(Ordering::Relaxed);
@@ -232,6 +255,37 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     }
     if !any {
         puts(b"  no defmt frames\r\n");
+    }
+    // Dump the last 64 bytes of defmt-rtt's BUFFER, anchored at the
+    // up-channel write cursor in the SEGGER RTT control block. The most
+    // recent defmt frame ends at write_cursor-1; its leading symbol-id
+    // varint identifies the panic message in the .defmt section. Cross-
+    // reference with `arm-none-eabi-nm <elf> | grep defmt_error` to find
+    // the matching disambiguator.
+    const RTT_HEADER_WRITE_OFFSET: u32 = 0x2400_0140; // up_channel.write
+    const RTT_BUFFER_BASE: u32 = 0x2400_8ae8;         // BUFFER (1024 bytes)
+    const RTT_BUFFER_SIZE: u32 = 1024;
+    let write_cursor = unsafe { core::ptr::read_volatile(RTT_HEADER_WRITE_OFFSET as *const u32) };
+    if write_cursor < RTT_BUFFER_SIZE {
+        puts(b"  rtt_w=");
+        put_hex32(write_cursor, putc);
+        puts(b"\r\n  rtt_tail=");
+        // Print the 64 bytes ending at write_cursor (wrapping).
+        let n_bytes: u32 = 64;
+        let start = (write_cursor + RTT_BUFFER_SIZE - n_bytes) % RTT_BUFFER_SIZE;
+        for i in 0..n_bytes {
+            let off = (start + i) % RTT_BUFFER_SIZE;
+            let b = unsafe {
+                core::ptr::read_volatile((RTT_BUFFER_BASE + off) as *const u8)
+            };
+            // Two hex digits per byte.
+            let hi = b >> 4;
+            let lo = b & 0xF;
+            putc(if hi < 10 { b'0' + hi } else { b'a' + hi - 10 });
+            putc(if lo < 10 { b'0' + lo } else { b'a' + lo - 10 });
+            if i & 0xF == 0xF { putc(b' '); }
+        }
+        puts(b"\r\n");
     }
     let tid = PANIC_TASK_ID.load(Ordering::Relaxed);
     puts(b"  task_id=");
