@@ -59,13 +59,16 @@ use defmt_rtt as _;
 /// Zero = no defmt panic captured (panic came from a non-defmt path).
 static PANIC_LR: AtomicU32 = AtomicU32::new(0);
 
-/// Custom override of defmt's `__defmt_panic` symbol. Captures LR before
-/// any compiler-inserted prologue can clobber it, stashes it for the
-/// panic handler, then bottoms out at `core::panic!()` like the default.
-/// `panic-probe` would normally provide this; we removed `panic-probe`
-/// so we can route the trace into our UART handler instead.
-#[no_mangle]
-extern "C" fn __defmt_panic() -> ! {
+/// Custom override of defmt's `_defmt_panic` symbol. (Defmt 1.x calls
+/// `_defmt_panic` -- single underscore prefix -- not `__defmt_panic`;
+/// the double-underscore form is `__defmt_default_panic` which is the
+/// fallback. Confirmed via `arm-none-eabi-nm` on the elf.) Captures LR
+/// before any compiler-inserted prologue can clobber it, stashes it
+/// for the panic handler, then bottoms out at `core::panic!()` like
+/// the default. `panic-probe` would normally provide this; we removed
+/// `panic-probe` so we can route the trace into our UART handler.
+#[export_name = "_defmt_panic"]
+extern "C" fn defmt_panic_override() -> ! {
     let lr: u32;
     unsafe {
         core::arch::asm!(
