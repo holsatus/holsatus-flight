@@ -1858,14 +1858,22 @@ async fn flow_position_logger() -> ! {
         let [vx, vy] = rcv.changed().await;
         let now = embassy_time::Instant::now();
         if let Some(prev) = last_t {
-            let dt = (now - prev).as_micros() as f32 / 1_000_000.0;
-            // Sanity: reject absurd gaps (task paused, first sample after a
-            // long idle, etc.) to keep the integration honest.
-            if (0.001..0.5).contains(&dt) {
-                est_x += vx * dt;
-                est_y += vy * dt;
-                FLOW_EST_X_MM.store((est_x * 1000.0) as i32, Ordering::Relaxed);
-                FLOW_EST_Y_MM.store((est_y * 1000.0) as i32, Ordering::Relaxed);
+            // `Instant - Instant` panics on underflow. Use checked variant:
+            // although `Instant::now()` is monotonic in principle, the H743
+            // TIM2 time driver has rarely been observed to return a value
+            // briefly less than a previously-read one (likely a tearing /
+            // overflow-IRQ race in the 32->64-bit extension). A None here
+            // just skips this integration step; integration resumes next tick.
+            if let Some(dur) = now.checked_duration_since(prev) {
+                let dt = dur.as_micros() as f32 / 1_000_000.0;
+                // Sanity: reject absurd gaps (task paused, first sample
+                // after a long idle, etc.) to keep the integration honest.
+                if (0.001..0.5).contains(&dt) {
+                    est_x += vx * dt;
+                    est_y += vy * dt;
+                    FLOW_EST_X_MM.store((est_x * 1000.0) as i32, Ordering::Relaxed);
+                    FLOW_EST_Y_MM.store((est_y * 1000.0) as i32, Ordering::Relaxed);
+                }
             }
         }
         last_t = Some(now);
