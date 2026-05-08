@@ -42,13 +42,41 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering};
 
 use defmt_rtt as _;
 // NOTE: panic_probe is intentionally NOT used in this binary; we provide
 // our own #[panic_handler] below that writes "!!! PANIC !!! file:line"
 // directly to USART1 via raw register pokes, then halts. See
 // `panic_handler` near the bottom of this file.
+
+/// Captured LR (return address) from the most recent `__defmt_panic`
+/// invocation. Set by our custom `__defmt_panic` via inline-asm read of
+/// the LR register *before* any function prologue can clobber it. The
+/// `#[panic_handler]` reads this and prints it alongside the panic
+/// location, so the operator can `addr2line -e <elf> 0x<lr>` to map
+/// back to the original `defmt::panic!` / `unwrap!` call site.
+/// Zero = no defmt panic captured (panic came from a non-defmt path).
+static PANIC_LR: AtomicU32 = AtomicU32::new(0);
+
+/// Custom override of defmt's `__defmt_panic` symbol. Captures LR before
+/// any compiler-inserted prologue can clobber it, stashes it for the
+/// panic handler, then bottoms out at `core::panic!()` like the default.
+/// `panic-probe` would normally provide this; we removed `panic-probe`
+/// so we can route the trace into our UART handler instead.
+#[no_mangle]
+extern "C" fn __defmt_panic() -> ! {
+    let lr: u32;
+    unsafe {
+        core::arch::asm!(
+            "mov {0}, lr",
+            out(reg) lr,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    PANIC_LR.store(lr, Ordering::Relaxed);
+    core::panic!()
+}
 
 /// Custom panic handler. Writes "!!! PANIC !!! file:line\r\n" to USART1
 /// via raw register pokes (NOT the embassy driver) and halts in WFI.
@@ -138,6 +166,26 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
 
     putc(b'\r');
     putc(b'\n');
+
+    // If a defmt::panic! / unwrap! / unreachable! routed through our
+    // __defmt_panic, that handler captured LR (the address of the
+    // instruction immediately after the BL __defmt_panic call). Print
+    // it as 0x... so `addr2line -e target/.../free_test 0x<value>`
+    // can map back to the source line.
+    let lr = PANIC_LR.load(Ordering::Relaxed);
+    if lr != 0 {
+        puts(b"  defmt LR=0x");
+        for i in (0..8).rev() {
+            let nibble = ((lr >> (i * 4)) & 0xF) as u8;
+            let c = if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'a' + (nibble - 10)
+            };
+            putc(c);
+        }
+        puts(b"\r\n");
+    }
 
     loop {
         cortex_m::asm::wfi();
