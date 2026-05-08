@@ -86,11 +86,21 @@ pub const TASK_FLOW_HOLD: u32 = 10;
 /// pointed into `.rodata` instead of `.text`.
 static PANIC_REAL_LR: AtomicU32 = AtomicU32::new(0);
 
+/// Counter incremented by `_defmt_panic` every time it is entered. Used by
+/// the `#[panic_handler]` to distinguish "the current panic actually went
+/// through defmt's _defmt_panic" (count > 0 — `PANIC_REAL_LR` is fresh)
+/// from "the current panic is a Rust core panic that bypassed defmt"
+/// (count == 0 — `PANIC_REAL_LR` is either zero or stale from a prior
+/// reboot — but .bss is zeroed at boot so realistically zero means the
+/// naked function never ran this run).
+static PANIC_DEFMT_COUNT: AtomicU32 = AtomicU32::new(0);
+
 /// `#[naked]` override of defmt's `_defmt_panic`. With no compiler prologue,
 /// LR at function entry is unambiguously the caller's BL+4 return address.
-/// We snapshot it into `PANIC_REAL_LR`, save sp into r4 so the regular Rust
-/// thunk can scan the stack, and tail-branch into the thunk which performs
-/// the rest (CURRENT_TASK_ID snapshot, stack scan, core::panic!()).
+/// We snapshot it into `PANIC_REAL_LR`, increment `PANIC_DEFMT_COUNT` so the
+/// panic handler can prove this run actually went through `_defmt_panic`,
+/// save sp into r4 so the thunk can scan the stack, and tail-branch into
+/// the thunk for the rest (task-id snapshot, stack scan, core::panic!()).
 #[unsafe(naked)]
 #[export_name = "_defmt_panic"]
 unsafe extern "C" fn defmt_panic_override() -> ! {
@@ -98,9 +108,14 @@ unsafe extern "C" fn defmt_panic_override() -> ! {
         "mov r4, sp",                      // r4 = sp at entry, preserved into thunk
         "ldr r0, ={panic_lr}",
         "str lr, [r0]",                    // *PANIC_REAL_LR = lr (genuine caller)
+        "ldr r0, ={defmt_count}",
+        "ldr r1, [r0]",
+        "adds r1, #1",
+        "str r1, [r0]",                    // PANIC_DEFMT_COUNT += 1
         "mov r0, r4",                      // r0 = sp at entry (arg to thunk)
         "b {thunk}",
         panic_lr = sym PANIC_REAL_LR,
+        defmt_count = sym PANIC_DEFMT_COUNT,
         thunk = sym defmt_panic_thunk,
     )
 }
@@ -232,9 +247,27 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
         }
     }
     // Genuine BL+4 caller of `_defmt_panic`, captured by the naked-asm
-    // override. addr2line on this points directly at the panicking
-    // defmt::panic!/unwrap!/assert! call site.
+    // override. Only meaningful if the defmt counter shows the override
+    // actually ran for THIS panic — a non-zero `panic_lr` with a zero
+    // counter means the current panic bypassed defmt entirely (e.g., a
+    // Rust core panic from a `.unwrap()` outside any defmt macro), and
+    // the LR value is stale.
     let real_lr = PANIC_REAL_LR.load(Ordering::Relaxed);
+    let defmt_count = PANIC_DEFMT_COUNT.load(Ordering::Relaxed);
+    puts(b"  defmt_count=");
+    {
+        let mut buf = [0u8; 12];
+        let mut idx: usize = 0;
+        if defmt_count == 0 { buf[0] = b'0'; idx = 1; }
+        else {
+            let mut n = defmt_count;
+            while n > 0 && idx < buf.len() { buf[idx] = (n % 10) as u8 + b'0'; idx += 1; n /= 10; }
+            let mut i = 0; let mut j = idx - 1;
+            while i < j { buf.swap(i, j); i += 1; j = j.saturating_sub(1); }
+        }
+        puts(&buf[..idx]);
+    }
+    puts(b"\r\n");
     if real_lr != 0 {
         puts(b"  panic_lr=0x");
         put_hex32(real_lr, putc);
