@@ -50,29 +50,45 @@ use defmt_rtt as _;
 // directly to USART1 via raw register pokes, then halts. See
 // `panic_handler` near the bottom of this file.
 
-/// Captured LR (return address) from the most recent `_defmt_panic`
-/// invocation. We capture two LR values because the LR register read
-/// via `mov rN, lr` returned a .rodata pointer in earlier tests, which
-/// is impossible for a normal BL caller; capturing the stacked LR
-/// (pushed by the prologue) gives an independent reading.
-static PANIC_LR: AtomicU32 = AtomicU32::new(0);
-static PANIC_LR_STACK: AtomicU32 = AtomicU32::new(0);
+/// Frame-chain LRs walked from `_defmt_panic` entry. Frame layout is the
+/// standard ARM Thumb `push {r7, lr}; mov r7, sp` prologue: r7 points to
+/// a `[prev_r7, saved_lr]` pair, with `prev_r7` continuing the chain.
+/// The immediate caller's LR is sometimes a scratch register holding
+/// a .rodata pointer rather than a return address; walking up gives us
+/// frames whose LRs are valid `.text` return addresses to feed into
+/// `addr2line`.
+const PANIC_FRAMES: usize = 8;
+static PANIC_LRS: [AtomicU32; PANIC_FRAMES] = [
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+];
 
 #[export_name = "_defmt_panic"]
 extern "C" fn defmt_panic_override() -> ! {
-    let lr_reg: u32;
-    let lr_stack: u32;
+    let r7: u32;
     unsafe {
         core::arch::asm!(
-            "mov {0}, lr",
-            "ldr {1}, [r7, #4]",
-            out(reg) lr_reg,
-            out(reg) lr_stack,
+            "mov {0}, r7",
+            out(reg) r7,
             options(readonly, preserves_flags),
         );
     }
-    PANIC_LR.store(lr_reg, Ordering::Relaxed);
-    PANIC_LR_STACK.store(lr_stack, Ordering::Relaxed);
+    let mut fp = r7;
+    let stack_lo: u32 = 0x2400_0000;
+    let stack_hi: u32 = 0x2408_0000;
+    for slot in PANIC_LRS.iter() {
+        if fp < stack_lo || fp + 8 > stack_hi || (fp & 3) != 0 {
+            slot.store(0, Ordering::Relaxed);
+            break;
+        }
+        let prev = unsafe { core::ptr::read_volatile(fp as *const u32) };
+        let saved_lr = unsafe { core::ptr::read_volatile((fp + 4) as *const u32) };
+        slot.store(saved_lr, Ordering::Relaxed);
+        if prev <= fp {
+            break;
+        }
+        fp = prev;
+    }
     core::panic!()
 }
 
@@ -170,8 +186,6 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     // instruction immediately after the BL __defmt_panic call). Print
     // it as 0x... so `addr2line -e target/.../free_test 0x<value>`
     // can map back to the source line.
-    let lr_reg = PANIC_LR.load(Ordering::Relaxed);
-    let lr_stack = PANIC_LR_STACK.load(Ordering::Relaxed);
     fn put_hex32(v: u32, putc: fn(u8)) {
         for i in (0..8).rev() {
             let nibble = ((v >> (i * 4)) & 0xF) as u8;
@@ -183,12 +197,21 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
             putc(c);
         }
     }
-    if lr_reg != 0 || lr_stack != 0 {
-        puts(b"  defmt LR_reg=0x");
-        put_hex32(lr_reg, putc);
-        puts(b" LR_stack=0x");
-        put_hex32(lr_stack, putc);
+    let mut any = false;
+    for (i, slot) in PANIC_LRS.iter().enumerate() {
+        let v = slot.load(Ordering::Relaxed);
+        if v == 0 {
+            break;
+        }
+        any = true;
+        puts(b"  fr");
+        putc(b'0' + i as u8);
+        puts(b"=0x");
+        put_hex32(v, putc);
         puts(b"\r\n");
+    }
+    if !any {
+        puts(b"  no defmt frames\r\n");
     }
 
     loop {
