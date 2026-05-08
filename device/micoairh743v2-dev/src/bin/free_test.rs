@@ -400,8 +400,12 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     thread_spawner.spawn(flow_hold().unwrap());
     thread_spawner.spawn(flip_kill().unwrap());
     thread_spawner.spawn(gyro_runaway_kill().unwrap());
-    thread_spawner.spawn(micoairh743v2::rc_kill::rc_kill_task(r.rc).unwrap());
-    thread_spawner.spawn(mission_fsm_task().unwrap());
+    // RC + mission FSM disabled for panic triage. To run normally restore
+    // both spawns. With these out, no RC parsing runs, no FSM transitions
+    // happen, and ALTITUDE_SETPOINT must be seeded below so alt_hold
+    // proceeds past its "waiting for mission setpoint" gate.
+    let _ = r.rc; // drop unused RC peripherals
+    micoairh743v2::alt_hold::ALTITUDE_SETPOINT.signal(0.0_f32);
     thread_spawner.spawn(motor_monitor().unwrap());
     thread_spawner.spawn(imu_monitor().unwrap());
     thread_spawner.spawn(flow_position_logger().unwrap());
