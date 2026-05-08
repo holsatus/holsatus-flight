@@ -385,7 +385,12 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     level_1_spawner.spawn(att_estimator::main().unwrap());
     level_1_spawner.spawn(ahrs_to_eskf_bridge().unwrap());
     level_1_spawner.spawn(controller_angle::main().unwrap());
-    level_1_spawner.spawn(angle_to_rate_bridge().unwrap());
+    // angle_to_rate_bridge disabled for panic bisection. If panics persist
+    // without it, the bug is downstream (controller_rate on level_0 P10 is
+    // the prime suspect). controller_rate keeps its initial [0,0,0]
+    // rate_sp seeded in main(), which is harmless on the bench. Re-enable
+    // once the panicking task is identified.
+    // level_1_spawner.spawn(angle_to_rate_bridge().unwrap());
 
     let battery_mv = read_battery_mv(r.battery);
 
