@@ -79,11 +79,7 @@ pub const TASK_ANGLE_TO_RATE: u32 = 9;
 pub const TASK_FLOW_HOLD: u32 = 10;
 
 /// The genuine BL+4 caller address, captured by the `#[naked]` `_defmt_panic`
-/// override before any compiler-generated code can clobber LR. Past attempts
-/// to read LR from a normal `extern "C"` function were unreliable: the
-/// compiler emitted prologue + literal-pool loads that scheduled `mov r0, lr`
-/// AFTER LR had been used as a scratch register, producing addresses that
-/// pointed into `.rodata` instead of `.text`.
+/// override before any compiler-generated code can clobber LR.
 static PANIC_REAL_LR: AtomicU32 = AtomicU32::new(0);
 
 /// Counter incremented by `_defmt_panic` every time it is entered. Used by
@@ -95,6 +91,20 @@ static PANIC_REAL_LR: AtomicU32 = AtomicU32::new(0);
 /// naked function never ran this run).
 static PANIC_DEFMT_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// First-arg register captured at `_defmt_panic` entry. Defmt's panic_
+/// signature takes no args, so r0 should be a leftover from the caller's
+/// last operation; comparing r0 to `panic_lr` may reveal whether the caller
+/// is passing data via non-standard ABI.
+static PANIC_R0_AT_ENTRY: AtomicU32 = AtomicU32::new(0);
+
+/// First 4 stack words at `_defmt_panic` entry. If the panic's true caller
+/// pushed args/return-address onto the stack before the BL, those will be
+/// visible here and may give us a real return address even when LR is
+/// already a scratch-register-corrupted value.
+static PANIC_STACK_DUMP: [AtomicU32; 4] = [
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+];
+
 /// `#[naked]` override of defmt's `_defmt_panic`. With no compiler prologue,
 /// LR at function entry is unambiguously the caller's BL+4 return address.
 /// We snapshot it into `PANIC_REAL_LR`, increment `PANIC_DEFMT_COUNT` so the
@@ -105,16 +115,38 @@ static PANIC_DEFMT_COUNT: AtomicU32 = AtomicU32::new(0);
 #[export_name = "_defmt_panic"]
 unsafe extern "C" fn defmt_panic_override() -> ! {
     core::arch::naked_asm!(
-        "mov r4, sp",                      // r4 = sp at entry, preserved into thunk
+        "mov r4, sp",                      // r4 = sp at entry (preserved across thunk call)
+        "mov r5, r0",                      // r5 = r0 at entry (preserved)
+        // Capture LR.
         "ldr r0, ={panic_lr}",
-        "str lr, [r0]",                    // *PANIC_REAL_LR = lr (genuine caller)
+        "str lr, [r0]",
+        // Capture r0-at-entry.
+        "ldr r0, ={panic_r0}",
+        "str r5, [r0]",
+        // Capture first 4 stack words (sp+0, sp+4, sp+8, sp+12).
+        "ldr r0, ={panic_stack0}",
+        "ldr r1, [r4]",
+        "str r1, [r0]",
+        "ldr r1, [r4, #4]",
+        "str r1, [r0, #4]",
+        "ldr r1, [r4, #8]",
+        "str r1, [r0, #8]",
+        "ldr r1, [r4, #12]",
+        "str r1, [r0, #12]",
+        // (Layout note: PANIC_STACK_DUMP is `[AtomicU32; 4]`, so the four
+        //  AtomicU32 elements ARE contiguous in `.bss` — accessing them
+        //  via `r0+0/4/8/12` is sound.)
+        // Increment defmt-entry counter.
         "ldr r0, ={defmt_count}",
         "ldr r1, [r0]",
         "adds r1, #1",
-        "str r1, [r0]",                    // PANIC_DEFMT_COUNT += 1
-        "mov r0, r4",                      // r0 = sp at entry (arg to thunk)
+        "str r1, [r0]",
+        // Tail-call into thunk with sp-at-entry as arg.
+        "mov r0, r4",
         "b {thunk}",
         panic_lr = sym PANIC_REAL_LR,
+        panic_r0 = sym PANIC_R0_AT_ENTRY,
+        panic_stack0 = sym PANIC_STACK_DUMP,
         defmt_count = sym PANIC_DEFMT_COUNT,
         thunk = sym defmt_panic_thunk,
     )
@@ -272,6 +304,20 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
         puts(b"  panic_lr=0x");
         put_hex32(real_lr, putc);
         puts(b"\r\n");
+    }
+    if defmt_count > 0 {
+        let r0_at_entry = PANIC_R0_AT_ENTRY.load(Ordering::Relaxed);
+        puts(b"  r0_at_entry=0x");
+        put_hex32(r0_at_entry, putc);
+        puts(b"\r\n");
+        for (i, slot) in PANIC_STACK_DUMP.iter().enumerate() {
+            let v = slot.load(Ordering::Relaxed);
+            puts(b"  sp+");
+            putc(b'0' + (i as u8) * 4);
+            puts(b"=0x");
+            put_hex32(v, putc);
+            puts(b"\r\n");
+        }
     }
     let mut any = false;
     for (i, slot) in PANIC_LRS.iter().enumerate() {
