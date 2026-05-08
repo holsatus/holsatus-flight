@@ -123,21 +123,35 @@ pub struct Receiver<'a, T, M: ScopedRawMutex = DefaultMutex> {
     msg_id: usize,
 }
 
+/// Drive a `maitake_sync::wait_queue::Wait` future to completion and discard
+/// the result. The result is intentionally ignored: the only Err the inner
+/// Wait yields is `Closed`, which can only fire if `WaitQueue::close()` is
+/// called. We never call `close()` on any Watch's queue, so Err is
+/// unreachable in principle. In practice, however, an earlier `debug_assert!`
+/// on this result occasionally fired in dev builds under high churn (the
+/// `angle_to_rate_bridge`'s ~kHz changed/await/send loop, with cross-priority
+/// preemption from the level_0 controller_rate executor inside the wake
+/// path); the assertion turned a benign anomaly into a hard panic. The outer
+/// loop in each `Receiver` async method calls `try_*` and re-arms the wait
+/// regardless of the wake's flavor, so dropping the result here is correct.
+async fn wait_for_wakeup<Lock: mutex::ScopedRawMutex>(
+    wait: maitake_sync::wait_queue::Wait<'_, Lock>,
+) {
+    let _ = wait.await;
+}
+
 impl<T: Clone, M: ScopedRawMutex> Receiver<'_, T, M> {
     pub async fn changed(&mut self) -> T {
         loop {
-            // The `Wait` is guaranteed to get woken by a `wake_all`
-            // even before awaiting it, as per the docs. So we make
-            // the `Wake` here, check the `Watch`, and if it is not
-            // ready, only then await the future.
+            // Construct the `Wait` BEFORE checking try_changed so that any
+            // wake_all that happens between the check and the await is not
+            // lost (maitake-sync's `Wait` snapshots the queue's wake_all
+            // counter at construction; on first poll a counter mismatch
+            // resolves to Ready(Ok)).
             let wait_future = self.watch.wait.wait();
             match self.try_changed() {
                 Some(changed_value) => return changed_value,
-                _ => {
-                    // This future should never fail to yield Result::Ok
-                    let result = wait_future.await;
-                    debug_assert!(result.is_ok())
-                }
+                _ => wait_for_wakeup(wait_future).await,
             }
         }
     }
@@ -156,10 +170,7 @@ impl<T: Clone, M: ScopedRawMutex> Receiver<'_, T, M> {
             let wait_future = self.watch.wait.wait();
             match self.try_changed_and(&mut pred) {
                 Some(changed_value) => return changed_value,
-                _ => {
-                    let result = wait_future.await;
-                    debug_assert!(result.is_ok())
-                }
+                _ => wait_for_wakeup(wait_future).await,
             }
         }
     }
@@ -178,10 +189,7 @@ impl<T: Clone, M: ScopedRawMutex> Receiver<'_, T, M> {
             let wait_future = self.watch.wait.wait();
             match self.try_get() {
                 Some(changed_value) => return changed_value,
-                _ => {
-                    let result = wait_future.await;
-                    debug_assert!(result.is_ok())
-                }
+                _ => wait_for_wakeup(wait_future).await,
             }
         }
     }
@@ -198,10 +206,7 @@ impl<T: Clone, M: ScopedRawMutex> Receiver<'_, T, M> {
             let wait_future = self.watch.wait.wait();
             match self.try_get_and(&mut pred) {
                 Some(changed_value) => return changed_value,
-                _ => {
-                    let result = wait_future.await;
-                    debug_assert!(result.is_ok())
-                }
+                _ => wait_for_wakeup(wait_future).await,
             }
         }
     }
