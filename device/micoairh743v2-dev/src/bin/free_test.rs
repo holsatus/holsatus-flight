@@ -892,12 +892,22 @@ async fn mission_fsm_task() -> ! {
                 // `stk=BAD` persists. Threshold is `STICK_CENTER_TOL`
                 // (0.10) on |r|, |p|, |y|; throttle is `<=
                 // THROTTLE_BOTTOM_TOL` (0.02).
-                let mut s: heapless::String<64> = heapless::String::new();
+                let mode_str = match ch.mode {
+                    Mode::Idle => "Idle",
+                    Mode::Manual => "Manual",
+                    Mode::Auto => "Auto",
+                };
+                let sel_str = match ch.maneuver {
+                    Maneuver::Takeoff => "Takeoff",
+                    Maneuver::Hover => "Hover",
+                    Maneuver::Land => "Land",
+                };
+                let mut s: heapless::String<96> = heapless::String::new();
                 let _ = write!(
                     s,
-                    "[fsm] preflight WAIT: mode={} sel={} trig={} thr={} stk={}",
-                    if mode_ok { "ok" } else { "BAD" },
-                    if select_ok { "ok" } else { "BAD" },
+                    "[fsm] preflight WAIT: mode={}({}) sel={}({}) trig={} thr={} stk={}",
+                    if mode_ok { "ok" } else { "BAD" }, mode_str,
+                    if select_ok { "ok" } else { "BAD" }, sel_str,
                     if trigger_ok { "ok" } else { "BAD" },
                     if throttle_ok { "ok" } else { "BAD" },
                     if sticks_ok { "ok" } else { "BAD" },
@@ -1056,13 +1066,13 @@ async fn mission_fsm_task() -> ! {
 
                 match ch.mode {
                     Mode::Manual => {
-                        ulog::log("[fsm] GroundIdle -> Manual (gate OK)");
+                        ulog::log("[fsm.M] enter: log");
                         state = State::Manual;
                         entered_at = embassy_time::Instant::now();
                         manual_idle_since = Some(embassy_time::Instant::now());
+                        ulog::log("[fsm.M] enter: pre-zero_setpoints");
                         zero_setpoints();
-                        // Arm only when throttle stick rises out of the idle
-                        // deadband; the Manual tick handles that.
+                        ulog::log("[fsm.M] enter: post-zero_setpoints");
                     }
                     Mode::Auto => {
                         if trigger_pressed && ch.maneuver == Maneuver::Takeoff {
@@ -1080,17 +1090,15 @@ async fn mission_fsm_task() -> ! {
             }
 
             State::Manual => {
-                // Pure ACRO (rate mode). Sticks drive angular rates on
-                // all three axes directly; no self-levelling. The
-                // angle_to_rate_bridge is bypassed via MANUAL_BYPASS so
-                // controller_angle's output does not race our writes
-                // to TRUE_RATE_SP.
+                ulog::log("[fsm.M] tick.0 begin");
                 drain_rc_events();
+                ulog::log("[fsm.M] tick.1 sticks pre");
 
                 let roll_n = micoairh743v2::rc_kill::stick_norm(ch.raw[0]);
                 let pitch_n = micoairh743v2::rc_kill::stick_norm(ch.raw[1]);
                 let yaw_n = micoairh743v2::rc_kill::stick_norm(ch.raw[3]);
                 let thr_n = micoairh743v2::rc_kill::stick_throttle(ch.raw[2]);
+                ulog::log("[fsm.M] tick.2 sticks done");
 
                 fn expo(n: f32, k: f32) -> f32 {
                     (1.0 - k) * n + k * n * n * n
@@ -1099,9 +1107,12 @@ async fn mission_fsm_task() -> ! {
                 let pitch_rate_sp = expo(pitch_n, MANUAL_EXPO) * MANUAL_MAX_PITCH_RATE;
                 let yaw_rate_sp = expo(yaw_n, MANUAL_EXPO) * MANUAL_MAX_YAW_RATE;
                 let thrust_sp = thr_n * MANUAL_THRUST_GAIN;
+                ulog::log("[fsm.M] tick.3 expo done");
 
                 signals::TRUE_RATE_SP.send([roll_rate_sp, pitch_rate_sp, yaw_rate_sp]);
+                ulog::log("[fsm.M] tick.4 rate sent");
                 signals::TRUE_Z_THRUST_SP.send(thrust_sp);
+                ulog::log("[fsm.M] tick.5 thrust sent");
 
                 // 5 Hz bench-debug log: stick normals + computed rates +
                 // thrust + armed. Lets the operator verify polarity and
