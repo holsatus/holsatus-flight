@@ -50,34 +50,29 @@ use defmt_rtt as _;
 // directly to USART1 via raw register pokes, then halts. See
 // `panic_handler` near the bottom of this file.
 
-/// Captured LR (return address) from the most recent `__defmt_panic`
-/// invocation. Set by our custom `__defmt_panic` via inline-asm read of
-/// the LR register *before* any function prologue can clobber it. The
-/// `#[panic_handler]` reads this and prints it alongside the panic
-/// location, so the operator can `addr2line -e <elf> 0x<lr>` to map
-/// back to the original `defmt::panic!` / `unwrap!` call site.
-/// Zero = no defmt panic captured (panic came from a non-defmt path).
+/// Captured LR (return address) from the most recent `_defmt_panic`
+/// invocation. We capture two LR values because the LR register read
+/// via `mov rN, lr` returned a .rodata pointer in earlier tests, which
+/// is impossible for a normal BL caller; capturing the stacked LR
+/// (pushed by the prologue) gives an independent reading.
 static PANIC_LR: AtomicU32 = AtomicU32::new(0);
+static PANIC_LR_STACK: AtomicU32 = AtomicU32::new(0);
 
-/// Custom override of defmt's `_defmt_panic` symbol. (Defmt 1.x calls
-/// `_defmt_panic` -- single underscore prefix -- not `__defmt_panic`;
-/// the double-underscore form is `__defmt_default_panic` which is the
-/// fallback. Confirmed via `arm-none-eabi-nm` on the elf.) Captures LR
-/// before any compiler-inserted prologue can clobber it, stashes it
-/// for the panic handler, then bottoms out at `core::panic!()` like
-/// the default. `panic-probe` would normally provide this; we removed
-/// `panic-probe` so we can route the trace into our UART handler.
 #[export_name = "_defmt_panic"]
 extern "C" fn defmt_panic_override() -> ! {
-    let lr: u32;
+    let lr_reg: u32;
+    let lr_stack: u32;
     unsafe {
         core::arch::asm!(
             "mov {0}, lr",
-            out(reg) lr,
-            options(nomem, nostack, preserves_flags),
+            "ldr {1}, [r7, #4]",
+            out(reg) lr_reg,
+            out(reg) lr_stack,
+            options(readonly, preserves_flags),
         );
     }
-    PANIC_LR.store(lr, Ordering::Relaxed);
+    PANIC_LR.store(lr_reg, Ordering::Relaxed);
+    PANIC_LR_STACK.store(lr_stack, Ordering::Relaxed);
     core::panic!()
 }
 
@@ -175,11 +170,11 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     // instruction immediately after the BL __defmt_panic call). Print
     // it as 0x... so `addr2line -e target/.../free_test 0x<value>`
     // can map back to the source line.
-    let lr = PANIC_LR.load(Ordering::Relaxed);
-    if lr != 0 {
-        puts(b"  defmt LR=0x");
+    let lr_reg = PANIC_LR.load(Ordering::Relaxed);
+    let lr_stack = PANIC_LR_STACK.load(Ordering::Relaxed);
+    fn put_hex32(v: u32, putc: fn(u8)) {
         for i in (0..8).rev() {
-            let nibble = ((lr >> (i * 4)) & 0xF) as u8;
+            let nibble = ((v >> (i * 4)) & 0xF) as u8;
             let c = if nibble < 10 {
                 b'0' + nibble
             } else {
@@ -187,6 +182,12 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
             };
             putc(c);
         }
+    }
+    if lr_reg != 0 || lr_stack != 0 {
+        puts(b"  defmt LR_reg=0x");
+        put_hex32(lr_reg, putc);
+        puts(b" LR_stack=0x");
+        put_hex32(lr_stack, putc);
         puts(b"\r\n");
     }
 
