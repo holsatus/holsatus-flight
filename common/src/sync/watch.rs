@@ -434,4 +434,66 @@ mod tests {
             assert_eq!(receiver.try_changed(), Some(i));
         }
     }
+
+    /// Regression: the H743v2 free_test binary panicked intermittently inside
+    /// `Receiver::changed` because of a `debug_assert!(result.is_ok())` on
+    /// the inner `Wait` future. Empirically the inner Wait sometimes yielded
+    /// `Err(Closed)` under heavy churn (the `angle_to_rate_bridge` task ran
+    /// `loop { changed().await; send(); }` at IMU rate, with cross-priority
+    /// preemption from the level_0 controller_rate executor inside the wake
+    /// path). Fix was to drop the result via `wait_for_wakeup`.
+    ///
+    /// This test exercises the high-churn changed/await/send pattern across
+    /// many receivers. It would not have caught the original bug
+    /// deterministically (the executor here is single-threaded), but it
+    /// encodes the contract: `changed().await` must not panic regardless of
+    /// how the inner Wait resolves, and value observation must be monotonic.
+    #[test]
+    fn test_high_churn_no_panic() {
+        static WATCH: Watch<i32, CriticalSectionRawMutex> = Watch::new();
+        let mut spawner = futures_executor::LocalPool::new();
+
+        const N_RECEIVERS: usize = 8;
+        const N_VALUES: i32 = 50;
+
+        for _ in 0..N_RECEIVERS {
+            spawner
+                .spawner()
+                .spawn(async {
+                    let mut receiver = WATCH.receiver();
+                    let mut last = -1;
+                    // Drain until we observe the sender's final value.
+                    // Receivers may coalesce intermediate values under
+                    // back-to-back sends; we only require monotonicity and
+                    // that the last value is eventually seen.
+                    while last < N_VALUES - 1 {
+                        let v = receiver.changed().await;
+                        assert!(v > last, "out-of-order: {v} after {last}");
+                        last = v;
+                    }
+                })
+                .unwrap();
+        }
+
+        spawner
+            .spawner()
+            .spawn(async {
+                let mut sender = WATCH.sender();
+                for i in 0..N_VALUES {
+                    sender.send(i);
+                    // Yield after every send so receivers get a chance to
+                    // wake and re-arm before the next send. Without this,
+                    // back-to-back sends in the same poll round cause
+                    // receivers to miss values.
+                    yield_now().await;
+                }
+                // After the last send, yield a few more times so any
+                // receiver that re-armed on the final value has a chance
+                // to observe it before the pool decides everyone is idle.
+                multi_yield(N_RECEIVERS * 2).await;
+            })
+            .unwrap();
+
+        spawner.run();
+    }
 }

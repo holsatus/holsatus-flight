@@ -13,8 +13,11 @@ use core::sync::atomic::AtomicU8;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use heapless::String;
 
-/// Maximum length of a single log message.
-pub const LOG_LEN: usize = 64;
+/// Maximum length of a single log message. Longer inputs are truncated at
+/// a UTF-8 char boundary by `make_log_string`. Sized to fit the widest
+/// per-tick line (the Manual ACRO `[manual] r=... thrust=... armed=...`
+/// line at ~85 chars) with slack. RAM cost: CHANNEL = 256 * (LOG_LEN + ~4).
+pub const LOG_LEN: usize = 96;
 
 /// Capacity must absorb imu_monitor's ~200 Hz burst (A+B CSV lines) while the
 /// uart_writer task drains through SD writes. 256 gives roughly 1.3 s of
@@ -68,23 +71,15 @@ pub const SENSORS_READY_ALL: u8 =
 /// the caller can skip the channel send (the embassy-stm32 DMA driver
 /// asserts `mem_len > 0` and panics on empty writes).
 ///
-/// `heapless::String::push_str` is atomic: on overflow it returns `Err`
-/// and leaves the destination unchanged. Without truncation here, an
-/// over-long `msg` would silently enqueue an empty string that later
-/// crashes `uart_writer_task` inside `Channel::configure`.
+/// Truncation lives in `common::utils::string_trunc::truncate_to_byte_cap`
+/// so it can be host-tested. See that module for the regression history.
 fn make_log_string(msg: &str) -> Option<String<LOG_LEN>> {
-    if msg.is_empty() {
-        return None;
-    }
-    let mut end = msg.len().min(LOG_LEN);
-    while end > 0 && !msg.is_char_boundary(end) {
-        end -= 1;
-    }
-    if end == 0 {
+    let trimmed = common::utils::string_trunc::truncate_to_byte_cap(msg, LOG_LEN);
+    if trimmed.is_empty() {
         return None;
     }
     let mut s: String<LOG_LEN> = String::new();
-    let _ = s.push_str(&msg[..end]);
+    let _ = s.push_str(trimmed);
     Some(s)
 }
 

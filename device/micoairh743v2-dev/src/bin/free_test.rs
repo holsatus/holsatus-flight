@@ -1246,13 +1246,11 @@ async fn mission_fsm_task() -> ! {
 
                 match ch.mode {
                     Mode::Manual => {
-                        ulog::log("[fsm.M] enter: log");
+                        ulog::log("[fsm] GroundIdle -> Manual");
                         state = State::Manual;
                         entered_at = embassy_time::Instant::now();
                         manual_idle_since = Some(embassy_time::Instant::now());
-                        ulog::log("[fsm.M] enter: pre-zero_setpoints");
                         zero_setpoints();
-                        ulog::log("[fsm.M] enter: post-zero_setpoints");
                     }
                     Mode::Auto => {
                         if trigger_pressed && ch.maneuver == Maneuver::Takeoff {
@@ -1270,15 +1268,12 @@ async fn mission_fsm_task() -> ! {
             }
 
             State::Manual => {
-                ulog::log("[fsm.M] tick.0 begin");
                 drain_rc_events();
-                ulog::log("[fsm.M] tick.1 sticks pre");
 
                 let roll_n = micoairh743v2::rc_kill::stick_norm(ch.raw[0]);
                 let pitch_n = micoairh743v2::rc_kill::stick_norm(ch.raw[1]);
                 let yaw_n = micoairh743v2::rc_kill::stick_norm(ch.raw[3]);
                 let thr_n = micoairh743v2::rc_kill::stick_throttle(ch.raw[2]);
-                ulog::log("[fsm.M] tick.2 sticks done");
 
                 fn expo(n: f32, k: f32) -> f32 {
                     (1.0 - k) * n + k * n * n * n
@@ -1287,12 +1282,9 @@ async fn mission_fsm_task() -> ! {
                 let pitch_rate_sp = expo(pitch_n, MANUAL_EXPO) * MANUAL_MAX_PITCH_RATE;
                 let yaw_rate_sp = expo(yaw_n, MANUAL_EXPO) * MANUAL_MAX_YAW_RATE;
                 let thrust_sp = thr_n * MANUAL_THRUST_GAIN;
-                ulog::log("[fsm.M] tick.3 expo done");
 
                 signals::TRUE_RATE_SP.send([roll_rate_sp, pitch_rate_sp, yaw_rate_sp]);
-                ulog::log("[fsm.M] tick.4 rate sent");
                 signals::TRUE_Z_THRUST_SP.send(thrust_sp);
-                ulog::log("[fsm.M] tick.5 thrust sent");
 
                 // 5 Hz bench-debug log: stick normals + computed rates +
                 // thrust + armed. Lets the operator verify polarity and

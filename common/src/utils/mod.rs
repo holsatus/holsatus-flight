@@ -5,4 +5,5 @@ pub mod crc8;
 pub mod func;
 pub mod matrix;
 pub mod rot_matrix;
+pub mod string_trunc;
 pub mod u_types;
