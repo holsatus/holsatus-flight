@@ -430,7 +430,8 @@ use micoairh743v2::alt_hold::ALTITUDE_SETPOINT;
 use micoairh743v2::log as ulog;
 use micoairh743v2::mtf01;
 use micoairh743v2::resources::{
-    self, BatteryResources, Bmi270Resources, Mtf01Resources, SdmmcLogResources, UartLogResources,
+    self, BatteryResources, Bmi270Resources, BtLogResources, Mtf01Resources, SdmmcLogResources,
+    UartLogResources,
 };
 use micoairh743v2::sdlog::SdmmcResources;
 
@@ -465,7 +466,7 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     let mut led_blue = Output::new(r.leds.blue, Level::Low, Speed::Low);
     let mut led_red = Output::new(r.leds.red, Level::Low, Speed::Low);
 
-    thread_spawner.spawn(uart_writer_task(r.uart_log, r.sdmmc).unwrap());
+    thread_spawner.spawn(uart_writer_task(r.uart_log, r.bt_log, r.sdmmc).unwrap());
 
     ulog::log("[free] board init ok");
     // Git provenance line: every flight log now starts with the short SHA
@@ -741,7 +742,11 @@ async fn wait_for_ahrs_ready() {
 }
 
 #[embassy_executor::task]
-async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
+async fn uart_writer_task(
+    r: UartLogResources,
+    bt: BtLogResources,
+    sd: SdmmcLogResources,
+) -> ! {
     use block_device_adapters::BufStream;
     use core::fmt::Write as FmtWrite;
     use embedded_fatfs::{FileSystem, FsOptions};
@@ -751,8 +756,33 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
         DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH0>;
         USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
     });
+    bind_interrupts!(struct BtUartIrqs {
+        DMA2_STREAM3 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH3>;
+        UART8        => embassy_stm32::usart::InterruptHandler<peripherals::UART8>;
+    });
 
     let mut uart = UartTx::new(r.usart, r.tx, r.dma, UartIrqs, UartConfig::default()).ok();
+    // Onboard BT module (115200 by default, matches USART1). If init fails
+    // we silently continue -- USART1 + SD logs still work.
+    let mut bt_uart =
+        UartTx::new(bt.usart, bt.tx, bt.dma, BtUartIrqs, UartConfig::default()).ok();
+
+    // Mirror one log line (+ CRLF) to USART1 (wired FTDI) and UART8 (BT).
+    // Either may be None if init failed; both writes are best-effort.
+    async fn write_line(
+        uart: &mut Option<UartTx<'static, embassy_stm32::mode::Async>>,
+        bt: &mut Option<UartTx<'static, embassy_stm32::mode::Async>>,
+        msg: &[u8],
+    ) {
+        if let Some(u) = uart.as_mut() {
+            u.write(msg).await.ok();
+            u.write(b"\r\n").await.ok();
+        }
+        if let Some(u) = bt.as_mut() {
+            u.write(msg).await.ok();
+            u.write(b"\r\n").await.ok();
+        }
+    }
 
     let mut device = SdmmcResources {
         periph: sd.periph,
@@ -782,10 +812,7 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
         ulog::log("[sd] NOT FOUND (tried 3x) -- motors will NOT arm");
         loop {
             let msg = ulog::CHANNEL.receive().await;
-            if let Some(ref mut u) = uart {
-                u.write(msg.as_bytes()).await.ok();
-                u.write(b"\r\n").await.ok();
-            }
+            write_line(&mut uart, &mut bt_uart, msg.as_bytes()).await;
         }
     }
 
@@ -797,10 +824,7 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
             ulog::log("[sd] reset OK but FAT mount FAILED -- motors will NOT arm");
             loop {
                 let msg = ulog::CHANNEL.receive().await;
-                if let Some(ref mut u) = uart {
-                    u.write(msg.as_bytes()).await.ok();
-                    u.write(b"\r\n").await.ok();
-                }
+                write_line(&mut uart, &mut bt_uart, msg.as_bytes()).await;
             }
         }
     };
@@ -836,10 +860,7 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
             }
             Err(_) => loop {
                 let msg = ulog::CHANNEL.receive().await;
-                if let Some(ref mut u) = uart {
-                    u.write(msg.as_bytes()).await.ok();
-                    u.write(b"\r\n").await.ok();
-                }
+                write_line(&mut uart, &mut bt_uart, msg.as_bytes()).await;
             },
         }
     };
@@ -853,10 +874,7 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
             ulog::log("[sd] create_file failed -- motors will NOT arm");
             loop {
                 let msg = ulog::CHANNEL.receive().await;
-                if let Some(ref mut u) = uart {
-                    u.write(msg.as_bytes()).await.ok();
-                    u.write(b"\r\n").await.ok();
-                }
+                write_line(&mut uart, &mut bt_uart, msg.as_bytes()).await;
             }
         }
     };
@@ -878,10 +896,7 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
     let mut flush_counter: u16 = 0;
     loop {
         while let Ok(msg) = ulog::CRITICAL_CHANNEL.try_receive() {
-            if let Some(ref mut u) = uart {
-                u.write(msg.as_bytes()).await.ok();
-                u.write(b"\r\n").await.ok();
-            }
+            write_line(&mut uart, &mut bt_uart, msg.as_bytes()).await;
             file.write_all(msg.as_bytes()).await.ok();
             file.write_all(b"\r\n").await.ok();
             file.flush().await.ok();
@@ -895,10 +910,7 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
         .await
         {
             Either::First(m) => {
-                if let Some(ref mut u) = uart {
-                    u.write(m.as_bytes()).await.ok();
-                    u.write(b"\r\n").await.ok();
-                }
+                write_line(&mut uart, &mut bt_uart, m.as_bytes()).await;
                 file.write_all(m.as_bytes()).await.ok();
                 file.write_all(b"\r\n").await.ok();
                 file.flush().await.ok();
@@ -908,10 +920,7 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
         };
 
         if !ulog::is_high_rate_telemetry(msg.as_str()) {
-            if let Some(ref mut u) = uart {
-                u.write(msg.as_bytes()).await.ok();
-                u.write(b"\r\n").await.ok();
-            }
+            write_line(&mut uart, &mut bt_uart, msg.as_bytes()).await;
         }
         file.write_all(msg.as_bytes()).await.ok();
         file.write_all(b"\r\n").await.ok();

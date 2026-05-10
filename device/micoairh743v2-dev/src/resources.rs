@@ -103,6 +103,15 @@ assign_resources! {
         tx:    PA9,
         dma:   DMA1_CH0,
     }
+    /// Onboard Bluetooth telemetry module. UART8 TX=PE1, RX=PE0 per the
+    /// MicoAir H743v2 spec sheet. We only use TX -- the BT module bridges
+    /// UART <-> BT-Classic SPP and exposes itself to paired hosts as
+    /// "MicoAir743v2-XXXXX" at 115200 baud. Mirrors USART1's debug log.
+    bt_log: BtLogResources {
+        usart: UART8,
+        tx:    PE1,
+        dma:   DMA2_CH3,
+    }
     battery: BatteryResources {
         adc:   ADC1,
         pin_v: PC0,
