@@ -1270,11 +1270,11 @@ async fn mission_fsm_task() -> ! {
             State::Manual => {
                 drain_rc_events();
 
-                // Roll and pitch are negated to match the TX15's Liftoff-game
-                // mapping (operator preference: keep one radio config that
-                // works for both the sim and this drone). Yaw and throttle
+                // Pitch is negated to match the TX15's Liftoff-game mapping
+                // (operator preference: keep one radio config that works for
+                // both the sim and this drone). Roll, yaw, and throttle
                 // already match drone-NED convention.
-                let roll_n = -micoairh743v2::rc_kill::stick_norm(ch.raw[0]);
+                let roll_n = micoairh743v2::rc_kill::stick_norm(ch.raw[0]);
                 let pitch_n = -micoairh743v2::rc_kill::stick_norm(ch.raw[1]);
                 let yaw_n = micoairh743v2::rc_kill::stick_norm(ch.raw[3]);
                 let thr_n = micoairh743v2::rc_kill::stick_throttle(ch.raw[2]);
