@@ -1165,6 +1165,10 @@ async fn mission_fsm_task() -> ! {
     // (GroundIdle), a stale link is logged but does not transition --
     // there's no flight to safe.
     const RC_LINK_TIMEOUT_MS: u64 = 500;
+    /// Soft threshold: gaps >= this and < RC_LINK_TIMEOUT_MS trigger a
+    /// one-shot warning when the link recovers. Picks up the near-misses
+    /// that don't trip failsafe but indicate the link is unhealthy.
+    const RC_NEAR_LOSS_MS: u64 = 300;
     let mut last_seq: u32 = 0;
     let mut last_seq_change = embassy_time::Instant::now();
 
@@ -1173,6 +1177,20 @@ async fn mission_fsm_task() -> ! {
     // either condition is broken.
     let mut manual_idle_since: Option<embassy_time::Instant> = None;
     let mut manual_log_throttle = embassy_time::Instant::now();
+
+    // One-shot flag for the Manual arming command. The motor governor's
+    // 4.5 s arm sequence keeps `armed=false` for ~450 FSM ticks, during
+    // which the per-tick `if !armed && thr_n > 0.0` would otherwise
+    // re-send arm and re-log every 10 ms. Set on first send, cleared on
+    // any Manual exit (to GroundIdle or Fault).
+    let mut arm_command_sent: bool = false;
+    // Periodic "FC is ready" log while sitting in GroundIdle, so the
+    // operator on the BT terminal sees a continuous heartbeat instead
+    // of silence after preflight passes.
+    const GROUND_IDLE_LOG_PERIOD_MS: u64 = 2_000;
+    let mut last_ground_idle_log = embassy_time::Instant::now()
+        .checked_sub(embassy_time::Duration::from_millis(GROUND_IDLE_LOG_PERIOD_MS))
+        .unwrap_or_else(embassy_time::Instant::now);
 
     loop {
         CURRENT_TASK_ID.store(TASK_FSM, Ordering::Relaxed);
@@ -1200,6 +1218,17 @@ async fn mission_fsm_task() -> ! {
         // intentionally between flights while drone is disarmed) does
         // not spuriously trip Fault.
         if ch.seq != last_seq {
+            // Recovery point: if the gap leading up to this advance was
+            // >= RC_NEAR_LOSS_MS but < RC_LINK_TIMEOUT_MS (so we did NOT
+            // failsafe), log it once. These near-misses are the data we
+            // need to know whether the link is gradually degrading or
+            // dropping cleanly.
+            let gap_ms = last_seq_change.elapsed().as_millis() as u64;
+            if armed && gap_ms >= RC_NEAR_LOSS_MS && gap_ms <= RC_LINK_TIMEOUT_MS {
+                let mut s: heapless::String<64> = heapless::String::new();
+                let _ = write!(s, "[fsm] RC link warning: gap={}ms (recovered)", gap_ms);
+                ulog::log(s.as_str());
+            }
             last_seq = ch.seq;
             last_seq_change = embassy_time::Instant::now();
         }
@@ -1207,6 +1236,25 @@ async fn mission_fsm_task() -> ! {
             && last_seq_change.elapsed().as_millis() as u64 > RC_LINK_TIMEOUT_MS
         {
             ulog::log("[fsm] RC LINK LOST > 500ms while armed -- failsafe");
+            // Diagnostic dump captured BEFORE the state transition so the
+            // logged state is the pre-failsafe one. Helps distinguish
+            // BEC sag (motors at high command, brief impact) from clean
+            // RF loss (motors steady, sudden seq stop) from FC-side seq
+            // mishandling (last_seq stale across many frames).
+            let dt_seq_ms = last_seq_change.elapsed().as_millis() as u64;
+            let motor_speeds = match motors_rcv.try_get() {
+                Some(MotorsState::Armed(s)) => s,
+                _ => [0u16; 4],
+            };
+            let mut diag: heapless::String<128> = heapless::String::new();
+            let _ = write!(
+                diag,
+                "[fsm] failsafe diag: dt_seq={}ms last_seq={} motors=[{},{},{},{}] state={}",
+                dt_seq_ms, last_seq,
+                motor_speeds[0], motor_speeds[1], motor_speeds[2], motor_speeds[3],
+                label(state),
+            );
+            ulog::log(diag.as_str());
             match state {
                 State::Manual => {
                     // Manual = sticks were the controller; without them, no
@@ -1215,6 +1263,7 @@ async fn mission_fsm_task() -> ! {
                     COMMAD_ARM_VEHICLE.send(false);
                     zero_setpoints();
                     state = State::Fault;
+                    arm_command_sent = false;
                 }
                 State::AutoTakeoff | State::AutoHover => {
                     // Take the autonomous landing path, which does not
@@ -1232,6 +1281,16 @@ async fn mission_fsm_task() -> ! {
 
         match state {
             State::GroundIdle => {
+                // Periodic "ready" heartbeat so the operator on the BT
+                // terminal sees the FC is alive and waiting, instead of
+                // silence after the preflight gate passes.
+                if last_ground_idle_log.elapsed().as_millis() as u64
+                    >= GROUND_IDLE_LOG_PERIOD_MS
+                {
+                    last_ground_idle_log = embassy_time::Instant::now();
+                    ulog::log("[fsm] GroundIdle ready -- flip SA to Manual or trigger Auto");
+                }
+
                 // On-ground gate: armed must be false, lidar low, AHRS ready
                 // is implicit (we don't transition into GroundIdle until
                 // wait_for_ahrs_ready returned). Mode level is sampled here.
@@ -1260,6 +1319,9 @@ async fn mission_fsm_task() -> ! {
                         entered_at = embassy_time::Instant::now();
                         manual_idle_since = Some(embassy_time::Instant::now());
                         zero_setpoints();
+                        // Defensive reset: armed-gate one-shot starts fresh
+                        // each Manual entry.
+                        arm_command_sent = false;
                     }
                     Mode::Auto => {
                         if trigger_pressed && ch.maneuver == Maneuver::Takeoff {
@@ -1315,10 +1377,14 @@ async fn mission_fsm_task() -> ! {
                     ulog::log(s.as_str());
                 }
 
-                // Arm on first non-idle throttle.
-                if !armed && thr_n > 0.0 {
+                // Arm on first non-idle throttle. One-shot per Manual entry:
+                // motor governor takes ~4.5 s to flip `armed` to true, and
+                // the per-tick re-fire would otherwise log + re-send ~450
+                // times during that window.
+                if !armed && !arm_command_sent && thr_n > 0.0 {
                     ulog::log("[fsm] Manual: throttle raised -- arming");
                     COMMAD_ARM_VEHICLE.send(true);
+                    arm_command_sent = true;
                 }
 
                 // Exit Manual: throttle in idle AND MODE=Idle continuously
@@ -1334,6 +1400,7 @@ async fn mission_fsm_task() -> ! {
                         state = State::GroundIdle;
                         entered_at = embassy_time::Instant::now();
                         manual_idle_since = None;
+                        arm_command_sent = false;
                     }
                 } else {
                     manual_idle_since = None;
