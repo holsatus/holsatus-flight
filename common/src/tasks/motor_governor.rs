@@ -130,17 +130,25 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
 
         drop(params);
 
-        // Send minimum throttle for a few seconds to start arming
+        // Send minimum throttle to start arming. Conservative timings tuned
+        // 2026-05 against BLHeli_S/BlueJay/BLHeli32 ESCs which lock onto a
+        // stable DShot stream within 2-5 frames at 20 Hz update rate (~100-
+        // 250 ms). The previous 4500 ms total was a carry-over with no
+        // documented justification; the values below give ~2250 ms total
+        // with 5-12x headroom on the idle-lock window and 1.5x on the
+        // direction-set commit window. Any future arm anomaly is caught by
+        // the FSM's failsafe-diag logging in free_test.rs (see
+        // [fsm] failsafe diag and [fsm] RC link warning).
         info!("{}: Arming motors", ID);
-        Timer::after_millis(1000).await;
-        for _ in 0..50 {
+        Timer::after_millis(250).await;
+        for _ in 0..25 {
             motors.set_motor_speeds_min().await;
             Timer::after_millis(50).await;
         }
 
         // Set motor directions for the four motors
         info!("{}: Setting directions {:?}", ID, dirs);
-        for _ in 0..20 {
+        for _ in 0..15 {
             motors.set_reverse_dir(dirs).await;
             Timer::after_millis(50).await;
         }
