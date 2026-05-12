@@ -1018,6 +1018,9 @@ async fn mission_fsm_task() -> ! {
     let mut rc_rcv = RC_CHANNELS.receiver().expect("RC_CHANNELS");
     let mut lidar_rcv = micoairh743v2::alt_hold::LIDAR_ALT_M.receiver().unwrap();
     let mut motors_rcv = signals::MOTORS_STATE.receiver();
+    let mut bat_tier_rcv = micoairh743v2::battery::BATTERY_TIER
+        .receiver()
+        .expect("BATTERY_TIER receiver slot");
 
     // Pre-flight RC sanity gate: refuse to enter the FSM until *every*
     // switch and stick is in a known-safe boot position. Without this,
@@ -1053,7 +1056,15 @@ async fn mission_fsm_task() -> ! {
             let sticks_ok = roll_n.abs() < STICK_CENTER_TOL
                 && pitch_n.abs() < STICK_CENTER_TOL
                 && yaw_n.abs() < STICK_CENTER_TOL;
-            if mode_ok && select_ok && trigger_ok && throttle_ok && sticks_ok {
+            // Battery: HEALTHY or USB_POWER (bench test) allow proceeding;
+            // any worse tier blocks until the pack is charged + the FC
+            // rebooted. None (monitor hasn't sampled yet, <100 ms after
+            // boot) is treated as ok so we don't get stuck here forever.
+            let bat_tier_now = bat_tier_rcv.try_get();
+            let battery_ok = bat_tier_now
+                .map(micoairh743v2::battery::tier_allows_flight)
+                .unwrap_or(true);
+            if mode_ok && select_ok && trigger_ok && throttle_ok && sticks_ok && battery_ok {
                 if warned {
                     ulog::log("[fsm] preflight OK -- proceeding");
                 }
@@ -1078,15 +1089,20 @@ async fn mission_fsm_task() -> ! {
                     Maneuver::Hover => "Hover",
                     Maneuver::Land => "Land",
                 };
+                let bat_str = match bat_tier_now {
+                    Some(t) => t.label(),
+                    None => "?",
+                };
                 let mut s: heapless::String<96> = heapless::String::new();
                 let _ = write!(
                     s,
-                    "[fsm] preflight WAIT: mode={}({}) sel={}({}) trig={} thr={} stk={}",
+                    "[fsm] preflight WAIT: mode={}({}) sel={}({}) trig={} thr={} stk={} bat={}({})",
                     if mode_ok { "ok" } else { "BAD" }, mode_str,
                     if select_ok { "ok" } else { "BAD" }, sel_str,
                     if trigger_ok { "ok" } else { "BAD" },
                     if throttle_ok { "ok" } else { "BAD" },
                     if sticks_ok { "ok" } else { "BAD" },
+                    if battery_ok { "ok" } else { "BAD" }, bat_str,
                 );
                 ulog::log(s.as_str());
 
@@ -1129,6 +1145,13 @@ async fn mission_fsm_task() -> ! {
     const MANUAL_THRUST_GAIN: f32 = BASE_THRUST * 1.4;
     const MANUAL_IDLE_DWELL_MS: u64 = 500;
     const MANUAL_LOG_PERIOD_MS: u64 = 200;
+    /// Linear ramp duration for battery-triggered forced descent. From
+    /// BASE_THRUST to 0 over this window. 8 s is your "5-10 seconds"
+    /// midpoint: gentle enough to stay controllable, fast enough to land
+    /// before a marginal pack collapses further. Roll/pitch/yaw stick
+    /// authority is preserved during the ramp so the operator can guide
+    /// the descent to a safe spot.
+    const FORCE_DESCENT_RAMP_MS: u64 = 8_000;
 
     fn drain_rc_events() {
         while let Ok(_) = RC_EVENT.try_receive() {}
@@ -1185,6 +1208,13 @@ async fn mission_fsm_task() -> ! {
     // re-send arm and re-log every 10 ms. Set on first send, cleared on
     // any Manual exit (to GroundIdle or Fault).
     let mut arm_command_sent: bool = false;
+    // One-shot flag so an arm refusal by low-battery is logged once per
+    // Manual session, not every tick.
+    let mut arm_refused_logged: bool = false;
+    // Battery-triggered forced descent: set to Some(start_instant) when
+    // the FSM detects a non-flight-allowing tier while armed. None when
+    // normal flight is permitted.
+    let mut force_descent_since: Option<embassy_time::Instant> = None;
     // Periodic "FC is ready" log while sitting in GroundIdle, so the
     // operator on the BT terminal sees a continuous heartbeat instead
     // of silence after preflight passes.
@@ -1204,6 +1234,30 @@ async fn mission_fsm_task() -> ! {
         };
         let lidar = lidar_rcv.try_get().unwrap_or(99.0);
         let armed = motors_rcv.try_get().map(|m| m.is_armed()).unwrap_or(false);
+        let bat_tier = bat_tier_rcv
+            .try_get()
+            .unwrap_or(micoairh743v2::battery::Tier::Healthy);
+        let battery_allows_flight =
+            micoairh743v2::battery::tier_allows_flight(bat_tier);
+
+        // Latch forced-descent when armed and battery falls below the
+        // flight-allowing threshold. Once latched, only a reboot clears
+        // it -- the battery has to be charged + the FC reset before any
+        // further motors-on operation. Pre-armed transitions don't latch
+        // (no flight to abort).
+        if armed && !battery_allows_flight && force_descent_since.is_none() {
+            force_descent_since = Some(embassy_time::Instant::now());
+            let mut s: heapless::String<64> = heapless::String::new();
+            let _ = write!(
+                s,
+                "[fsm] BATTERY {} -- forcing landing ramp ({} s)",
+                bat_tier.label(),
+                FORCE_DESCENT_RAMP_MS / 1000,
+            );
+            // Critical log: must reach the operator regardless of
+            // telemetry flooding.
+            ulog::log_critical(s.as_str()).await;
+        }
 
         // Tell `angle_to_rate_bridge` and `alt_hold::main` whether
         // Manual owns the setpoints (rate + thrust). Set every tick so
@@ -1356,9 +1410,10 @@ async fn mission_fsm_task() -> ! {
                         entered_at = embassy_time::Instant::now();
                         manual_idle_since = Some(embassy_time::Instant::now());
                         zero_setpoints();
-                        // Defensive reset: armed-gate one-shot starts fresh
-                        // each Manual entry.
+                        // Defensive reset: armed-gate one-shots start
+                        // fresh each Manual entry.
                         arm_command_sent = false;
+                        arm_refused_logged = false;
                     }
                     Mode::Auto => {
                         if trigger_pressed && ch.maneuver == Maneuver::Takeoff {
@@ -1393,7 +1448,34 @@ async fn mission_fsm_task() -> ! {
                 let roll_rate_sp = expo(roll_n, MANUAL_EXPO) * MANUAL_MAX_ROLL_RATE;
                 let pitch_rate_sp = expo(pitch_n, MANUAL_EXPO) * MANUAL_MAX_PITCH_RATE;
                 let yaw_rate_sp = expo(yaw_n, MANUAL_EXPO) * MANUAL_MAX_YAW_RATE;
-                let thrust_sp = thr_n * MANUAL_THRUST_GAIN;
+
+                // Battery-triggered forced descent overrides the thrust
+                // stick: linear ramp from BASE_THRUST -> 0 over
+                // FORCE_DESCENT_RAMP_MS. Roll/pitch/yaw rate authority
+                // is preserved so the operator can guide the landing.
+                // When the ramp completes, disarm and transition to
+                // Fault to block further arming.
+                let thrust_sp = if let Some(start) = force_descent_since {
+                    let elapsed = start.elapsed().as_millis() as u64;
+                    if elapsed >= FORCE_DESCENT_RAMP_MS {
+                        // Ramp complete: disarm and transition out of
+                        // Manual. Fault state is intentional -- the
+                        // battery is below flight-allowing threshold;
+                        // re-arming until reboot would be unsafe.
+                        ulog::log("[fsm] battery-descent complete -- disarming");
+                        COMMAD_ARM_VEHICLE.send(false);
+                        zero_setpoints();
+                        state = State::Fault;
+                        arm_command_sent = false;
+                        entered_at = embassy_time::Instant::now();
+                        0.0
+                    } else {
+                        let progress = elapsed as f32 / FORCE_DESCENT_RAMP_MS as f32;
+                        BASE_THRUST * (1.0 - progress)
+                    }
+                } else {
+                    thr_n * MANUAL_THRUST_GAIN
+                };
 
                 signals::TRUE_RATE_SP.send([roll_rate_sp, pitch_rate_sp, yaw_rate_sp]);
                 signals::TRUE_Z_THRUST_SP.send(thrust_sp);
@@ -1417,11 +1499,24 @@ async fn mission_fsm_task() -> ! {
                 // Arm on first non-idle throttle. One-shot per Manual entry:
                 // motor governor takes ~4.5 s to flip `armed` to true, and
                 // the per-tick re-fire would otherwise log + re-send ~450
-                // times during that window.
+                // times during that window. Battery must also permit
+                // flight: tiers below HEALTHY block arming until the
+                // pack is charged + the FC rebooted.
                 if !armed && !arm_command_sent && thr_n > 0.0 {
-                    ulog::log("[fsm] Manual: throttle raised -- arming");
-                    COMMAD_ARM_VEHICLE.send(true);
-                    arm_command_sent = true;
+                    if battery_allows_flight {
+                        ulog::log("[fsm] Manual: throttle raised -- arming");
+                        COMMAD_ARM_VEHICLE.send(true);
+                        arm_command_sent = true;
+                    } else if !arm_refused_logged {
+                        let mut s: heapless::String<80> = heapless::String::new();
+                        let _ = write!(
+                            s,
+                            "[fsm] arm REFUSED: battery={} -- charge pack + reboot",
+                            bat_tier.label(),
+                        );
+                        ulog::log_critical(s.as_str()).await;
+                        arm_refused_logged = true;
+                    }
                 }
 
                 // Exit Manual: throttle in idle AND MODE=Idle continuously

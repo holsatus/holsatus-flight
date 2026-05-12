@@ -66,6 +66,20 @@ pub fn is_usb_power_range(mv: u32) -> bool {
 /// never see 0. Consumers read via `try_get`.
 pub static BATTERY_FILTERED_MV: Watch<CriticalSectionRawMutex, u32, 4> = Watch::new();
 
+/// Current battery tier, updated by the monitor task each cycle with the
+/// EWMA-derived classification (hysteresis applied). FSM reads this to
+/// gate arming and trigger forced-descent. Published alongside
+/// BATTERY_FILTERED_MV so consumers can act on the classification
+/// without re-implementing the threshold logic.
+pub static BATTERY_TIER: Watch<CriticalSectionRawMutex, Tier, 4> = Watch::new();
+
+/// True if this tier permits motors-spinning operation. USB_POWER (bench
+/// testing) and HEALTHY both qualify. Anything below HEALTHY blocks the
+/// preflight + arm gates and triggers in-flight forced descent.
+pub fn tier_allows_flight(tier: Tier) -> bool {
+    matches!(tier, Tier::Healthy | Tier::UsbPower)
+}
+
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum Tier {
     Healthy,
@@ -155,6 +169,7 @@ pub async fn battery_monitor_task(r: BatteryResources) -> ! {
     let mut adc = Adc::new(r.adc);
     let mut pin = r.pin_v;
     let snd = BATTERY_FILTERED_MV.sender();
+    let snd_tier = BATTERY_TIER.sender();
 
     // First sample seeds the EWMA so the filter doesn't ramp from zero.
     let raw = adc.blocking_read(&mut pin, SampleTime::CYCLES64_5);
@@ -167,7 +182,8 @@ pub async fn battery_monitor_task(r: BatteryResources) -> ! {
     }
 
     let mut tier = classify(filtered_mv, Tier::Healthy);
-    if tier != Tier::Healthy {
+    snd_tier.send(tier);
+    if !tier_allows_flight(tier) {
         let mut s: String<64> = String::new();
         let _ = write!(s, "[bat] boot tier={} at {} mV", tier.label(), filtered_mv);
         ulog::log_critical(s.as_str()).await;
@@ -203,8 +219,15 @@ pub async fn battery_monitor_task(r: BatteryResources) -> ! {
                 filtered_mv,
                 raw_mv,
             );
-            ulog::log_critical(s.as_str()).await;
+            // Severe tiers go through the priority channel; UsbPower and
+            // Healthy transitions are informational.
+            if new_tier.is_severe() || tier.is_severe() {
+                ulog::log_critical(s.as_str()).await;
+            } else {
+                ulog::log(s.as_str());
+            }
             tier = new_tier;
+            snd_tier.send(tier);
         }
 
         if last_periodic_log.elapsed().as_millis() as u64 >= PERIODIC_LOG_MS {
