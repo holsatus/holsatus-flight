@@ -574,21 +574,49 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
         }
     }
 
-    // Visual executor-liveness heartbeat at 1 Hz (LED toggles every 500 ms,
-    // 1 full blink per second). Decoupled from the log -- if the writer
-    // task dies but the executor is still alive, the LED keeps blinking
-    // and the drone is fine; if the LED freezes, the whole executor has
-    // panicked. The dshot-rate log line still fires every 2 s through
-    // the log channel as a separate signal.
+    // Visual executor-liveness + battery-tier indicator.
+    //
+    // Normal (HEALTHY / USB_POWER):
+    //   GREEN toggles every 500 ms (1 Hz blink). Red off.
+    //   Same liveness signal as before; decoupled from the log so that
+    //   if the writer task dies but the executor is alive, the LED keeps
+    //   blinking. If the LED freezes, the whole executor has panicked.
+    //
+    // Severe battery tier (LAND_NOW / CRITICAL / DAMAGE):
+    //   RED strobes at 5 Hz (toggles every 100 ms). Green off.
+    //   Visible from the drone without reading the BT log -- the only
+    //   in-flight cue that battery-driven forced descent is active or
+    //   that the pack is below the flight threshold.
+    //
+    // dshot-rate log line still fires every 2 s as before.
     let mut prev_tx =
         micoairh743v2::dshot_driver::DSHOT_TX_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-    let mut log_count: u8 = 0;
+    let mut bat_tier_rcv_hb = micoairh743v2::battery::BATTERY_TIER
+        .receiver()
+        .expect("BATTERY_TIER receiver slot (heartbeat)");
+    let mut led_tick: u8 = 0;
     loop {
-        led_green.toggle();
-        Timer::after_millis(500).await;
-        log_count = log_count.wrapping_add(1);
-        if log_count >= 4 {
-            log_count = 0;
+        Timer::after_millis(100).await;
+        led_tick = led_tick.wrapping_add(1);
+
+        let bat_tier = bat_tier_rcv_hb
+            .try_get()
+            .unwrap_or(micoairh743v2::battery::Tier::Healthy);
+
+        if bat_tier.is_severe() {
+            // 5 Hz red strobe; green held off so the alarm is unambiguous.
+            led_green.set_low();
+            led_red.toggle();
+        } else {
+            // Normal 1 Hz green heartbeat (toggle every 5 ticks = 500 ms).
+            led_red.set_low();
+            if led_tick % 5 == 0 {
+                led_green.toggle();
+            }
+        }
+
+        // Log dshot frame rate every 2 s (20 ticks).
+        if led_tick % 20 == 0 {
             let cur_tx = micoairh743v2::dshot_driver::DSHOT_TX_COUNT
                 .load(core::sync::atomic::Ordering::Relaxed);
             let rate = (cur_tx - prev_tx) / 2;
