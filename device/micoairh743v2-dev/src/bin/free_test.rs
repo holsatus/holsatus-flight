@@ -1152,13 +1152,26 @@ async fn mission_fsm_task() -> ! {
     // automatic landing or disarm depending on state. While not armed
     // (GroundIdle), a stale link is logged but does not transition --
     // there's no flight to safe.
-    const RC_LINK_TIMEOUT_MS: u64 = 500;
-    /// Soft threshold: gaps >= this and < RC_LINK_TIMEOUT_MS trigger a
+    //
+    // The timeout is ground-aware: 500 ms in air, 1500 ms when we detect
+    // near-ground low-throttle conditions for >=200 ms. Touch-down
+    // transients (motor deceleration current spike, mechanical jolt
+    // wiggling a marginal connector) can brown out the RX-side BEC for
+    // ~500 ms; widening the timeout there absorbs a single brownout
+    // without ever weakening in-air protection.
+    const RC_LINK_TIMEOUT_AIR_MS: u64 = 500;
+    const RC_LINK_TIMEOUT_GROUND_MS: u64 = 1500;
+    const GROUND_DETECT_LIDAR_M: f32 = 0.10;
+    const GROUND_DETECT_THR_N: f32 = 0.10;
+    const GROUND_DETECT_DWELL_MS: u64 = 200;
+    /// Soft threshold: gaps >= this and < current timeout trigger a
     /// one-shot warning when the link recovers. Picks up the near-misses
     /// that don't trip failsafe but indicate the link is unhealthy.
     const RC_NEAR_LOSS_MS: u64 = 300;
     let mut last_seq: u32 = 0;
     let mut last_seq_change = embassy_time::Instant::now();
+    // Ground-grace dwell start; None when the gate condition is broken.
+    let mut ground_grace_since: Option<embassy_time::Instant> = None;
 
     // For Manual exit detection: how long the throttle stick has been
     // in the idle deadband AND MODE has been Idle. Reset to None when
@@ -1199,31 +1212,66 @@ async fn mission_fsm_task() -> ! {
         micoairh743v2::alt_hold::MANUAL_BYPASS
             .store(matches!(state, State::Manual), Ordering::Relaxed);
 
+        // Sample throttle here once per tick; ground-grace + Manual reuse.
+        let thr_n_for_gate = micoairh743v2::rc_kill::stick_throttle(ch.raw[2]);
+
+        // Ground-grace gate: near-ground (low lidar) + low throttle for
+        // >=200 ms expands the RC freshness timeout to absorb BEC
+        // brownouts during touchdown. Tracked independently of state so
+        // it works in any mode that's near ground (Manual, AutoLand,
+        // post-Fault drift).
+        let near_ground = lidar < GROUND_DETECT_LIDAR_M
+            && thr_n_for_gate < GROUND_DETECT_THR_N;
+        if near_ground {
+            ground_grace_since.get_or_insert_with(embassy_time::Instant::now);
+        } else {
+            ground_grace_since = None;
+        }
+        let in_ground_grace = ground_grace_since
+            .map(|t| t.elapsed().as_millis() as u64 >= GROUND_DETECT_DWELL_MS)
+            .unwrap_or(false);
+        let rc_timeout_ms = if in_ground_grace {
+            RC_LINK_TIMEOUT_GROUND_MS
+        } else {
+            RC_LINK_TIMEOUT_AIR_MS
+        };
+
         // RC freshness check. If seq is bumping, the link is healthy.
-        // If it has not advanced for >RC_LINK_TIMEOUT_MS while armed, we
+        // If it has not advanced for >rc_timeout_ms while armed, we
         // declare link loss and force a transition. The check is gated on
         // `armed` so a quiet ground period (operator turned TX off
         // intentionally between flights while drone is disarmed) does
         // not spuriously trip Fault.
         if ch.seq != last_seq {
             // Recovery point: if the gap leading up to this advance was
-            // >= RC_NEAR_LOSS_MS but < RC_LINK_TIMEOUT_MS (so we did NOT
+            // >= RC_NEAR_LOSS_MS but < rc_timeout_ms (so we did NOT
             // failsafe), log it once. These near-misses are the data we
             // need to know whether the link is gradually degrading or
             // dropping cleanly.
             let gap_ms = last_seq_change.elapsed().as_millis() as u64;
-            if armed && gap_ms >= RC_NEAR_LOSS_MS && gap_ms <= RC_LINK_TIMEOUT_MS {
+            if armed && gap_ms >= RC_NEAR_LOSS_MS && gap_ms <= rc_timeout_ms {
                 let mut s: heapless::String<64> = heapless::String::new();
-                let _ = write!(s, "[fsm] RC link warning: gap={}ms (recovered)", gap_ms);
+                let _ = write!(
+                    s,
+                    "[fsm] RC link warning: gap={}ms (recovered{})",
+                    gap_ms,
+                    if in_ground_grace { ", ground-grace" } else { "" },
+                );
                 ulog::log(s.as_str());
             }
             last_seq = ch.seq;
             last_seq_change = embassy_time::Instant::now();
         }
         if armed && state != State::Fault
-            && last_seq_change.elapsed().as_millis() as u64 > RC_LINK_TIMEOUT_MS
+            && last_seq_change.elapsed().as_millis() as u64 > rc_timeout_ms
         {
-            ulog::log("[fsm] RC LINK LOST > 500ms while armed -- failsafe");
+            let mut lost_msg: heapless::String<80> = heapless::String::new();
+            let _ = write!(
+                lost_msg,
+                "[fsm] RC LINK LOST > {}ms while armed -- failsafe",
+                rc_timeout_ms,
+            );
+            ulog::log(lost_msg.as_str());
             // Diagnostic dump captured BEFORE the state transition so the
             // logged state is the pre-failsafe one. Helps distinguish
             // BEC sag (motors at high command, brief impact) from clean
@@ -1237,10 +1285,11 @@ async fn mission_fsm_task() -> ! {
             let mut diag: heapless::String<128> = heapless::String::new();
             let _ = write!(
                 diag,
-                "[fsm] failsafe diag: dt_seq={}ms last_seq={} motors=[{},{},{},{}] state={}",
+                "[fsm] failsafe diag: dt_seq={}ms last_seq={} motors=[{},{},{},{}] state={} ground_grace={}",
                 dt_seq_ms, last_seq,
                 motor_speeds[0], motor_speeds[1], motor_speeds[2], motor_speeds[3],
                 label(state),
+                in_ground_grace as u8,
             );
             ulog::log(diag.as_str());
             match state {
@@ -1522,7 +1571,7 @@ async fn mission_fsm_task() -> ! {
                 COMMAD_ARM_VEHICLE.send(false);
                 zero_setpoints();
                 let link_fresh =
-                    last_seq_change.elapsed().as_millis() as u64 <= RC_LINK_TIMEOUT_MS;
+                    last_seq_change.elapsed().as_millis() as u64 <= RC_LINK_TIMEOUT_AIR_MS;
                 let on_ground = !armed && lidar < 0.10;
                 if link_fresh && on_ground && ch.mode == Mode::Idle {
                     ulog::log("[fsm] Fault -> GroundIdle (link back, OK)");
