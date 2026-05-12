@@ -45,7 +45,7 @@ use micoairh743v2::alt_hold::ALTITUDE_SETPOINT;
 use micoairh743v2::log as ulog;
 use micoairh743v2::mtf01;
 use micoairh743v2::resources::{
-    self, BatteryResources, Mtf01Resources, SdmmcLogResources, UartLogResources,
+    self, Mtf01Resources, SdmmcLogResources, UartLogResources,
 };
 use micoairh743v2::sdlog::SdmmcResources;
 
@@ -162,12 +162,11 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     level_1_spawner.spawn(controller_angle::main().unwrap());
     level_1_spawner.spawn(angle_to_rate_bridge().unwrap());
 
-    let battery_mv = read_battery_mv(r.battery);
-
     // ------------------------------------------------------------------
     // Thread-priority tasks
     // ------------------------------------------------------------------
-    thread_spawner.spawn(resources::alt_hold_task(r.baro, battery_mv).unwrap());
+    thread_spawner.spawn(micoairh743v2::battery::battery_monitor_task(r.battery).unwrap());
+    thread_spawner.spawn(resources::alt_hold_task(r.baro).unwrap());
     thread_spawner.spawn(mtf01_reader_task(r.mtf01).unwrap());
     thread_spawner.spawn(flow_hold().unwrap());
     thread_spawner.spawn(flip_kill().unwrap());
@@ -239,22 +238,6 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
         let _ = write!(s, "[flight] hb dshot={}Hz", rate);
         ulog::log(s.as_str());
     }
-}
-
-/// Read battery voltage once via blocking ADC (call before motors spin).
-fn read_battery_mv(r: BatteryResources) -> u32 {
-    use embassy_stm32::adc::{Adc, SampleTime};
-    let mut adc = Adc::new(r.adc);
-    let mut pin_v = r.pin_v;
-    let raw = adc.blocking_read(&mut pin_v, SampleTime::CYCLES64_5);
-    const V_DIV: u32 = 21;
-    const ADC_FULL: u32 = 65535;
-    const VREF_MV: u32 = 3300;
-    let mv = (raw as u32 * VREF_MV * V_DIV) / ADC_FULL;
-    let mut s: heapless::String<48> = heapless::String::new();
-    let _ = core::fmt::Write::write_fmt(&mut s, format_args!("[bat] voltage={} mV", mv));
-    ulog::log(s.as_str());
-    mv
 }
 
 // ------------------------------------------------------------------

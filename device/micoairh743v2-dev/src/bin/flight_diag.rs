@@ -147,7 +147,8 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     // Step 9: alt_hold at thread priority
     // (does DPS310 I2C init, then PI control loop)
     // ------------------------------------------------------------------
-    thread_spawner.spawn(resources::alt_hold_task(r.baro, 15200).unwrap());
+    thread_spawner.spawn(micoairh743v2::battery::battery_monitor_task(r.battery).unwrap());
+    thread_spawner.spawn(resources::alt_hold_task(r.baro).unwrap());
     Timer::after_millis(500).await;
     ulog::log("[diag] step 9: alt_hold spawned + DPS310 init attempted");
 

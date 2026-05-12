@@ -150,13 +150,16 @@ fn format_baro_log(alt_m: f32, setpoint_m: f32, thrust: f32) -> heapless::String
     s
 }
 
-pub async fn main(i2c: impl I2c, addr: u8, battery_mv: u32) -> ! {
+pub async fn main(i2c: impl I2c, addr: u8) -> ! {
     defmt::info!("[alt_hold] task started");
 
-    // Voltage compensation: thrust ~ V^2, so scale by (nominal/actual)^2.
-    // Clamp to avoid division by zero or extreme values.
-    let v_actual = (battery_mv as f32).clamp(10000.0, 20000.0);
-    let v_comp = (NOMINAL_MV / v_actual) * (NOMINAL_MV / v_actual);
+    // Live battery voltage from the EWMA-filtered monitor (10 Hz). Replaces
+    // the previous one-shot boot read; voltage compensation now tracks the
+    // battery as it drains over the flight rather than being frozen at
+    // BASE_THRUST's calibration voltage.
+    let mut battery_rcv = crate::battery::BATTERY_FILTERED_MV
+        .receiver()
+        .expect("BATTERY_FILTERED_MV receiver slot");
 
     let mut baro = Dps310I2c::new(i2c, addr);
 
@@ -222,6 +225,16 @@ pub async fn main(i2c: impl I2c, addr: u8, battery_mv: u32) -> ! {
         if let Some(sp) = ALTITUDE_SETPOINT.try_take() {
             setpoint_m = sp;
         }
+
+        // Recompute voltage compensation each tick from the live filtered
+        // battery voltage. Thrust ~ V^2, so scale by (nominal/actual)^2.
+        // Fallback to NOMINAL_MV if the battery monitor hasn't published
+        // its first sample yet (first ~100 ms after boot).
+        let v_actual = (battery_rcv
+            .try_get()
+            .unwrap_or(NOMINAL_MV as u32) as f32)
+            .clamp(10000.0, 20000.0);
+        let v_comp = (NOMINAL_MV / v_actual) * (NOMINAL_MV / v_actual);
 
         // Always read baro -- it is the independent safety witness for the
         // primary lidar measurement. D000009 showed that a "stuck but still

@@ -10,6 +10,7 @@ pub mod qmc5883l;
 pub mod dshot_driver;
 pub mod resources;
 pub mod alt_hold;
+pub mod battery;
 pub mod config;
 pub mod imu_cal;
 pub mod log;

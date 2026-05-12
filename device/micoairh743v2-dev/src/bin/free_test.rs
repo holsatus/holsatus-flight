@@ -430,8 +430,7 @@ use micoairh743v2::alt_hold::ALTITUDE_SETPOINT;
 use micoairh743v2::log as ulog;
 use micoairh743v2::mtf01;
 use micoairh743v2::resources::{
-    self, BatteryResources, Bmi270Resources, BtLogResources, Mtf01Resources, SdmmcLogResources,
-    UartLogResources,
+    self, Bmi270Resources, BtLogResources, Mtf01Resources, SdmmcLogResources, UartLogResources,
 };
 use micoairh743v2::sdlog::SdmmcResources;
 
@@ -523,9 +522,13 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     level_1_spawner.spawn(controller_angle::main().unwrap());
     level_1_spawner.spawn(angle_to_rate_bridge().unwrap());
 
-    let battery_mv = read_battery_mv(r.battery);
+    // Battery monitor owns ADC1, samples at 10 Hz, publishes filtered mV via
+    // BATTERY_FILTERED_MV. alt_hold reads the live signal each tick for its
+    // voltage compensation; FSM/manual log can read it too. Replaces the
+    // previous one-shot boot read.
+    thread_spawner.spawn(micoairh743v2::battery::battery_monitor_task(r.battery).unwrap());
 
-    thread_spawner.spawn(resources::alt_hold_task(r.baro, battery_mv).unwrap());
+    thread_spawner.spawn(resources::alt_hold_task(r.baro).unwrap());
     thread_spawner.spawn(mtf01_reader_task(r.mtf01).unwrap());
     // flow_hold re-enabled 2026-04-22 in velocity-damping-only mode (KP_POS=0)
     // to counter the steady left-drift seen in D000116 without triggering the
@@ -595,21 +598,6 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
             ulog::log(s.as_str());
         }
     }
-}
-
-fn read_battery_mv(r: BatteryResources) -> u32 {
-    use embassy_stm32::adc::{Adc, SampleTime};
-    let mut adc = Adc::new(r.adc);
-    let mut pin_v = r.pin_v;
-    let raw = adc.blocking_read(&mut pin_v, SampleTime::CYCLES64_5);
-    const V_DIV: u32 = 21;
-    const ADC_FULL: u32 = 65535;
-    const VREF_MV: u32 = 3300;
-    let mv = (raw as u32 * VREF_MV * V_DIV) / ADC_FULL;
-    let mut s: heapless::String<48> = heapless::String::new();
-    let _ = core::fmt::Write::write_fmt(&mut s, format_args!("[bat] voltage={} mV", mv));
-    ulog::log(s.as_str());
-    mv
 }
 
 async fn override_motor_params() {

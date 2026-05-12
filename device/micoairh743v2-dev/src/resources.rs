@@ -479,11 +479,11 @@ async fn setup_i2c2(r: BaroResources) -> (&'static I2c2Bus, u8) {
 /// via a NoopRawMutex shared-bus wrapper. Both devices run in the same task
 /// so there is no cross-executor contention; NoopRawMutex is safe here.
 #[embassy_executor::task]
-pub async fn alt_hold_task(r: BaroResources, battery_mv: u32) -> ! {
+pub async fn alt_hold_task(r: BaroResources) -> ! {
     let (bus, baro_addr) = setup_i2c2(r).await;
 
     embassy_futures::join::join(
-        crate::alt_hold::main(I2cDevice::new(bus), baro_addr, battery_mv),
+        crate::alt_hold::main(I2cDevice::new(bus), baro_addr),
         compass_reader(I2cDevice::new(bus)),
     ).await;
 
