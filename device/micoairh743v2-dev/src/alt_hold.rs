@@ -229,11 +229,15 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
         // Recompute voltage compensation each tick from the live filtered
         // battery voltage. Thrust ~ V^2, so scale by (nominal/actual)^2.
         // Fallback to NOMINAL_MV if the battery monitor hasn't published
-        // its first sample yet (first ~100 ms after boot).
-        let v_actual = (battery_rcv
-            .try_get()
-            .unwrap_or(NOMINAL_MV as u32) as f32)
-            .clamp(10000.0, 20000.0);
+        // its first sample yet (first ~100 ms after boot). USB-power
+        // bench testing also falls back to NOMINAL_MV so v_comp stays 1.0
+        // instead of boosting 2.3x against an irrelevant 5 V reading.
+        let battery_mv = battery_rcv.try_get().unwrap_or(NOMINAL_MV as u32);
+        let v_actual = if crate::battery::is_usb_power_range(battery_mv) {
+            NOMINAL_MV
+        } else {
+            (battery_mv as f32).clamp(10000.0, 20000.0)
+        };
         let v_comp = (NOMINAL_MV / v_actual) * (NOMINAL_MV / v_actual);
 
         // Always read baro -- it is the independent safety witness for the

@@ -40,6 +40,27 @@ pub const DAMAGE_ENTER_MV: u32 = 13_200;
 // Damage tier is latched -- once entered, stays until reboot. A cell
 // reaching the damage threshold should be charged before more discharge.
 
+// --- USB-power detection (bench testing without LiPo) ---
+// When no LiPo is connected and the FC is powered from the USB-UART
+// adapter or the USB-C port, the FC's 5 V rail bleeds through to the
+// battery sense circuit and PC0 reads ~4.8-5.2 V. Without this carve-out
+// the tier classifier would call that voltage "DAMAGE" and spam the log
+// continuously, drowning out the messages we actually care about during
+// bench testing of the RC interaction.
+//
+// 6.0 V enter / 6.5 V exit gives clean hysteresis -- a 4S LiPo plugged
+// in (~13-17 V) crosses 6.5 V cleanly during the EWMA ramp-up, and even
+// a profoundly damaged 4S (2.0 V/cell = 8 V) sits well above USB range.
+pub const USB_POWER_ENTER_MV: u32 = 6_000;
+pub const USB_POWER_EXIT_MV: u32 = 6_500;
+
+/// Returns true if `mv` is in the USB-power range. Use this from
+/// consumers (e.g. alt_hold) to suppress voltage-compensation math
+/// during bench testing where reading the bus voltage is meaningless.
+pub fn is_usb_power_range(mv: u32) -> bool {
+    mv < USB_POWER_ENTER_MV
+}
+
 /// Filtered battery voltage in mV. EWMA-smoothed at 10 Hz with alpha=0.2
 /// (~800 ms effective settling). Seeded on the first sample so consumers
 /// never see 0. Consumers read via `try_get`.
@@ -51,6 +72,10 @@ pub enum Tier {
     LandNow,
     Critical,
     Damage,
+    /// FC powered from USB without a LiPo connected. Detected by the
+    /// battery sense reading inside `[USB_POWER_ENTER_MV..USB_POWER_EXIT_MV]`
+    /// (~5 V). Bench-test state; not safety-relevant.
+    UsbPower,
 }
 
 impl Tier {
@@ -60,14 +85,36 @@ impl Tier {
             Tier::LandNow => "LAND_NOW",
             Tier::Critical => "CRITICAL",
             Tier::Damage => "DAMAGE",
+            Tier::UsbPower => "USB_POWER",
         }
+    }
+
+    /// Tiers that warrant routing transitions through the priority log
+    /// channel (so they always reach the operator even under telemetry
+    /// flood). USB power is informational and uses the regular channel.
+    pub fn is_severe(self) -> bool {
+        matches!(self, Tier::LandNow | Tier::Critical | Tier::Damage)
     }
 }
 
 /// Tier classification with hysteresis. Downgrades (to more severe tier)
 /// use enter thresholds; upgrades (to less severe) require crossing the
-/// higher exit thresholds. Damage tier is latched.
+/// higher exit thresholds. Damage tier is latched -- but UsbPower
+/// overrides that latch because going from a degraded battery to USB
+/// bench-testing is a deliberate operator action, not a sensor anomaly.
 fn classify(mv: u32, current: Tier) -> Tier {
+    // USB-power range always takes precedence: any read in [0, ENTER_MV)
+    // is unambiguously bench-test power, so the LiPo thresholds below
+    // shouldn't apply.
+    if mv < USB_POWER_ENTER_MV {
+        return Tier::UsbPower;
+    }
+    // Exiting UsbPower requires crossing the higher hysteresis threshold,
+    // so the EWMA ramp from ~5 V to ~15 V on LiPo plug-in doesn't briefly
+    // mis-classify as Damage on the way past 13.2 V.
+    if matches!(current, Tier::UsbPower) && mv < USB_POWER_EXIT_MV {
+        return Tier::UsbPower;
+    }
     if mv < DAMAGE_ENTER_MV {
         return Tier::Damage;
     }
@@ -95,7 +142,7 @@ fn classify(mv: u32, current: Tier) -> Tier {
                 Tier::LandNow
             }
         }
-        Tier::Healthy => Tier::Healthy,
+        Tier::Healthy | Tier::UsbPower => Tier::Healthy,
     }
 }
 
