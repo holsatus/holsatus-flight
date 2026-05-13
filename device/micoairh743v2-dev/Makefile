@@ -16,6 +16,11 @@ PORT   ?= /dev/cu.usbserial-A5069RR4
 BAUD   ?= 115200
 VERIFY ?= 0
 
+# Output directory for objcopy'd .bin artefacts. Gitignored; keeps the
+# device root clean instead of accumulating <bin>.bin files alongside source.
+OUT_DIR := firmware
+BIN_OUT := $(OUT_DIR)/$(BIN).bin
+
 ifeq ($(VERIFY),1)
   VERIFY_FLAG := -v
 else
@@ -82,15 +87,17 @@ probe: port-free
 	@echo "Bootloader OK"
 
 build:
+	@mkdir -p $(OUT_DIR)
 	cargo build --bin $(BIN)
-	cargo objcopy --bin $(BIN) -- -O binary $(BIN).bin
+	cargo objcopy --bin $(BIN) -- -O binary $(BIN_OUT)
 
 build-release:
+	@mkdir -p $(OUT_DIR)
 	cargo build --release --bin $(BIN)
-	cargo objcopy --release --bin $(BIN) -- -O binary $(BIN).bin
+	cargo objcopy --release --bin $(BIN) -- -O binary $(BIN_OUT)
 
 flash: git-clean probe build
-	stm32flash -b $(BAUD) -w $(BIN).bin $(VERIFY_FLAG) -g 0x08000000 $(PORT)
+	stm32flash -b $(BAUD) -w $(BIN_OUT) $(VERIFY_FLAG) -g 0x08000000 $(PORT)
 
 flash-release: git-clean probe build-release
-	stm32flash -b $(BAUD) -w $(BIN).bin $(VERIFY_FLAG) -g 0x08000000 $(PORT)
+	stm32flash -b $(BAUD) -w $(BIN_OUT) $(VERIFY_FLAG) -g 0x08000000 $(PORT)
