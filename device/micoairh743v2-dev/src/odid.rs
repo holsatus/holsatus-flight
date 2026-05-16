@@ -12,6 +12,8 @@
 //! Location data is hard-coded today. Once `RAW_GNSS_DATA` lock is reliable
 //! in flight, swap `current_position` and `operator_position` for live reads.
 
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::peripherals;
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
@@ -231,9 +233,21 @@ fn location(lat_raw: i32, lon_raw: i32, alt_geo_m: f32, now_us: u64) -> OpenDron
     }
 }
 
+// Takeoff position latched on the first 3D GNSS fix and reported as
+// SYSTEM.operator_{latitude,longitude} for the rest of the session. A new
+// flight (power-cycle) latches a fresh value.
+static TAKEOFF_LAT_RAW: AtomicI32 = AtomicI32::new(0);
+static TAKEOFF_LON_RAW: AtomicI32 = AtomicI32::new(0);
+static TAKEOFF_LATCHED: AtomicBool = AtomicBool::new(false);
+
 fn current_position() -> (i32, i32, f32) {
     if let Some(gnss) = common::signals::RAW_GNSS_DATA.try_get() {
         if matches!(gnss.fix, common::types::measurements::GnssFix::Fix3D) {
+            if !TAKEOFF_LATCHED.load(Ordering::Acquire) {
+                TAKEOFF_LAT_RAW.store(gnss.latitude_raw, Ordering::Relaxed);
+                TAKEOFF_LON_RAW.store(gnss.longitude_raw, Ordering::Relaxed);
+                TAKEOFF_LATCHED.store(true, Ordering::Release);
+            }
             return (gnss.latitude_raw, gnss.longitude_raw, gnss.height_above_msl);
         }
     }
@@ -241,7 +255,12 @@ fn current_position() -> (i32, i32, f32) {
 }
 
 fn operator_position() -> (i32, i32) {
-    // Takeoff snapshot will replace this once a 3D fix has been latched.
+    if TAKEOFF_LATCHED.load(Ordering::Acquire) {
+        return (
+            TAKEOFF_LAT_RAW.load(Ordering::Relaxed),
+            TAKEOFF_LON_RAW.load(Ordering::Relaxed),
+        );
+    }
     (deg_to_raw(FALLBACK_LAT_DEG), deg_to_raw(FALLBACK_LON_DEG))
 }
 

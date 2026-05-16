@@ -540,6 +540,7 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     thread_spawner.spawn(flip_kill().unwrap());
     thread_spawner.spawn(gyro_runaway_kill().unwrap());
     thread_spawner.spawn(micoairh743v2::rc_kill::rc_kill_task(r.rc).unwrap());
+    thread_spawner.spawn(micoairh743v2::gnss::gnss_reader_task(r.gps).unwrap());
     thread_spawner.spawn(micoairh743v2::odid::odid_tx_task(r.odid).unwrap());
     thread_spawner.spawn(mission_fsm_task().unwrap());
     thread_spawner.spawn(motor_monitor().unwrap());
