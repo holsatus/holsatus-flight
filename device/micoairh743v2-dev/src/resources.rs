@@ -132,6 +132,15 @@ assign_resources! {
         rx:    PC7,
         dma:   DMA2_CH2,
     }
+    /// Open Drone ID transmitter. UART5 TX=PB6 at 57600 baud feeds a Waveshare
+    /// ESP32-S3-Zero "Supermini" flashed with ArduRemoteID v1.14. The bridge
+    /// is TX-only; the module does not talk back over MAVLink. See
+    /// `tools/odid_emit/odid_emit.py` for the Python reference flow.
+    odid: OdidResources {
+        usart: UART5,
+        tx:    PB6,
+        dma:   DMA2_CH4,
+    }
     sdmmc: SdmmcLogResources {
         periph: SDMMC1,
         clk:    PC12,

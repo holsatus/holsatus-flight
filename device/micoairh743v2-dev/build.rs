@@ -90,4 +90,29 @@ fn main() {
     // staged-but-uncommitted state affects the dirty flag).
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/index");
+
+    emit_odid_secrets();
+}
+
+/// Lift operator/aircraft IDs out of `tools/odid_emit/secrets.toml` (gitignored)
+/// and into the firmware as build-time env vars. Same file the Python smoke
+/// test reads, so identity lives in one place. Missing or partial file is OK:
+/// `odid.rs` falls back to placeholders via `option_env!`.
+fn emit_odid_secrets() {
+    const PATH: &str = "tools/odid_emit/secrets.toml";
+    println!("cargo:rerun-if-changed={PATH}");
+
+    let Ok(text) = std::fs::read_to_string(PATH) else { return };
+
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        let Some((key, val)) = line.split_once('=') else { continue };
+        let val = val.trim().trim_matches('"').trim_matches('\'');
+        match key.trim() {
+            "operator_id" => println!("cargo:rustc-env=ODID_OPERATOR_ID={val}"),
+            "uas_id"      => println!("cargo:rustc-env=ODID_UAS_ID={val}"),
+            "description" => println!("cargo:rustc-env=ODID_SELF_ID={val}"),
+            _ => {}
+        }
+    }
 }

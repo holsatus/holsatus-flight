@@ -15,5 +15,6 @@ pub mod config;
 pub mod imu_cal;
 pub mod log;
 pub mod mtf01;
+pub mod odid;
 pub mod rc_kill;
 pub mod sdlog;
