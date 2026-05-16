@@ -51,9 +51,9 @@ pub const SELF_ID: &str = match option_env!("ODID_SELF_ID") {
 };
 
 // Default takeoff / vehicle position used until GNSS lock is wired in.
-// Defaults to Kiel, DE so an indoor smoke test still emits a plausible frame.
-pub const FALLBACK_LAT_DEG: f64 = 54.3233;
-pub const FALLBACK_LON_DEG: f64 = 10.1228;
+// Treptower Park, Berlin: the regular flying site.
+pub const FALLBACK_LAT_DEG: f64 = 52.486_473_0;
+pub const FALLBACK_LON_DEG: f64 = 13.471_140_7;
 pub const FALLBACK_ALT_M:   f32 = 0.0;
 
 pub const BAUD: u32 = 57_600;
