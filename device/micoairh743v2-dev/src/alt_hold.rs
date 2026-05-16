@@ -5,7 +5,7 @@
 //! is kept as a fallback and for altitude above 8m.
 
 use core::fmt::Write;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -72,21 +72,32 @@ const DT: f32 = 0.1;
 /// for altitude hold while rejecting sensor noise and indoor pressure drafts.
 const EWMA_ALPHA: f32 = 0.3;
 
-/// Hard altitude ceiling (m, above baseline). Baro-based safety net.
+/// Hard altitude ceiling, runtime-settable. Default 2.0 m (indoor-safe).
+/// Set via `set_ceiling` from `ceiling_mode` based on the TX15 SC switch:
+/// SC=Low keeps 2.0; SC=Mid/High switches to 110.0 (EU Open A3 legal cap
+/// of 120 m minus 10 m headroom for baro drift / EWMA lag).
+///
+/// Default-safe rationale: if the RC link never comes up, the ceiling
+/// stays at 2.0 and the drone cannot legally fly outdoors. SC must be
+/// actively raised by the pilot to unlock outdoor altitude.
+///
 /// D000009 incident (2026-04-22): the MTF-01 lidar got stuck reporting
 /// ~0.05 m while the drone physically rocketed past ceiling height. Since
 /// alt_hold only consulted baro as a lidar-miss fallback, the stuck-but-
 /// reporting lidar silently locked the PID into max-thrust and there was
 /// no independent safety net. Baro is now read every cycle and if it ever
-/// shows the drone above HARD_CEILING_M, the controller forces descent
-/// regardless of what lidar says.
-///
-/// Sized to 2.0 m instead of sp+0.5 because baro propwash noise on a quad
-/// is ~+/-0.3 m during hover (and spikes to ~+/-0.5 m). At setpoint 1.0 m
-/// a tighter ceiling (1.5 m) would false-trip on a propwash peak. 2.0 m
-/// gives ~3 sigma of propwash headroom while still well below a typical
-/// room ceiling (~2.4-2.6 m).
-const HARD_CEILING_M: f32 = 2.0;
+/// shows the drone above the active ceiling, the controller forces
+/// descent regardless of what lidar says. The check uses an EWMA over
+/// raw baro so a single propwash spike cannot trip it.
+static ACTIVE_CEILING_M_BITS: AtomicU32 = AtomicU32::new(0x4000_0000); // 2.0_f32.to_bits()
+
+pub fn ceiling() -> f32 {
+    f32::from_bits(ACTIVE_CEILING_M_BITS.load(Ordering::Relaxed))
+}
+
+pub fn set_ceiling(m: f32) {
+    ACTIVE_CEILING_M_BITS.store(m.to_bits(), Ordering::Relaxed);
+}
 
 /// Post-v_comp thrust used during a HARD_CEILING_M breach -- well below
 /// typical hover thrust so the drone sinks at a bounded terminal rate
@@ -193,6 +204,11 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
     let mut prev_alt = 0.0_f32;
     let mut log_counter = 0u32;
     let mut alt_filtered = 0.0_f32;
+    // Separate EWMA over RAW baro for the hard-ceiling check. Independent
+    // of source-selection (lidar/baro) so it remains a true independent
+    // safety witness, but smoothed so a single propwash spike cannot trip
+    // the forced-descent. Init from baseline (== 0 m above takeoff).
+    let mut baro_ewma: f32 = 0.0;
     let mut lidar_rcv = LIDAR_ALT_M.receiver().unwrap();
     let mut use_lidar = false;
 
@@ -223,7 +239,11 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
     loop {
         // Pick up a new altitude setpoint if the mission sequencer sent one.
         if let Some(sp) = ALTITUDE_SETPOINT.try_take() {
-            setpoint_m = sp;
+            // Clamp to the active hard ceiling so no upstream caller can
+            // request altitude above the legal cap. ceiling_mode swaps the
+            // ceiling between 2.0 m (SC=Low, indoor) and 110.0 m (SC=Mid/High,
+            // outdoor with 10 m margin from the 120 m EU Open A3 cap).
+            setpoint_m = sp.min(ceiling());
         }
 
         // Recompute voltage compensation each tick from the live filtered
@@ -250,16 +270,20 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
             .ok()
             .map(|d| pressure_to_altitude(d.pressure_pa, baseline_pa));
 
-        // SAFETY: hard baro-based ceiling. If the drone is above
-        // HARD_CEILING_M regardless of what lidar says, force a gentle
+        // SAFETY: hard baro-based ceiling. If the drone is above the
+        // active ceiling regardless of what lidar says, force a gentle
         // descent and skip the normal PID for this cycle. The drone will
         // keep sinking until baro reads below the ceiling, at which point
-        // normal control resumes.
+        // normal control resumes. The check uses an EWMA over raw baro
+        // so a single propwash spike cannot trip it -- important at the
+        // outdoor 110 m cap where there is no room ceiling backup.
         if let Some(b) = baro_alt {
-            if b > HARD_CEILING_M {
+            baro_ewma = EWMA_ALPHA * b + (1.0 - EWMA_ALPHA) * baro_ewma;
+            if baro_ewma > ceiling() {
                 let mut s: heapless::String<64> = heapless::String::new();
                 let _ = write!(
-                    s, "[alt] CEILING BREACH baro={:.2}m -- forced descent", b
+                    s, "[alt] CEILING BREACH baro={:.2}m cap={:.1}m -- forced descent",
+                    baro_ewma, ceiling()
                 );
                 crate::log::log(s.as_str());
                 if !MANUAL_BYPASS.load(Ordering::Relaxed) {

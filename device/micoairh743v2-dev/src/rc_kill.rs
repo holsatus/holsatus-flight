@@ -91,7 +91,7 @@ pub enum Pos {
     High,
 }
 
-fn decode(raw: u16) -> Pos {
+pub fn decode(raw: u16) -> Pos {
     let v = raw as i32;
     if v < (CRSF_LOW + CRSF_MID) / 2 {
         Pos::Low
