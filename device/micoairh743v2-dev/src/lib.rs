@@ -18,5 +18,6 @@ pub mod log;
 pub mod gnss;
 pub mod mtf01;
 pub mod odid;
+pub mod phoenix_telem;
 pub mod rc_kill;
 pub mod sdlog;

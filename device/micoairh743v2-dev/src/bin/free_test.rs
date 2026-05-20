@@ -507,6 +507,18 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     level_0_spawner.spawn(resources::motor_governor_task(r.motors, DshotConfig::Dshot300).unwrap());
     level_0_spawner.spawn(controller_rate::main().unwrap());
 
+    // Cal-independent tasks. Spawned before imu_cal so they are alive while
+    // the operator holds the drone level for calibration:
+    //   - rc_kill: kill switch must be functional during cal
+    //   - ceiling_mode: just reads RC, no IMU dependency
+    //   - gnss: ublox parser, independent of IMU
+    //   - odid: legal Remote ID broadcast should start at power-on, not
+    //     after a (potentially multi-minute) cal dance
+    thread_spawner.spawn(micoairh743v2::rc_kill::rc_kill_task(r.rc).unwrap());
+    thread_spawner.spawn(micoairh743v2::ceiling_mode::ceiling_mode_task().unwrap());
+    thread_spawner.spawn(micoairh743v2::gnss::gnss_reader_task(r.gps).unwrap());
+    thread_spawner.spawn(micoairh743v2::odid::odid_tx_task(r.odid).unwrap());
+
     // Calibrate IMU BEFORE spawning att_estimator. Otherwise Madgwick
     // integrates 2-3 s of uncalibrated (biased) gyro data into the attitude
     // estimate before ReloadParams takes effect. At beta=0.03 the filter
@@ -539,16 +551,20 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     thread_spawner.spawn(flow_hold().unwrap());
     thread_spawner.spawn(flip_kill().unwrap());
     thread_spawner.spawn(gyro_runaway_kill().unwrap());
-    thread_spawner.spawn(micoairh743v2::rc_kill::rc_kill_task(r.rc).unwrap());
-    thread_spawner.spawn(micoairh743v2::ceiling_mode::ceiling_mode_task().unwrap());
-    thread_spawner.spawn(micoairh743v2::gnss::gnss_reader_task(r.gps).unwrap());
-    thread_spawner.spawn(micoairh743v2::odid::odid_tx_task(r.odid).unwrap());
     thread_spawner.spawn(mission_fsm_task().unwrap());
     thread_spawner.spawn(motor_monitor().unwrap());
     thread_spawner.spawn(imu_monitor().unwrap());
     thread_spawner.spawn(flow_position_logger().unwrap());
     thread_spawner.spawn(mag_yaw_logger().unwrap());
     thread_spawner.spawn(bmi270_logger_task(r.bmi270).unwrap());
+
+    // Phoenix mission-logger MAVLink link to the RPi5 companion on USART2
+    // (DJI-VTX port). Streams the topics defined in
+    // `phoenix/references/holsatus_data_logging.md` at the design-doc rates
+    // and answers Pi-initiated HEARTBEAT/TIMESYNC. Does not gate arming today
+    // (no consumer of phoenix_telem::COMPANION_HEALTHY yet); the Pi can be
+    // absent and flight is unaffected.
+    thread_spawner.spawn(micoairh743v2::phoenix_telem::phoenix_telem_task(r.telem).unwrap());
 
     ulog::log("[free] all tasks spawned");
 

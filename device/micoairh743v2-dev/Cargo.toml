@@ -28,6 +28,10 @@ assign-resources = "0.5.0"
 
 mavio = { git = "https://gitlab.com/peterkrull/mavio/", branch = "holsatus-branch", default-features = false, features = ["dlct-common", "embedded-io-async"] }
 
+# 64-bit atomics for `phoenix_telem` (Cortex-M has no native AtomicU64/I64).
+# Falls back to a critical-section impl on this target.
+portable-atomic     = "1.9"
+
 aligned             = "0.4.2"
 serde               = { version = "1.0", default-features = false, features = ["derive"] }
 postcard            = { version = "1.0.10", default-features = false }

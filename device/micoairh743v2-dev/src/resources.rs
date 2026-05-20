@@ -159,6 +159,20 @@ assign_resources! {
         dma_tx: DMA2_CH1,
         dma_rx: DMA2_CH0,
     }
+    /// Phoenix Pi-companion MAVLink telemetry link over USART2 on the board's
+    /// DJI-VTX 6-pin connector. Pinout on that header: 12V/GND/Tx2/Rx2/GND/Rx6;
+    /// only Tx2 (PA2), Rx2 (PA3), and one GND are wired through to the RPi5.
+    /// Repurposes the FPV HD-VTX port -- analog VTX and DJI O3 are mutually
+    /// exclusive with the Pi-side mission logger on this drone. See
+    /// `phoenix_telem` and references/holsatus_data_logging.md for the wire
+    /// protocol.
+    telem: TelemResources {
+        usart:  USART2,
+        tx:     PA2,
+        rx:     PA3,
+        dma_tx: DMA2_CH5,
+        dma_rx: DMA2_CH6,
+    }
 }
 
 pub fn split(p: Peripherals) -> AssignedResources {
