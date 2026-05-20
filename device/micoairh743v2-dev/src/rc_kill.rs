@@ -369,6 +369,14 @@ pub async fn rc_kill_task(r: RcResources) -> ! {
     ulog::log("[rc_kill] USART6@420000 ready, watching SE (CH5) and SF (CH10)");
 
     let snd_channels = RC_CHANNELS.sender();
+    // Mirror the raw 16-channel array onto the common-crate Watch so
+    // downstream code that doesn't depend on the H743v2 crate (e.g.
+    // phoenix_telem RC_CHANNELS MAVLink frames -> Pi /fc/rc_input) sees
+    // the same data. The H743v2 has its own rc_kill task instead of
+    // common::tasks::rc_reader (the upstream parser deadlocks under live
+    // CRSF traffic from the RP3, see rc_kill module docs), so the common
+    // signal would otherwise stay empty forever.
+    let mut snd_chans_raw = common::signals::RC_CHANNELS_RAW.sender();
     let mut framer = CrsfFramer::new();
     let mut buf = [0u8; 64];
 
@@ -389,6 +397,12 @@ pub async fn rc_kill_task(r: RcResources) -> ! {
             let Some(channels) = framer.feed_byte(buf[i]) else {
                 continue;
             };
+
+            // Publish the raw 16-channel frame on the shared Watch every
+            // valid CRSF packet, before any kill/restart short-circuits.
+            // Done once here rather than at every per-branch send below so
+            // we can't miss a frame on an early return path.
+            snd_chans_raw.send(Some(channels));
 
             let se_raw = channels[SE_IDX];
             let sf_raw = channels[SF_IDX];

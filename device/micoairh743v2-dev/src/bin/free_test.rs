@@ -2429,6 +2429,13 @@ async fn bmi270_logger_task(r: Bmi270Resources) -> ! {
     // side-by-side comparison is apples-to-apples.
     const BMI270_CHIP_TO_DRONE: [f32; 3] = [1.0, -1.0, -1.0];
 
+    // Publish frame-aligned samples on CAL_MULTI_IMU_DATA[1] so consumers
+    // like `phoenix_telem` (SCALED_IMU2 -> Pi /fc/imu/1) can see this IMU.
+    // Note: there is no separate cal stage for BMI270 in this firmware; the
+    // raw chip output (with axis rotation applied) is published as "cal" so
+    // downstream code can treat both IMU slots uniformly.
+    let mut snd_imu1 = signals::CAL_MULTI_IMU_DATA[1].sender();
+
     loop {
         Timer::after_millis(10).await; // 100 Hz logging cadence
         match imu.read().await {
@@ -2440,6 +2447,11 @@ async fn bmi270_logger_task(r: Bmi270Resources) -> ! {
                 let gx = d.gyro.x as f32 * GYR_SCALE_RADS * BMI270_CHIP_TO_DRONE[0];
                 let gy = d.gyro.y as f32 * GYR_SCALE_RADS * BMI270_CHIP_TO_DRONE[1];
                 let gz = d.gyro.z as f32 * GYR_SCALE_RADS * BMI270_CHIP_TO_DRONE[2];
+                snd_imu1.send(common::types::measurements::Imu6DofData {
+                    timestamp_us: embassy_time::Instant::now().as_micros(),
+                    acc: [ax, ay, az],
+                    gyr: [gx, gy, gz],
+                });
                 let mut s: heapless::String<96> = heapless::String::new();
                 let _ = write!(
                     s,
