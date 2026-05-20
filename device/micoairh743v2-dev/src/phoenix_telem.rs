@@ -50,7 +50,7 @@ use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use mavio::dialects::common::messages::{
     Attitude, BatteryStatus, DistanceSensor, GpsRawInt, Heartbeat, LocalPositionNed, RawImu,
-    RcChannels, ScaledImu, Timesync,
+    RcChannels, ScaledImu, ScaledImu2, Timesync,
 };
 use mavio::dialects::minimal::enums::{MavAutopilot, MavModeFlag, MavState, MavType};
 use mavio::prelude::{V2, Versioned};
@@ -139,8 +139,11 @@ async fn tx_loop(mut tx: UartTx<'static, Async>) -> ! {
         ticker.next().await;
         tick = tick.wrapping_add(1);
 
-        // 100 Hz
+        // 100 Hz -- both IMUs.
         if let Some(msg) = build_scaled_imu() {
+            send(&mut tx, &mut seq, &msg).await;
+        }
+        if let Some(msg) = build_scaled_imu2() {
             send(&mut tx, &mut seq, &msg).await;
         }
 
@@ -197,8 +200,12 @@ async fn tx_loop(mut tx: UartTx<'static, Async>) -> ! {
             send(&mut tx, &mut seq, &m).await;
         }
 
-        // 1 Hz heartbeat + companion-health timeout sweep.
-        if tick % 100 == 0 {
+        // 2 Hz heartbeat + companion-health timeout sweep. Doc-doc says 1 Hz
+        // is enough; ground-station tools like mavproxy flag "link down" if a
+        // single heartbeat slips past the 2.5-3 s timeout, so doubling the
+        // rate gives us a comfortable margin against Ticker jitter at no
+        // bandwidth cost (~30 B/s).
+        if tick % 50 == 0 {
             send(&mut tx, &mut seq, &build_heartbeat()).await;
             sweep_companion_timeout();
         }
@@ -265,7 +272,11 @@ fn build_heartbeat() -> Heartbeat {
 }
 
 fn build_scaled_imu() -> Option<ScaledImu> {
-    let imu = signals::CAL_IMU_DATA.try_get()?;
+    // BMI088 lives at index 0 in the multi-IMU array. Note: the singular
+    // CAL_IMU_DATA Watch exists in common::signals but nothing publishes to
+    // it on H743v2 -- the live pipeline uses CAL_MULTI_IMU_DATA[idx] (see
+    // common::tasks::imu_reader::main_6dof).
+    let imu = signals::CAL_MULTI_IMU_DATA[0].try_get()?;
     let mut m = ScaledImu::default();
     m.time_boot_ms = (Instant::now().as_millis() & 0xFFFF_FFFF) as u32;
     // Pi parses xacc/yacc/zacc as: m.xacc / 1000.0 * 9.80665 -> m/s^2.
@@ -278,28 +289,42 @@ fn build_scaled_imu() -> Option<ScaledImu> {
     m.xgyro = clamp_i16(imu.gyr[0] * 1000.0);
     m.ygyro = clamp_i16(imu.gyr[1] * 1000.0);
     m.zgyro = clamp_i16(imu.gyr[2] * 1000.0);
-    // BMI088 has no on-chip mag; SCALED_IMU.xmag/ymag/zmag stay at default
-    // (0); Pi's _emit_mag handler is fed by RAW_IMU only, not SCALED_IMU.
+    Some(m)
+}
+
+fn build_scaled_imu2() -> Option<ScaledImu2> {
+    // BMI270 at index 1. Same scaling convention as IMU0.
+    let imu = signals::CAL_MULTI_IMU_DATA[1].try_get()?;
+    let mut m = ScaledImu2::default();
+    m.time_boot_ms = (Instant::now().as_millis() & 0xFFFF_FFFF) as u32;
+    m.xacc = clamp_i16(imu.acc[0] / G * 1000.0);
+    m.yacc = clamp_i16(imu.acc[1] / G * 1000.0);
+    m.zacc = clamp_i16(imu.acc[2] / G * 1000.0);
+    m.xgyro = clamp_i16(imu.gyr[0] * 1000.0);
+    m.ygyro = clamp_i16(imu.gyr[1] * 1000.0);
+    m.zgyro = clamp_i16(imu.gyr[2] * 1000.0);
     Some(m)
 }
 
 fn build_raw_imu_mag() -> Option<RawImu> {
-    // CAL_MAG_DATA is Imu9DofData<f32> -- accel/gyro slots are populated
-    // from the IMU but the Pi only consumes the mag fields from this msg.
-    let cal = signals::CAL_MAG_DATA.try_get()?;
+    // CAL_MULTI_MAG_DATA is [Watch<[f32; 3]>; NUM_MAG] -- just the mag
+    // triplet (gauss, post hard/soft-iron cal), NOT an Imu9DofData. The Pi's
+    // /fc/mag handler only consumes xmag/ymag/zmag.
+    let mag = signals::CAL_MULTI_MAG_DATA[0].try_get()?;
     let mut m = RawImu::default();
     m.time_usec = Instant::now().as_micros();
-    // mag stored as gauss in CAL_MAG_DATA (post hard/soft-iron calibration);
-    // Pi parses xmag/ymag/zmag verbatim as mgauss, so multiply by 1000.
-    m.xmag = clamp_i16(cal.mag[0] * 1000.0);
-    m.ymag = clamp_i16(cal.mag[1] * 1000.0);
-    m.zmag = clamp_i16(cal.mag[2] * 1000.0);
+    m.xmag = clamp_i16(mag[0] * 1000.0);
+    m.ymag = clamp_i16(mag[1] * 1000.0);
+    m.zmag = clamp_i16(mag[2] * 1000.0);
     Some(m)
 }
 
 fn build_attitude() -> Option<Attitude> {
     let att = signals::AHRS_ATTITUDE.try_get()?;
-    let gyr = signals::CAL_IMU_DATA.try_get().map(|i| i.gyr).unwrap_or([0.0; 3]);
+    let gyr = signals::CAL_MULTI_IMU_DATA[0]
+        .try_get()
+        .map(|i| i.gyr)
+        .unwrap_or([0.0; 3]);
     let mut m = Attitude::default();
     m.time_boot_ms = (Instant::now().as_millis() & 0xFFFF_FFFF) as u32;
     [m.roll, m.pitch, m.yaw] = att;
