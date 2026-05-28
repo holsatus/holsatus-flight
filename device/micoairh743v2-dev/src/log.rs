@@ -32,6 +32,16 @@ pub static CHANNEL: Channel<CriticalSectionRawMutex, String<LOG_LEN>, 256> = Cha
 /// is flooding the regular channel at 100 Hz.
 pub static CRITICAL_CHANNEL: Channel<CriticalSectionRawMutex, String<LOG_LEN>, 4> = Channel::new();
 
+/// Mirror channel drained by `phoenix_telem::tx_loop` and re-emitted as
+/// MAVLink STATUSTEXT to the Pi companion. Every regular ulog line that
+/// passes `is_telem_bridged` is also pushed here so the bench operator
+/// can see FSM / sensor / arming gate messages on the mavlog web pane
+/// without an SD card pull. Bounded to 16: phoenix_telem drains it every
+/// 10 ms, so the only way to overflow is a true flood (in which case
+/// dropping a mirror line is benign -- the original is still on UART /
+/// SD).
+pub static TELEM_CHANNEL: Channel<CriticalSectionRawMutex, String<LOG_LEN>, 16> = Channel::new();
+
 /// Tri-state SD-card mount status, set by `uart_writer_task`:
 ///   255 = check not yet complete (startup)
 ///     1 = SD mounted, file writable
@@ -87,6 +97,7 @@ fn make_log_string(msg: &str) -> Option<String<LOG_LEN>> {
 /// Drops the message silently if the channel is full.
 pub fn log(msg: &str) {
     if let Some(s) = make_log_string(msg) {
+        mirror_to_telem(msg, &s);
         CHANNEL.try_send(s).ok();
     }
 }
@@ -96,6 +107,7 @@ pub fn log(msg: &str) {
 /// kill / restart announcements before a software reset).
 pub async fn log_reliable(msg: &str) {
     if let Some(s) = make_log_string(msg) {
+        mirror_to_telem(msg, &s);
         CHANNEL.send(s).await;
     }
 }
@@ -107,8 +119,34 @@ pub async fn log_reliable(msg: &str) {
 /// printed immediately even while the regular channel is saturated.
 pub async fn log_critical(msg: &str) {
     if let Some(s) = make_log_string(msg) {
+        mirror_to_telem(msg, &s);
         CRITICAL_CHANNEL.send(s).await;
     }
+}
+
+/// Push a copy of the line into `TELEM_CHANNEL` when the caller's prefix
+/// is in the bridged set. Non-blocking: a full mavlink mirror queue is
+/// dropped silently rather than back-pressuring the ulog caller (which
+/// may be a critical section or IRQ-context task).
+fn mirror_to_telem(raw: &str, s: &String<LOG_LEN>) {
+    if !is_telem_bridged(raw) {
+        return;
+    }
+    TELEM_CHANNEL.try_send(s.clone()).ok();
+}
+
+/// True if the line should also be relayed to the Pi as STATUSTEXT.
+/// Excludes the imu_monitor CSV firehose (`A,...` / `B,...`) and the
+/// per-tick `[manual]` ACRO log; everything else (FSM, sensor init,
+/// `[phoenix]`, etc.) is bridged.
+pub fn is_telem_bridged(msg: &str) -> bool {
+    if is_high_rate_telemetry(msg) {
+        return false;
+    }
+    if msg.starts_with("[manual]") {
+        return false;
+    }
+    true
 }
 
 /// Waits until BOTH channels have drained to at most `target` pending

@@ -48,9 +48,10 @@ use embassy_stm32::mode::Async;
 use embassy_stm32::usart::{Config as UartConfig, Uart, UartRx, UartTx};
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_time::{Duration, Instant, Ticker, Timer};
+use mavio::dialects::common::enums::MavSeverity;
 use mavio::dialects::common::messages::{
     Attitude, BatteryStatus, DistanceSensor, GpsRawInt, Heartbeat, LocalPositionNed, RawImu,
-    RcChannels, ScaledImu, ScaledImu2, Timesync,
+    RcChannels, ScaledImu, ScaledImu2, Statustext, Timesync,
 };
 use mavio::dialects::minimal::enums::{MavAutopilot, MavModeFlag, MavState, MavType};
 use mavio::prelude::{V2, Versioned};
@@ -198,6 +199,20 @@ async fn tx_loop(mut tx: UartTx<'static, Async>) -> ! {
             m.tc1 = tc1;
             m.ts1 = ts1;
             send(&mut tx, &mut seq, &m).await;
+        }
+
+        // Mirror bridged ulog lines (FSM, sensor init, [phoenix] link
+        // events, ...) as MAVLink STATUSTEXT so the Pi-side mavlog pane
+        // surfaces them next to the heartbeats. Bounded to 8 per tick so
+        // a sudden burst can't starve the periodic telemetry topics
+        // above; at ~66 bytes per STATUSTEXT wire-frame and 8/tick that's
+        // ~52 KB/s peak -- well under the 92 KB/s link budget. See also
+        // `ulog::TELEM_CHANNEL` for the producer side.
+        for _ in 0..8 {
+            match ulog::TELEM_CHANNEL.try_receive() {
+                Ok(line) => send(&mut tx, &mut seq, &build_statustext(line.as_str())).await,
+                Err(_) => break,
+            }
         }
 
         // 2 Hz heartbeat + companion-health timeout sweep. Doc-doc says 1 Hz
@@ -413,6 +428,22 @@ fn build_gps_raw_int() -> Option<GpsRawInt> {
     m.cog = clamp_u16(g.heading_motion.to_degrees() * 100.0); // centidegrees
     m.satellites_visible = g.num_satellites;
     Some(m)
+}
+
+fn build_statustext(msg: &str) -> Statustext {
+    // STATUSTEXT.text is char[50], not null-terminated. Truncate at a UTF-8
+    // boundary via the shared helper so a 96-byte ulog line doesn't split
+    // a multi-byte char on the wire. Severity is Info for v1; we can grow
+    // a per-prefix mapping (ERR / WARN / FAIL -> Error / Warning) once
+    // the bench operator actually wants that.
+    let trimmed = common::utils::string_trunc::truncate_to_byte_cap(msg, 50);
+    let bytes = trimmed.as_bytes();
+    let mut m = Statustext::default();
+    m.severity = MavSeverity::Info;
+    m.text[..bytes.len()].copy_from_slice(bytes);
+    // id = 0 + chunk_seq = 0 indicates a single-chunk message; we never
+    // need to reassemble across STATUSTEXTs because we already truncate.
+    m
 }
 
 fn build_battery_status() -> Option<BatteryStatus> {
