@@ -1016,27 +1016,10 @@ impl common::embedded_storage_async::nor_flash::NorFlash for DummyFlash {
 #[embassy_executor::task]
 async fn mission_fsm_task() -> ! {
     use micoairh743v2::rc_kill::{Maneuver, Mode, RcEvent, RC_CHANNELS, RC_EVENT};
-
-    #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-    enum State {
-        GroundIdle,
-        Manual,
-        AutoTakeoff,
-        AutoHover,
-        AutoLand,
-        Fault,
-    }
-
-    fn label(s: State) -> &'static str {
-        match s {
-            State::GroundIdle => "GroundIdle",
-            State::Manual => "Manual",
-            State::AutoTakeoff => "AutoTakeoff",
-            State::AutoHover => "AutoHover",
-            State::AutoLand => "AutoLand",
-            State::Fault => "Fault",
-        }
-    }
+    // Single source of truth for the state enum + its wire encoding, shared
+    // with phoenix_telem (which streams it as NAMED_VALUE_INT "FSM" and in
+    // HEARTBEAT.custom_mode). Aliased to `State` so the body below is unchanged.
+    use micoairh743v2::fsm_state::{self, FsmState as State};
 
     ulog::log("[fsm] waiting 5s for cal + sensors...");
     Timer::after_secs(5).await;
@@ -1272,6 +1255,10 @@ async fn mission_fsm_task() -> ! {
 
     loop {
         CURRENT_TASK_ID.store(TASK_FSM, Ordering::Relaxed);
+        // Publish current state for telemetry (phoenix streams it to the web
+        // UI). Done at the top so every path -- including the early `continue`s
+        // below -- keeps the published value fresh within one tick.
+        fsm_state::publish(state);
         // Per-tick: pull latest RC channels and lidar. Watches return None
         // only if no value has ever been sent; after RC_LINK_READY+lidar
         // active they are reliably populated.
@@ -1389,7 +1376,7 @@ async fn mission_fsm_task() -> ! {
                 "[fsm] failsafe diag: dt_seq={}ms last_seq={} motors=[{},{},{},{}] state={} ground_grace={}",
                 dt_seq_ms, last_seq,
                 motor_speeds[0], motor_speeds[1], motor_speeds[2], motor_speeds[3],
-                label(state),
+                state.label(),
                 in_ground_grace as u8,
             );
             ulog::log(diag.as_str());
@@ -1724,8 +1711,6 @@ async fn mission_fsm_task() -> ! {
                 Timer::after_millis(100).await;
             }
         }
-
-        let _ = label;  // keep label() reachable for future log refactors
     }
 }
 

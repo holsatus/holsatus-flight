@@ -14,6 +14,7 @@
 //!   DISTANCE_SENSOR    @ 25 Hz  - MTF-01 lidar (Pi: /fc/rangefinder)
 //!   RAW_IMU            @ 20 Hz  - mag-only via xmag/ymag/zmag (Pi: /fc/mag)
 //!   GPS_RAW_INT        @ 5 Hz   - ublox NAV-PVT (Pi: /fc/gps)
+//!   NAMED_VALUE_INT    @ 5 Hz   - mission-FSM state "FSM" (see fsm_state.rs)
 //!   BATTERY_STATUS     @ 2 Hz   - filtered pack mV (Pi: /fc/battery)
 //!
 //! Deliberately deferred for v1 (no in-firmware signal exists today):
@@ -50,8 +51,8 @@ use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use mavio::dialects::common::enums::MavSeverity;
 use mavio::dialects::common::messages::{
-    Attitude, BatteryStatus, DistanceSensor, GpsRawInt, Heartbeat, LocalPositionNed, RawImu,
-    RcChannels, ScaledImu, ScaledImu2, Statustext, Timesync,
+    Attitude, BatteryStatus, DistanceSensor, GpsRawInt, Heartbeat, LocalPositionNed, NamedValueInt,
+    RawImu, RcChannels, ScaledImu, ScaledImu2, Statustext, Timesync,
 };
 use mavio::dialects::minimal::enums::{MavAutopilot, MavModeFlag, MavState, MavType};
 use mavio::prelude::{V2, Versioned};
@@ -175,6 +176,11 @@ async fn tx_loop(mut tx: UartTx<'static, Async>) -> ! {
             }
         }
 
+        // 5 Hz -- mission-FSM state, for following mode/arm transitions live.
+        if tick % 20 == 0 {
+            send(&mut tx, &mut seq, &build_named_value_int_fsm()).await;
+        }
+
         // 5 Hz
         if tick % 20 == 0 {
             if let Some(msg) = build_gps_raw_int() {
@@ -276,7 +282,10 @@ fn build_heartbeat() -> Heartbeat {
         type_: MavType::Quadrotor,
         autopilot: MavAutopilot::Generic,
         base_mode,
-        custom_mode: 0,
+        // Mission-FSM state code (see fsm_state.rs for the legend). The web
+        // stream shows this in every HEARTBEAT alongside the dedicated
+        // NAMED_VALUE_INT "FSM" line.
+        custom_mode: crate::fsm_state::current_code() as u32,
         system_status: if armed {
             MavState::Active
         } else {
@@ -428,6 +437,17 @@ fn build_gps_raw_int() -> Option<GpsRawInt> {
     m.cog = clamp_u16(g.heading_motion.to_degrees() * 100.0); // centidegrees
     m.satellites_visible = g.num_satellites;
     Some(m)
+}
+
+fn build_named_value_int_fsm() -> NamedValueInt {
+    // Mission-FSM state as a labeled scalar topic. The web stream auto-lists
+    // each NAMED_VALUE_* by name, so this appears as its own "FSM" line. Value
+    // is the wire code defined in fsm_state.rs (0=GroundIdle .. 5=Fault).
+    let mut m = NamedValueInt::default();
+    m.time_boot_ms = (Instant::now().as_millis() & 0xFFFF_FFFF) as u32;
+    m.name[..3].copy_from_slice(b"FSM");
+    m.value = crate::fsm_state::current_code() as i32;
+    m
 }
 
 fn build_statustext(msg: &str) -> Statustext {

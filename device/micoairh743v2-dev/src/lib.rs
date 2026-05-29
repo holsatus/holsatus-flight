@@ -13,6 +13,7 @@ pub mod alt_hold;
 pub mod battery;
 pub mod ceiling_mode;
 pub mod config;
+pub mod fsm_state;
 pub mod imu_cal;
 pub mod log;
 pub mod gnss;
