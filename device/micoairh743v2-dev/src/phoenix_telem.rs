@@ -102,23 +102,38 @@ bind_interrupts!(struct TelemIrqs {
 
 #[embassy_executor::task]
 pub async fn phoenix_telem_task(r: TelemResources) -> ! {
+    // First line uses log_critical (priority channel, drained first by
+    // uart_writer_task) so it survives even when [cal] floods the regular
+    // ulog channel at boot. If we see this in the SD log, the task got
+    // scheduled and reached its first await. If we don't, the scheduler
+    // never woke it, or it panicked before reaching here.
+    ulog::log_critical("[phoenix] task entered").await;
+
     let mut cfg = UartConfig::default();
     cfg.baudrate = BAUD;
+
+    // log_reliable blocks until queued, so missing this means we panicked
+    // between "task entered" and here -- almost certainly during the
+    // UartConfig setup, which would be weird (it's stack-only).
+    ulog::log_reliable("[phoenix] initializing USART2 (PA2 TX / PA3 RX)").await;
 
     // embassy_stm32::usart::Uart::new signature is (peri, rx, tx, tx_dma,
     // rx_dma, irq, config) -- note irq is 6th, AFTER both DMA channels.
     let uart = match Uart::new(r.usart, r.rx, r.tx, r.dma_tx, r.dma_rx, TelemIrqs, cfg) {
         Ok(u) => u,
         Err(_) => {
-            ulog::log("[phoenix] USART2 init FAIL -- task halted");
+            // Critical priority so this surfaces immediately even under
+            // log saturation. The task halts here in a sleep loop.
+            ulog::log_critical("[phoenix] USART2 init FAIL -- task halted").await;
             loop {
                 Timer::after_secs(60).await;
             }
         }
     };
-    ulog::log("[phoenix] USART2 up @ 921600 (PA2 TX / PA3 RX)");
+    ulog::log_critical("[phoenix] USART2 up @ 921600").await;
 
     let (tx, rx) = uart.split();
+    ulog::log_reliable("[phoenix] UART split; entering tx_loop / rx_loop").await;
 
     // Run TX scheduler and RX parser concurrently. Either future is meant to
     // be `-> !`, so this join never returns, but the type system can't see
