@@ -1208,8 +1208,21 @@ async fn mission_fsm_task() -> ! {
     const MANUAL_MAX_PITCH_RATE: f32 = 3.0; // rad/s
     const MANUAL_MAX_YAW_RATE: f32 = 2.0; // rad/s, ~115 deg/s
     const MANUAL_EXPO: f32 = 0.3;
-    const MANUAL_THRUST_GAIN: f32 = BASE_THRUST * 1.4;
+    // Full-stick collective = BASE_THRUST * this. Being swept upward to
+    // find lift-off TWR for the ~506 g RPi5 payload build: at 1.4 full
+    // stick only commanded ~57% DShot (per-motor force 2.8 of a modeled
+    // 6.74 max), so there is large headroom. Raise in ~25% steps and watch
+    // the SD log for under-load pack voltage and motor temp on each run.
+    // 1.4 -> 1.75 (step 1).
+    const MANUAL_THRUST_GAIN: f32 = BASE_THRUST * 1.75;
     const MANUAL_IDLE_DWELL_MS: u64 = 500;
+    // Motor-saturation marker threshold (DShot command). Motors pin at the
+    // governor's out_max, which defaults to common's DSHOT_MAX (2047); we
+    // flag at >=2040 to absorb the output lowpass settling just shy of the
+    // rail. When `mot_sat=1` appears, the firmware thrust cap is reached and
+    // raising MANUAL_THRUST_GAIN further buys nothing -- you are at the
+    // physical motor/ESC/battery limit, not the software one.
+    const MANUAL_SAT_CMD: u16 = 2040;
     const MANUAL_LOG_PERIOD_MS: u64 = 200;
     /// Linear ramp duration for battery-triggered forced descent. From
     /// BASE_THRUST to 0 over this window. 8 s is your "5-10 seconds"
@@ -1267,6 +1280,10 @@ async fn mission_fsm_task() -> ! {
     // either condition is broken.
     let mut manual_idle_since: Option<embassy_time::Instant> = None;
     let mut manual_log_throttle = embassy_time::Instant::now();
+    // Edge-trigger for the motor-saturation marker: true while at least
+    // one motor is pinned at the DShot rail, so the rising/falling edges
+    // are logged once each instead of every tick. See MANUAL_SAT_CMD.
+    let mut motor_saturated: bool = false;
 
     // One-shot flag for the Manual arming command. The motor governor's
     // 4.5 s arm sequence keeps `armed=false` for ~450 FSM ticks, during
@@ -1556,6 +1573,33 @@ async fn mission_fsm_task() -> ! {
                 signals::TRUE_RATE_SP.send([roll_rate_sp, pitch_rate_sp, yaw_rate_sp]);
                 signals::TRUE_Z_THRUST_SP.send(thrust_sp);
 
+                // Final post-mixer/post-lowpass DShot commands actually sent
+                // to the ESCs. Used both for the periodic log field and the
+                // edge-triggered saturation marker below.
+                let motor_speeds = match motors_rcv.try_get() {
+                    Some(MotorsState::Armed(s)) => s,
+                    _ => [0u16; 4],
+                };
+                let mot_max = motor_speeds.iter().copied().max().unwrap_or(0);
+                let sat_now = mot_max >= MANUAL_SAT_CMD;
+
+                // Edge-triggered motor-saturation marker: log once when any
+                // motor first pins at the DShot rail, and once when it backs
+                // off. This pinpoints exactly when full throttle is hitting
+                // the firmware/physical cap during a thrust-gain sweep.
+                if sat_now != motor_saturated {
+                    motor_saturated = sat_now;
+                    let mut s: heapless::String<128> = heapless::String::new();
+                    let _ = write!(
+                        s,
+                        "[manual] motor saturation {} mot=[{},{},{},{}] thr={:.2} thrust={:.1}",
+                        if sat_now { "ENTER" } else { "EXIT" },
+                        motor_speeds[0], motor_speeds[1], motor_speeds[2], motor_speeds[3],
+                        thr_n, thrust_sp,
+                    );
+                    ulog::log(s.as_str());
+                }
+
                 // 5 Hz bench-debug log: stick normals + computed rates +
                 // thrust + armed. Lets the operator verify polarity and
                 // amplitude with props OFF before any flight.
@@ -1564,9 +1608,10 @@ async fn mission_fsm_task() -> ! {
                     let mut s: heapless::String<128> = heapless::String::new();
                     let _ = write!(
                         s,
-                        "[manual] r={:+.2} p={:+.2} y={:+.2} thr={:.2} | rate r={:+.2} p={:+.2} y={:+.2} thrust={:.1} armed={}",
+                        "[manual] r={:+.2} p={:+.2} y={:+.2} thr={:.2} | rate r={:+.2} p={:+.2} y={:+.2} thrust={:.1} mot_max={} mot_sat={} armed={}",
                         roll_n, pitch_n, yaw_n, thr_n,
                         roll_rate_sp, pitch_rate_sp, yaw_rate_sp, thrust_sp,
+                        mot_max, sat_now as u8,
                         armed as u8,
                     );
                     ulog::log(s.as_str());
