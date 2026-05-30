@@ -514,10 +514,16 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     //   - gnss: ublox parser, independent of IMU
     //   - odid: legal Remote ID broadcast should start at power-on, not
     //     after a (potentially multi-minute) cal dance
+    //   - phoenix_telem: must come up before cal too, otherwise on the
+    //     bench (where the drone isn't held still) imu_cal::apply().await
+    //     never returns and we never get past line 530, so the Pi-side
+    //     logger sees zero MAVLink and the bench debug console is dark.
+    //     Tracked to D000350/D000360/D000365 silent USART2 incident.
     thread_spawner.spawn(micoairh743v2::rc_kill::rc_kill_task(r.rc).unwrap());
     thread_spawner.spawn(micoairh743v2::ceiling_mode::ceiling_mode_task().unwrap());
     thread_spawner.spawn(micoairh743v2::gnss::gnss_reader_task(r.gps).unwrap());
     thread_spawner.spawn(micoairh743v2::odid::odid_tx_task(r.odid).unwrap());
+    thread_spawner.spawn(micoairh743v2::phoenix_telem::phoenix_telem_task(r.telem).unwrap());
 
     // Calibrate IMU BEFORE spawning att_estimator. Otherwise Madgwick
     // integrates 2-3 s of uncalibrated (biased) gyro data into the attitude
@@ -558,13 +564,13 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     thread_spawner.spawn(mag_yaw_logger().unwrap());
     thread_spawner.spawn(bmi270_logger_task(r.bmi270).unwrap());
 
-    // Phoenix mission-logger MAVLink link to the RPi5 companion on USART2
-    // (DJI-VTX port). Streams the topics defined in
-    // `phoenix/references/holsatus_data_logging.md` at the design-doc rates
-    // and answers Pi-initiated HEARTBEAT/TIMESYNC. Does not gate arming today
-    // (no consumer of phoenix_telem::COMPANION_HEALTHY yet); the Pi can be
-    // absent and flight is unaffected.
-    thread_spawner.spawn(micoairh743v2::phoenix_telem::phoenix_telem_task(r.telem).unwrap());
+    // Phoenix mission-logger MAVLink link to the RPi5 companion (USART2 on
+    // the DJI-VTX header). Moved up into the cal-independent block above
+    // because imu_cal::apply().await blocks indefinitely on the bench;
+    // see the comment there. The task streams the topics from
+    // `phoenix/references/holsatus_data_logging.md` at the design-doc
+    // rates and answers Pi-initiated HEARTBEAT/TIMESYNC. Does not gate
+    // arming today (no consumer of phoenix_telem::COMPANION_HEALTHY).
 
     ulog::log("[free] all tasks spawned");
 
