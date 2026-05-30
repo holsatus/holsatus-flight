@@ -57,9 +57,18 @@ use defmt_rtt as _;
 /// Some of those will be saved-LR slots from real frames.
 const PANIC_HITS: usize = 12;
 static PANIC_LRS: [AtomicU32; PANIC_HITS] = [
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
 ];
 
 /// Set by each task at the top of its main work / before any await. The
@@ -102,7 +111,10 @@ static PANIC_R0_AT_ENTRY: AtomicU32 = AtomicU32::new(0);
 /// visible here and may give us a real return address even when LR is
 /// already a scratch-register-corrupted value.
 static PANIC_STACK_DUMP: [AtomicU32; 4] = [
-    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
 ];
 
 /// `#[naked]` override of defmt's `_defmt_panic`. With no compiler prologue,
@@ -292,12 +304,23 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     {
         let mut buf = [0u8; 12];
         let mut idx: usize = 0;
-        if defmt_count == 0 { buf[0] = b'0'; idx = 1; }
-        else {
+        if defmt_count == 0 {
+            buf[0] = b'0';
+            idx = 1;
+        } else {
             let mut n = defmt_count;
-            while n > 0 && idx < buf.len() { buf[idx] = (n % 10) as u8 + b'0'; idx += 1; n /= 10; }
-            let mut i = 0; let mut j = idx - 1;
-            while i < j { buf.swap(i, j); i += 1; j = j.saturating_sub(1); }
+            while n > 0 && idx < buf.len() {
+                buf[idx] = (n % 10) as u8 + b'0';
+                idx += 1;
+                n /= 10;
+            }
+            let mut i = 0;
+            let mut j = idx - 1;
+            while i < j {
+                buf.swap(i, j);
+                i += 1;
+                j = j.saturating_sub(1);
+            }
         }
         puts(&buf[..idx]);
     }
@@ -344,7 +367,7 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     // reference with `arm-none-eabi-nm <elf> | grep defmt_error` to find
     // the matching disambiguator.
     const RTT_HEADER_WRITE_OFFSET: u32 = 0x2400_0140; // up_channel.write
-    const RTT_BUFFER_BASE: u32 = 0x2400_8ae8;         // BUFFER (1024 bytes)
+    const RTT_BUFFER_BASE: u32 = 0x2400_8ae8; // BUFFER (1024 bytes)
     const RTT_BUFFER_SIZE: u32 = 1024;
     let write_cursor = unsafe { core::ptr::read_volatile(RTT_HEADER_WRITE_OFFSET as *const u32) };
     if write_cursor < RTT_BUFFER_SIZE {
@@ -356,15 +379,15 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
         let start = (write_cursor + RTT_BUFFER_SIZE - n_bytes) % RTT_BUFFER_SIZE;
         for i in 0..n_bytes {
             let off = (start + i) % RTT_BUFFER_SIZE;
-            let b = unsafe {
-                core::ptr::read_volatile((RTT_BUFFER_BASE + off) as *const u8)
-            };
+            let b = unsafe { core::ptr::read_volatile((RTT_BUFFER_BASE + off) as *const u8) };
             // Two hex digits per byte.
             let hi = b >> 4;
             let lo = b & 0xF;
             putc(if hi < 10 { b'0' + hi } else { b'a' + hi - 10 });
             putc(if lo < 10 { b'0' + lo } else { b'a' + lo - 10 });
-            if i & 0xF == 0xF { putc(b' '); }
+            if i & 0xF == 0xF {
+                putc(b' ');
+            }
         }
         puts(b"\r\n");
     }
@@ -663,7 +686,11 @@ async fn override_motor_params() {
     drop(p);
 
     let mut s: heapless::String<64> = heapless::String::new();
-    let _ = write!(s, "[free] rev=0x{:04X} timeout=500ms", MOTOR_REVERSE_FLAGS.bits());
+    let _ = write!(
+        s,
+        "[free] rev=0x{:04X} timeout=500ms",
+        MOTOR_REVERSE_FLAGS.bits()
+    );
     ulog::log(s.as_str());
 }
 
@@ -733,7 +760,9 @@ async fn wait_for_ahrs_ready() {
         roll_buf[idx] = r.to_degrees();
         pitch_buf[idx] = p.to_degrees();
         idx = (idx + 1) % WINDOW_N;
-        if filled < WINDOW_N { filled += 1; }
+        if filled < WINDOW_N {
+            filled += 1;
+        }
 
         if filled == WINDOW_N {
             let r_min = roll_buf.iter().cloned().fold(f32::INFINITY, f32::min);
@@ -758,7 +787,9 @@ async fn wait_for_ahrs_ready() {
                         r_mean, p_mean, LEVEL_THRESHOLD_DEG
                     );
                     ulog::log(s.as_str());
-                    loop { Timer::after_secs(60).await; }
+                    loop {
+                        Timer::after_secs(60).await;
+                    }
                 }
                 let mut s: heapless::String<96> = heapless::String::new();
                 let _ = write!(
@@ -774,7 +805,9 @@ async fn wait_for_ahrs_ready() {
         if start.elapsed().as_millis() >= MAX_WAIT_MS {
             let mut s: heapless::String<96> = heapless::String::new();
             let _ = write!(
-                s, "[ahrs] WARNING: not settled after {}ms, continuing anyway", MAX_WAIT_MS
+                s,
+                "[ahrs] WARNING: not settled after {}ms, continuing anyway",
+                MAX_WAIT_MS
             );
             ulog::log(s.as_str());
             return;
@@ -783,11 +816,7 @@ async fn wait_for_ahrs_ready() {
 }
 
 #[embassy_executor::task]
-async fn uart_writer_task(
-    r: UartLogResources,
-    bt: BtLogResources,
-    sd: SdmmcLogResources,
-) -> ! {
+async fn uart_writer_task(r: UartLogResources, bt: BtLogResources, sd: SdmmcLogResources) -> ! {
     use block_device_adapters::BufStream;
     use core::fmt::Write as FmtWrite;
     use embedded_fatfs::{FileSystem, FsOptions};
@@ -805,8 +834,7 @@ async fn uart_writer_task(
     let mut uart = UartTx::new(r.usart, r.tx, r.dma, UartIrqs, UartConfig::default()).ok();
     // Onboard BT module (115200 by default, matches USART1). If init fails
     // we silently continue -- USART1 + SD logs still work.
-    let mut bt_uart =
-        UartTx::new(bt.usart, bt.tx, bt.dma, BtUartIrqs, UartConfig::default()).ok();
+    let mut bt_uart = UartTx::new(bt.usart, bt.tx, bt.dma, BtUartIrqs, UartConfig::default()).ok();
 
     // Mirror one log line (+ CRLF) to USART1 (wired FTDI) and UART8 (BT).
     // Either may be None if init failed; both writes are best-effort.
@@ -922,7 +950,10 @@ async fn uart_writer_task(
 
     ulog::SD_MOUNTED.store(1, Ordering::Relaxed);
     let mut s: heapless::String<32> = heapless::String::new();
-    let _ = FmtWrite::write_fmt(&mut s, format_args!("[sd] mounted -> {}/000001.LOG", dir_name.as_str()));
+    let _ = FmtWrite::write_fmt(
+        &mut s,
+        format_args!("[sd] mounted -> {}/000001.LOG", dir_name.as_str()),
+    );
     ulog::log(s.as_str());
 
     // Original select(critical, channel) writer loop. The earlier
@@ -944,12 +975,7 @@ async fn uart_writer_task(
         }
 
         use embassy_futures::select::{select, Either};
-        let msg = match select(
-            ulog::CRITICAL_CHANNEL.receive(),
-            ulog::CHANNEL.receive(),
-        )
-        .await
-        {
+        let msg = match select(ulog::CRITICAL_CHANNEL.receive(), ulog::CHANNEL.receive()).await {
             Either::First(m) => {
                 write_line(&mut uart, &mut bt_uart, m.as_bytes()).await;
                 file.write_all(m.as_bytes()).await.ok();
@@ -973,7 +999,6 @@ async fn uart_writer_task(
         }
     }
 }
-
 
 const DUMMY_FLASH_SIZE: u32 = 262_144;
 
@@ -1032,7 +1057,9 @@ async fn mission_fsm_task() -> ! {
 
     if ulog::SD_MOUNTED.load(Ordering::Relaxed) != 1 {
         ulog::log("[fsm] ABORT: no SD card, not arming");
-        loop { Timer::after_secs(60).await; }
+        loop {
+            Timer::after_secs(60).await;
+        }
     }
 
     wait_for_ahrs_ready().await;
@@ -1044,7 +1071,9 @@ async fn mission_fsm_task() -> ! {
         while !micoairh743v2::rc_kill::RC_LINK_READY.load(Ordering::Relaxed) {
             if start.elapsed().as_millis() >= RC_WAIT_MS {
                 ulog::log("[fsm] ABORT: no RC link after 30 s -- no arm");
-                loop { Timer::after_secs(60).await; }
+                loop {
+                    Timer::after_secs(60).await;
+                }
             }
             Timer::after_millis(100).await;
         }
@@ -1130,7 +1159,8 @@ async fn mission_fsm_task() -> ! {
                     None => "?",
                 };
                 let mut s: heapless::String<96> = heapless::String::new();
-                let _ = write!(
+                let _ =
+                    write!(
                     s,
                     "[fsm] preflight WAIT: mode={}({}) sel={}({}) trig={} thr={} stk={} bat={}({})",
                     if mode_ok { "ok" } else { "BAD" }, mode_str,
@@ -1168,15 +1198,15 @@ async fn mission_fsm_task() -> ! {
     const GROUND_HOLD_MS: u64 = 300;
     const DESCENT_TIMEOUT_MS: u64 = 5_000;
 
-    const ON_GROUND_LIDAR_M: f32 = 0.10;
+    const ON_GROUND_LIDAR_M: f32 = 0.20;
     // Pure ACRO (rate-mode) defaults for Manual. Bardwell-style: drone
     // does not self-level; sticks command angular rates directly. Roll
     // and pitch share a max rate; yaw is slower because most airframes
     // have less yaw authority. EXPO=0.3 gives a softer center for
     // small precise corrections, near-linear at the extremes.
-    const MANUAL_MAX_ROLL_RATE: f32 = 3.0;  // rad/s, ~170 deg/s
+    const MANUAL_MAX_ROLL_RATE: f32 = 3.0; // rad/s, ~170 deg/s
     const MANUAL_MAX_PITCH_RATE: f32 = 3.0; // rad/s
-    const MANUAL_MAX_YAW_RATE: f32 = 2.0;   // rad/s, ~115 deg/s
+    const MANUAL_MAX_YAW_RATE: f32 = 2.0; // rad/s, ~115 deg/s
     const MANUAL_EXPO: f32 = 0.3;
     const MANUAL_THRUST_GAIN: f32 = BASE_THRUST * 1.4;
     const MANUAL_IDLE_DWELL_MS: u64 = 500;
@@ -1256,7 +1286,9 @@ async fn mission_fsm_task() -> ! {
     // of silence after preflight passes.
     const GROUND_IDLE_LOG_PERIOD_MS: u64 = 2_000;
     let mut last_ground_idle_log = embassy_time::Instant::now()
-        .checked_sub(embassy_time::Duration::from_millis(GROUND_IDLE_LOG_PERIOD_MS))
+        .checked_sub(embassy_time::Duration::from_millis(
+            GROUND_IDLE_LOG_PERIOD_MS,
+        ))
         .unwrap_or_else(embassy_time::Instant::now);
 
     loop {
@@ -1270,15 +1302,17 @@ async fn mission_fsm_task() -> ! {
         // active they are reliably populated.
         let ch = match rc_rcv.try_get() {
             Some(c) => c,
-            None => { Timer::after_millis(20).await; continue; }
+            None => {
+                Timer::after_millis(20).await;
+                continue;
+            }
         };
         let lidar = lidar_rcv.try_get().unwrap_or(99.0);
         let armed = motors_rcv.try_get().map(|m| m.is_armed()).unwrap_or(false);
         let bat_tier = bat_tier_rcv
             .try_get()
             .unwrap_or(micoairh743v2::battery::Tier::Healthy);
-        let battery_allows_flight =
-            micoairh743v2::battery::tier_allows_flight(bat_tier);
+        let battery_allows_flight = micoairh743v2::battery::tier_allows_flight(bat_tier);
 
         // Latch forced-descent when armed and battery falls below the
         // flight-allowing threshold. Once latched, only a reboot clears
@@ -1314,8 +1348,7 @@ async fn mission_fsm_task() -> ! {
         // brownouts during touchdown. Tracked independently of state so
         // it works in any mode that's near ground (Manual, AutoLand,
         // post-Fault drift).
-        let near_ground = lidar < GROUND_DETECT_LIDAR_M
-            && thr_n_for_gate < GROUND_DETECT_THR_N;
+        let near_ground = lidar < GROUND_DETECT_LIDAR_M && thr_n_for_gate < GROUND_DETECT_THR_N;
         if near_ground {
             ground_grace_since.get_or_insert_with(embassy_time::Instant::now);
         } else {
@@ -1349,14 +1382,19 @@ async fn mission_fsm_task() -> ! {
                     s,
                     "[fsm] RC link warning: gap={}ms (recovered{})",
                     gap_ms,
-                    if in_ground_grace { ", ground-grace" } else { "" },
+                    if in_ground_grace {
+                        ", ground-grace"
+                    } else {
+                        ""
+                    },
                 );
                 ulog::log(s.as_str());
             }
             last_seq = ch.seq;
             last_seq_change = embassy_time::Instant::now();
         }
-        if armed && state != State::Fault
+        if armed
+            && state != State::Fault
             && last_seq_change.elapsed().as_millis() as u64 > rc_timeout_ms
         {
             let mut lost_msg: heapless::String<80> = heapless::String::new();
@@ -1415,9 +1453,7 @@ async fn mission_fsm_task() -> ! {
                 // Periodic "ready" heartbeat so the operator on the BT
                 // terminal sees the FC is alive and waiting, instead of
                 // silence after the preflight gate passes.
-                if last_ground_idle_log.elapsed().as_millis() as u64
-                    >= GROUND_IDLE_LOG_PERIOD_MS
-                {
+                if last_ground_idle_log.elapsed().as_millis() as u64 >= GROUND_IDLE_LOG_PERIOD_MS {
                     last_ground_idle_log = embassy_time::Instant::now();
                     ulog::log("[fsm] GroundIdle ready -- flip SA to Manual or trigger Auto");
                 }
@@ -1621,7 +1657,8 @@ async fn mission_fsm_task() -> ! {
                     entered_at = embassy_time::Instant::now();
                 }
 
-                if go_land || ch.mode == Mode::Idle
+                if go_land
+                    || ch.mode == Mode::Idle
                     || entered_at.elapsed().as_secs() >= AUTO_HOVER_TIMEOUT_S
                 {
                     let reason = if go_land {
@@ -1731,7 +1768,9 @@ async fn staircase_mission() -> ! {
 
     if ulog::SD_MOUNTED.load(Ordering::Relaxed) != 1 {
         ulog::log("[mission] ABORT: no SD card, not arming");
-        loop { Timer::after_secs(60).await; }
+        loop {
+            Timer::after_secs(60).await;
+        }
     }
 
     wait_for_ahrs_ready().await;
@@ -1740,12 +1779,12 @@ async fn staircase_mission() -> ! {
         ulog::log("[mission] waiting for RC link (30 s timeout)...");
         let start = embassy_time::Instant::now();
         const RC_WAIT_MS: u64 = 30_000;
-        while !micoairh743v2::rc_kill::RC_LINK_READY
-            .load(core::sync::atomic::Ordering::Relaxed)
-        {
+        while !micoairh743v2::rc_kill::RC_LINK_READY.load(core::sync::atomic::Ordering::Relaxed) {
             if start.elapsed().as_millis() >= RC_WAIT_MS {
                 ulog::log("[mission] ABORT: no RC link after 30 s -- motors will NOT arm");
-                loop { Timer::after_secs(60).await; }
+                loop {
+                    Timer::after_secs(60).await;
+                }
             }
             Timer::after_millis(100).await;
         }
@@ -1795,7 +1834,9 @@ async fn staircase_mission() -> ! {
     let ramp_start = embassy_time::Instant::now();
     loop {
         let elapsed = ramp_start.elapsed().as_millis() as u64;
-        if elapsed >= P0_RAMP_MS { break; }
+        if elapsed >= P0_RAMP_MS {
+            break;
+        }
         let f = elapsed as f32 / P0_RAMP_MS as f32;
         signals::TRUE_Z_THRUST_SP.send(BASE_THRUST * f);
         Timer::after_millis(20).await;
@@ -1805,7 +1846,9 @@ async fn staircase_mission() -> ! {
     let climb_start = embassy_time::Instant::now();
     loop {
         let elapsed = climb_start.elapsed().as_millis() as u64;
-        if elapsed >= P1_RAMP_MS { break; }
+        if elapsed >= P1_RAMP_MS {
+            break;
+        }
         let sp = TARGET_ALT * (elapsed as f32 / P1_RAMP_MS as f32);
         ALTITUDE_SETPOINT.signal(sp);
         Timer::after_millis(100).await;
@@ -1845,7 +1888,9 @@ async fn staircase_mission() -> ! {
     let mut landed = false;
     loop {
         let elapsed = desc_start.elapsed().as_millis() as u64;
-        if elapsed >= DESCENT_TIMEOUT_MS { break; }
+        if elapsed >= DESCENT_TIMEOUT_MS {
+            break;
+        }
 
         let sp = if elapsed < P3A_RAMP_MS {
             let f = elapsed as f32 / P3A_RAMP_MS as f32;
@@ -2130,7 +2175,9 @@ async fn gyro_runaway_kill() -> ! {
                     Timer::after_millis(200).await;
                     ulog::log("[kill] motors off (gyro-runaway)");
                 }
-                loop { Timer::after_secs(60).await; }
+                loop {
+                    Timer::after_secs(60).await;
+                }
             }
         } else {
             count = 0;
@@ -2200,8 +2247,8 @@ async fn flow_hold() -> ! {
 
         let kp = if pos_ok { KP_POS } else { 0.0 };
 
-        let pitch_cmd = ( (kp * est_x + KD_VEL * vx)).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
-        let roll_cmd  = (-(kp * est_y + KD_VEL * vy)).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
+        let pitch_cmd = (kp * est_x + KD_VEL * vx).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
+        let roll_cmd = (-(kp * est_y + KD_VEL * vy)).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
 
         let q = UnitQuaternion::from_euler_angles(roll_cmd, pitch_cmd, 0.0);
         snd_att.send(q);
@@ -2281,7 +2328,9 @@ async fn mag_yaw_logger() -> ! {
     loop {
         Timer::after_millis(500).await;
 
-        let Some(mag) = mag_rcv.try_get() else { continue };
+        let Some(mag) = mag_rcv.try_get() else {
+            continue;
+        };
         let Some(q) = att_rcv.try_get() else { continue };
 
         let (roll, pitch, yaw_gyro_rad) = q.euler_angles();
@@ -2311,8 +2360,12 @@ async fn mag_yaw_logger() -> ! {
         // Wrap diff to (-180, 180] so growing drift is readable as a
         // continuously-changing value rather than a ±360 jump.
         let mut diff = yaw_mag - yaw_gyro;
-        while diff > 180.0 { diff -= 360.0; }
-        while diff < -180.0 { diff += 360.0; }
+        while diff > 180.0 {
+            diff -= 360.0;
+        }
+        while diff < -180.0 {
+            diff += 360.0;
+        }
 
         // NOTE: b_mag is the norm of the calibrated mag vector. Because the
         // soft-iron matrix (MAG_CAL_MAT in resources.rs) normalizes output
@@ -2369,8 +2422,12 @@ async fn bmi270_logger_task(r: Bmi270Resources) -> ! {
     spi_cfg.miso_pull = embassy_stm32::gpio::Pull::Up;
 
     let spi = Spi::new(
-        r.spi, r.sclk, r.mosi, r.miso,
-        r.dma_tx, r.dma_rx,
+        r.spi,
+        r.sclk,
+        r.mosi,
+        r.miso,
+        r.dma_tx,
+        r.dma_rx,
         resources::Spi3Irqs,
         spi_cfg,
     );
@@ -2409,8 +2466,7 @@ async fn bmi270_logger_task(r: Bmi270Resources) -> ! {
     // Scale: accel +-2g range, 16384 LSB/g -> g per LSB = 1/16384
     // Gyro: +-2000 dps, 16.384 LSB/dps, wrapped to rad/s.
     const ACC_SCALE_MS2: f32 = 9.80665 / 16384.0;
-    const GYR_SCALE_RADS: f32 =
-        (2000.0_f32 * core::f32::consts::PI / 180.0) / 32768.0;
+    const GYR_SCALE_RADS: f32 = (2000.0_f32 * core::f32::consts::PI / 180.0) / 32768.0;
 
     // BMI270 is mounted rotated 180 deg around its X axis relative to the
     // BMI088 / drone body frame. Empirical observation in D000086: roll
