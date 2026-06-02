@@ -1214,7 +1214,7 @@ async fn mission_fsm_task() -> ! {
     // 6.74 max), so there is large headroom. Raise in ~25% steps and watch
     // the SD log for under-load pack voltage and motor temp on each run.
     // 1.4 -> 1.75 (step 1).
-    const MANUAL_THRUST_GAIN: f32 = BASE_THRUST * 1.75;
+    const MANUAL_THRUST_GAIN: f32 = BASE_THRUST * 2.00;
     const MANUAL_IDLE_DWELL_MS: u64 = 500;
     // Motor-saturation marker threshold (DShot command). Motors pin at the
     // governor's out_max, which defaults to common's DSHOT_MAX (2047); we
@@ -1594,8 +1594,12 @@ async fn mission_fsm_task() -> ! {
                         s,
                         "[manual] motor saturation {} mot=[{},{},{},{}] thr={:.2} thrust={:.1}",
                         if sat_now { "ENTER" } else { "EXIT" },
-                        motor_speeds[0], motor_speeds[1], motor_speeds[2], motor_speeds[3],
-                        thr_n, thrust_sp,
+                        motor_speeds[0],
+                        motor_speeds[1],
+                        motor_speeds[2],
+                        motor_speeds[3],
+                        thr_n,
+                        thrust_sp,
                     );
                     ulog::log(s.as_str());
                 }
