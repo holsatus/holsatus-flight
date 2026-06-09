@@ -1,30 +1,34 @@
-//! MicoAir H743 -- thrust staircase test binary.
+//! MicoAir H743 -- free-flight test binary.
 //!
 //! Built on flight.rs task structure verbatim (known working reference).
-//! The only difference from flight.rs is the mission body: instead of the
-//! altitude-hold climb/hover/descend sequence, this binary executes a
-//! 6-step thrust staircase for motor and controller characterisation.
+//! Flight behaviour is driven by `mission_fsm_task`, a state machine with
+//! two operator-selectable flight modes plus the autonomous landing and
+//! fault-handling states they fall through to.
 //!
-//! Mission:
-//!   P0: 1 s open-loop thrust ramp to BASE_THRUST (pushes through stick-slip)
-//!   P1: 3 s closed-loop climb 0 -> 1.0 m (alt_hold takes over TRUE_Z_THRUST_SP)
-//!   P2: 1 s hover at 1.0 m (shortened from 15 s to avoid drift into walls
-//!       before we solve flow-induced lateral drift)
-//!   P3: 1 s fast descent 1.0 -> 0.25 m, then 1 s slow approach 0.25 -> 0.05 m,
-//!       with lidar-based ground-detect disarm (h<0.15m for 300 ms) and a
-//!       5 s safety timeout. flow_hold silent below 25 cm.
-//!   Total arm-to-disarm: ~22 s
-//!   rate-PID gains at flight.rs boot defaults
+//! Modes (selected from the TX15 via rc_kill):
+//!   Manual:  pure ACRO/rate mode. Sticks command angular rates directly
+//!            (no self-levelling); throttle stick maps to collective thrust.
+//!            Arms on first non-idle throttle, disarms after the throttle +
+//!            mode have been idle for MANUAL_IDLE_DWELL_MS.
+//!   Auto:    closed-loop altitude-hold mission, trigger-armed from
+//!            GroundIdle, running AutoTakeoff -> AutoHover -> AutoLand:
+//!     AutoTakeoff: 1 s open-loop thrust ramp to BASE_THRUST (pushes through
+//!                  stick-slip), then 3 s climb of ALTITUDE_SETPOINT 0 -> 1.0 m
+//!                  (alt_hold owns TRUE_Z_THRUST_SP from here on).
+//!     AutoHover:   hold 1.0 m. Exits to AutoLand on Land trigger, mode=Idle,
+//!                  or AUTO_HOVER_TIMEOUT_S; a Hover trigger refreshes the
+//!                  timeout to extend the hover.
+//!     AutoLand:    1 s descent 1.0 -> 0.25 m, then 1 s 0.25 -> 0.05 m, with
+//!                  lidar ground-detect disarm (h<0.15m for 300 ms) and a 5 s
+//!                  safety timeout, then back to GroundIdle.
+//!   rate-PID gains at flight.rs boot defaults.
 //!
-//! Range shifted down two stops in D000064+ after the landing frame was
-//! changed from Kapla blocks to corks + chopstick criss-cross (lighter,
-//! wider stance). D000063 showed the drone already yaw-spinning at 120
-//! percent, so hover thrust on the new build is below the old starting
-//! point. 90-120 percent now covers the pre-liftoff to lift-transition
-//! range where the interesting behaviour happens.
+//! Failsafes: RC link loss while armed takes the autonomous landing path in
+//! Auto and disarms immediately in Manual; low battery while armed latches a
+//! forced descent ramp. flip_kill and gyro_runaway_kill back everything up.
 //!
-//! IMPORTANT: the drone WILL lift off during this test, possibly within
-//! the first step. Be ready on the TX15 SE kill switch at all times.
+//! IMPORTANT: the drone WILL lift off in either mode. Be ready on the TX15
+//! SE kill switch at all times.
 //!
 //! Gyro-runaway autoabort at 5 rad/s.
 //!
@@ -1731,6 +1735,7 @@ async fn mission_fsm_task() -> ! {
                 let elapsed = entered_at.elapsed().as_millis() as u64;
                 if elapsed >= DESCENT_TIMEOUT_MS {
                     ulog::log("[fsm] AutoLand: descent timeout, disarming");
+                    log_flow_disp().await;
                     COMMAD_ARM_VEHICLE.send(false);
                     zero_setpoints();
                     state = State::GroundIdle;
@@ -1765,6 +1770,7 @@ async fn mission_fsm_task() -> ! {
                         let mut s: heapless::String<64> = heapless::String::new();
                         let _ = write!(s, "[fsm] AutoLand: ground at h={:.2}m, disarming", lidar);
                         ulog::log(s.as_str());
+                        log_flow_disp().await;
                         COMMAD_ARM_VEHICLE.send(false);
                         zero_setpoints();
                         GROUND_FIRST_HIT.store(-1, Ordering::Relaxed);
@@ -1803,214 +1809,6 @@ async fn mission_fsm_task() -> ! {
                 Timer::after_millis(100).await;
             }
         }
-    }
-}
-
-/// Original 6-step thrust staircase mission. Kept as a reference for the
-/// old behaviour; not spawned in main(). The FSM (mission_fsm_task)
-/// supersedes it.
-#[allow(dead_code)]
-#[embassy_executor::task]
-async fn staircase_mission() -> ! {
-    ulog::log("[mission] waiting 5s for cal + sensors...");
-    Timer::after_secs(5).await;
-
-    if ulog::SD_MOUNTED.load(Ordering::Relaxed) != 1 {
-        ulog::log("[mission] ABORT: no SD card, not arming");
-        loop {
-            Timer::after_secs(60).await;
-        }
-    }
-
-    wait_for_ahrs_ready().await;
-
-    {
-        ulog::log("[mission] waiting for RC link (30 s timeout)...");
-        let start = embassy_time::Instant::now();
-        const RC_WAIT_MS: u64 = 30_000;
-        while !micoairh743v2::rc_kill::RC_LINK_READY.load(core::sync::atomic::Ordering::Relaxed) {
-            if start.elapsed().as_millis() >= RC_WAIT_MS {
-                ulog::log("[mission] ABORT: no RC link after 30 s -- motors will NOT arm");
-                loop {
-                    Timer::after_secs(60).await;
-                }
-            }
-            Timer::after_millis(100).await;
-        }
-        ulog::log("[mission] RC link established");
-    }
-
-    ulog::log("[mission] arming motors");
-    COMMAD_ARM_VEHICLE.send(true);
-    Timer::after_secs(3).await;
-
-    // Closed-loop altitude-hold mission. Replaces the open-loop thrust
-    // staircase used through D000128. The staircase was always going to
-    // bounce in and out of ground effect: open-loop thrust at a fixed
-    // multiple of the firmware's hover-thrust estimate has no authority to
-    // compensate for (a) pack-voltage sag, (b) ground-effect lift boost, or
-    // (c) thrust-to-weight-estimate mismatch. Altitude-hold closes the loop
-    // on lidar altitude and commands whatever thrust is needed to reach and
-    // hold a target height, so we don't have to guess.
-    //
-    // Sequence:
-    //   P0: 1 s open-loop ramp to BASE_THRUST (4.5). Gets through the
-    //       stick-slip ground-contact zone fast before alt_hold takes over.
-    //   P1: 3 s ramp of ALTITUDE_SETPOINT from 0 -> 1.0 m. alt_hold's PID
-    //       grabs TRUE_Z_THRUST_SP at its 10 Hz rate once we start signalling
-    //       setpoints. 3 s is fast enough to clear ground effect quickly,
-    //       slow enough to avoid a climb-rate overshoot.
-    //   P2: 15 s hover at 1.0 m. Long enough for flow damping to reach
-    //       steady state and for any residual drift to be observable.
-    //   P3: 3 s ramp setpoint 1.0 -> 0.0 m. Gentle descent.
-    //   P4: setpoint = 0, wait 2 s, disarm.
-    // Keep in sync with alt_hold::BASE_THRUST. Lowered 8.50 -> 8.00 after
-    // D000018 over-climbed at ~1-2 m/s (baseline thrust 7.8 post-v_comp at
-    // BASE=8.5 was ~10% above the drone's actual out-of-ground-effect
-    // hover of ~7.0-7.3). See alt_hold.rs for the full calibration chain.
-    const BASE_THRUST: f32 = 8.00;
-    const TARGET_ALT: f32 = 1.0;
-    const P0_RAMP_MS: u64 = 1_000;
-    const P1_RAMP_MS: u64 = 3_000;
-    // Hover shortened 15s -> 1s after D000028: with flow-induced drift
-    // still unresolved, a 15 s hover window gives the drone time to
-    // wander into a wall before P3 descent begins. 1 s is enough to
-    // confirm altitude hold reached setpoint before triggering landing.
-    // Extend again once drift is under control.
-    const P2_HOVER_S: u64 = 1;
-
-    ulog::log("[mission] P0: thrust ramp 0 -> base (1s, open-loop)");
-    let ramp_start = embassy_time::Instant::now();
-    loop {
-        let elapsed = ramp_start.elapsed().as_millis() as u64;
-        if elapsed >= P0_RAMP_MS {
-            break;
-        }
-        let f = elapsed as f32 / P0_RAMP_MS as f32;
-        signals::TRUE_Z_THRUST_SP.send(BASE_THRUST * f);
-        Timer::after_millis(20).await;
-    }
-
-    ulog::log("[mission] P1: climb 0 -> 1.0m (3s, alt_hold owns thrust)");
-    let climb_start = embassy_time::Instant::now();
-    loop {
-        let elapsed = climb_start.elapsed().as_millis() as u64;
-        if elapsed >= P1_RAMP_MS {
-            break;
-        }
-        let sp = TARGET_ALT * (elapsed as f32 / P1_RAMP_MS as f32);
-        ALTITUDE_SETPOINT.signal(sp);
-        Timer::after_millis(100).await;
-    }
-    ALTITUDE_SETPOINT.signal(TARGET_ALT);
-
-    ulog::log("[mission] P2: hover 1.0m (15s)");
-    Timer::after_secs(P2_HOVER_S).await;
-
-    // P3 redesigned after D000026 flipped the drone at ~20 cm on descent:
-    //
-    //   - Fast phase: setpoint 1.0 -> 0.25 m over 1.0 s (~0.75 m/s). Brings
-    //     the drone down quickly from cruise altitude to flare-start height.
-    //   - Slow phase: setpoint 0.25 -> 0.05 m over 1.0 s (~0.20 m/s). Gentle
-    //     approach that trades descent speed for stability near the ground.
-    //   - Ground detection: any time lidar reads below 0.15 m continuously
-    //     for 300 ms, break out of the loop and disarm. This guards against
-    //     the drone sitting at the borderline altitude where flow_hold and
-    //     ground effect conspire to flip it.
-    //
-    // mtf01_reader_task's flow-activation threshold was also raised from
-    // 10 cm to 25 cm in the same change, so flow_hold goes silent before
-    // the slow phase even begins -- no tilt commands during the critical
-    // last metre.
-    ulog::log("[mission] P3: descend 1.0 -> 0.05m with ground-detect disarm");
-    const P3A_RAMP_MS: u64 = 1_000;
-    const P3A_FINAL: f32 = 0.25;
-    const P3B_RAMP_MS: u64 = 1_000;
-    const P3B_FINAL: f32 = 0.05;
-    const GROUND_DETECT_M: f32 = 0.15;
-    const GROUND_HOLD_MS: u64 = 300;
-    const DESCENT_TIMEOUT_MS: u64 = 5_000;
-
-    let mut lidar_rcv = micoairh743v2::alt_hold::LIDAR_ALT_M.receiver().unwrap();
-    let mut ground_since: Option<embassy_time::Instant> = None;
-    let desc_start = embassy_time::Instant::now();
-    let mut landed = false;
-    loop {
-        let elapsed = desc_start.elapsed().as_millis() as u64;
-        if elapsed >= DESCENT_TIMEOUT_MS {
-            break;
-        }
-
-        let sp = if elapsed < P3A_RAMP_MS {
-            let f = elapsed as f32 / P3A_RAMP_MS as f32;
-            TARGET_ALT * (1.0 - f) + P3A_FINAL * f
-        } else if elapsed < P3A_RAMP_MS + P3B_RAMP_MS {
-            let f = (elapsed - P3A_RAMP_MS) as f32 / P3B_RAMP_MS as f32;
-            P3A_FINAL * (1.0 - f) + P3B_FINAL * f
-        } else {
-            P3B_FINAL
-        };
-        ALTITUDE_SETPOINT.signal(sp);
-
-        if let Some(h) = lidar_rcv.try_get() {
-            if h < GROUND_DETECT_M {
-                let below = ground_since
-                    .map(|t| t.elapsed().as_millis() as u64 >= GROUND_HOLD_MS)
-                    .unwrap_or(false);
-                if below {
-                    let mut s: heapless::String<64> = heapless::String::new();
-                    let _ = write!(s, "[mission] P3: ground detected at h={:.2}m, disarming", h);
-                    ulog::log(s.as_str());
-                    landed = true;
-                    break;
-                }
-                if ground_since.is_none() {
-                    ground_since = Some(embassy_time::Instant::now());
-                }
-            } else {
-                ground_since = None;
-            }
-        }
-
-        Timer::after_millis(50).await;
-    }
-    if !landed {
-        ulog::log("[mission] P3: descent timeout, disarming anyway");
-    }
-    ALTITUDE_SETPOINT.signal(0.0);
-
-    // Log the flow-integrated body-frame displacement before disarming so
-    // each flight report includes a dead-reckoned "how far did I land from
-    // where I took off" number. Compare against the operator's tape-measure
-    // reading to ground-truth the flow scale factor over time.
-    //
-    // log_critical (not log) because the regular log channel's 5-message
-    // flush policy would otherwise leave these final lines in the pending
-    // bucket when the operator yanks the LiPo after touchdown -- which is
-    // exactly what happened in D000079-D000082, all of which ended at the
-    // "ground detected" line with flow_disp lost. Critical-channel messages
-    // are drained + flushed immediately by uart_writer_task.
-    let dx = FLOW_EST_X_MM.load(Ordering::Relaxed) as f32 / 1000.0;
-    let dy = FLOW_EST_Y_MM.load(Ordering::Relaxed) as f32 / 1000.0;
-    let dist = libm::sqrtf(dx * dx + dy * dy);
-    let mut s: heapless::String<96> = heapless::String::new();
-    let _ = write!(
-        s,
-        "[mission] flow_disp dx={:.2}m dy={:.2}m |d|={:.2}m (body frame, fwd/right)",
-        dx, dy, dist
-    );
-    ulog::log(s.as_str());
-
-    ulog::log("[mission] disarming");
-    COMMAD_ARM_VEHICLE.send(false);
-
-    // Best-effort drain of the regular channel too, so any telemetry from
-    // the final descent isn't lost on power-off.
-    ulog::wait_for_drain(4, 500).await;
-
-    ulog::log("[mission] test complete");
-    loop {
-        Timer::after_secs(60).await;
     }
 }
 
@@ -2351,6 +2149,25 @@ async fn flow_position_logger() -> ! {
         }
         last_t = Some(now);
     }
+}
+
+/// Log the flow-integrated landing displacement (dead-reckoned distance from
+/// takeoff to touchdown) just before an AutoLand disarm. Emitted on the
+/// critical channel because the regular log's 5-message flush policy would
+/// otherwise leave this final line in the pending bucket when the operator
+/// yanks the LiPo right after touchdown -- exactly the loss seen in
+/// D000079-D000082. Reads the statics `flow_position_logger` integrates.
+async fn log_flow_disp() {
+    let dx = FLOW_EST_X_MM.load(Ordering::Relaxed) as f32 / 1000.0;
+    let dy = FLOW_EST_Y_MM.load(Ordering::Relaxed) as f32 / 1000.0;
+    let dist = libm::sqrtf(dx * dx + dy * dy);
+    let mut s: heapless::String<96> = heapless::String::new();
+    let _ = write!(
+        s,
+        "[fsm] flow_disp dx={:.2}m dy={:.2}m |d|={:.2}m (body frame, fwd/right)",
+        dx, dy, dist
+    );
+    ulog::log_critical(s.as_str()).await;
 }
 
 /// Compute a tilt-compensated magnetic heading and log it alongside the
