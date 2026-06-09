@@ -4,8 +4,10 @@
 //! ceiling used by `alt_hold`:
 //!
 //!   SC=Low        -> 2.0 m   (indoor / bench)
-//!   SC=Mid/High   -> 110.0 m (outdoor; EU Open A3 legal cap 120 m - 10 m
-//!                             margin for baro drift / EWMA lag)
+//!   SC=Mid/High   -> 100.0 m (outdoor; hard ceiling for the data-collection
+//!                             mission. Stays under the EU Open A3 legal cap
+//!                             of 120 m with ample margin for baro drift /
+//!                             EWMA lag)
 //!
 //! Default-safe: the ceiling boots at 2.0 m. The pilot must consciously
 //! raise SC on the TX15 to unlock outdoor altitude. The TX15 issues a
@@ -22,7 +24,7 @@ use crate::log as ulog;
 use crate::rc_kill::{decode, Pos, RC_CHANNELS};
 
 pub const INDOOR_CEILING_M: f32 = 2.0;
-pub const OUTDOOR_CEILING_M: f32 = 110.0;
+pub const OUTDOOR_CEILING_M: f32 = 100.0;
 
 const SC_IDX: usize = 7;
 
@@ -45,8 +47,8 @@ pub async fn ceiling_mode_task() -> ! {
 
         let label = match pos {
             Pos::Low  => "Low (indoor 2m)",
-            Pos::Mid  => "Mid (outdoor 110m)",
-            Pos::High => "High (outdoor 110m)",
+            Pos::Mid  => "Mid (outdoor 100m)",
+            Pos::High => "High (outdoor 100m)",
         };
         let mut s: heapless::String<64> = heapless::String::new();
         let _ = core::fmt::Write::write_fmt(

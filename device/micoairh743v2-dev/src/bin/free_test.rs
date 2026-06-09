@@ -46,7 +46,7 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering};
 
 use defmt_rtt as _;
 // NOTE: panic_probe is intentionally NOT used in this binary; we provide
@@ -428,6 +428,13 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
 /// Latest optical flow quality, shared between mtf01_reader and flow_hold for logging.
 static FLOW_QUALITY: AtomicU8 = AtomicU8::new(0);
 
+/// True while `gps_pos_hold` owns the lateral attitude setpoint (above the
+/// flow/GPS handover band on a good 3D fix). `flow_hold` checks this and
+/// suppresses its own `TRUE_ATTITUDE_Q_SP` write so there is exactly one
+/// lateral-setpoint writer at any instant. Mirrors the `alt_hold::MANUAL_BYPASS`
+/// ownership-handoff pattern.
+static GPS_OWNS_LATERAL: AtomicBool = AtomicBool::new(false);
+
 /// Unclamped flow-integrated body-frame displacement since the first flow
 /// sample (mm). Updated by `flow_position_logger`, read at disarm by the
 /// mission sequencer for landing-distance estimation. Separate from
@@ -582,6 +589,10 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     // flow only engages once the drone is solidly airborne, not in the
     // transition regime. See also: flow_hold::KP_POS = 0.0 below.
     thread_spawner.spawn(flow_hold().unwrap());
+    // GPS lateral position hold. Takes over lateral control above the flow
+    // range (~8 m) so the data-collection climb to 100 m holds position; flow
+    // owns below the handover band. See gps_pos_hold().
+    thread_spawner.spawn(gps_pos_hold().unwrap());
     thread_spawner.spawn(flip_kill().unwrap());
     thread_spawner.spawn(gyro_runaway_kill().unwrap());
     thread_spawner.spawn(mission_fsm_task().unwrap());
@@ -1043,6 +1054,26 @@ impl common::embedded_storage_async::nor_flash::NorFlash for DummyFlash {
     }
 }
 
+/// Continuous near-ground detector shared by AutoLand and the AutoHover
+/// stick-descent disarm. Returns true once lidar has stayed below `detect_m`
+/// for at least `hold_ms`. `first_hit` holds the first-crossing instant: it is
+/// set on the first sub-threshold reading and cleared whenever lidar rises
+/// back above the threshold, so a single noisy frame cannot satisfy the dwell.
+fn ground_hold_elapsed(
+    lidar: f32,
+    first_hit: &mut Option<embassy_time::Instant>,
+    detect_m: f32,
+    hold_ms: u64,
+) -> bool {
+    if lidar < detect_m {
+        let t = first_hit.get_or_insert_with(embassy_time::Instant::now);
+        t.elapsed().as_millis() as u64 >= hold_ms
+    } else {
+        *first_hit = None;
+        false
+    }
+}
+
 /// Mission FSM. Single owner of TRUE_RATE_SP / TRUE_ATTITUDE_Q_SP /
 /// TRUE_Z_THRUST_SP / ALTITUDE_SETPOINT. Consumes RC channel state and
 /// edge events from `rc_kill` and routes between GroundIdle, Manual,
@@ -1193,7 +1224,6 @@ async fn mission_fsm_task() -> ! {
     const TARGET_ALT: f32 = 1.0;
     const P0_RAMP_MS: u64 = 1_000;
     const P1_RAMP_MS: u64 = 3_000;
-    const AUTO_HOVER_TIMEOUT_S: u64 = 8;
     const P3A_RAMP_MS: u64 = 1_000;
     const P3A_FINAL: f32 = 0.25;
     const P3B_RAMP_MS: u64 = 1_000;
@@ -1201,6 +1231,25 @@ async fn mission_fsm_task() -> ! {
     const GROUND_DETECT_M: f32 = 0.15;
     const GROUND_HOLD_MS: u64 = 300;
     const DESCENT_TIMEOUT_MS: u64 = 5_000;
+
+    // -- data-collection altitude-stick mode (extends AutoHover) --
+    // Once the operator has "captured" the throttle stick (raised it to the
+    // center deadband at least once), stick position above/below center
+    // commands a vertical *rate* that is integrated into ALTITUDE_SETPOINT.
+    // Asymmetric: climb is faster than descent so surveying is quick but the
+    // drone always comes down under control. The integrated setpoint is
+    // clamped to MISSION_CEILING_M here AND re-clamped to alt_hold::ceiling()
+    // downstream, so the 100 m hard ceiling holds even if these change.
+    const CLIMB_RATE_UP_MS: f32 = 5.0;
+    const CLIMB_RATE_DOWN_MS: f32 = 3.0;
+    const CLIMB_DEADBAND: f32 = 0.10;
+    const MISSION_CEILING_M: f32 = 100.0;
+    const MIN_ALT: f32 = 0.15;
+    // Absolute flight-time safety. Replaces the old 8 s AutoHover auto-descend,
+    // which is far too short for a survey. Battery forced-descent and the
+    // RC-loss failsafe remain the primary safety nets; this is only a backstop
+    // against a forgotten / runaway mission. On expiry we fall to AutoLand.
+    const MISSION_MAX_S: u64 = 600;
 
     const ON_GROUND_LIDAR_M: f32 = 0.20;
     // Pure ACRO (rate-mode) defaults for Manual. Bardwell-style: drone
@@ -1302,6 +1351,18 @@ async fn mission_fsm_task() -> ! {
     // the FSM detects a non-flight-allowing tier while armed. None when
     // normal flight is permitted.
     let mut force_descent_since: Option<embassy_time::Instant> = None;
+
+    // Data-collection AutoHover state (Part A/D). `hover_alt_sp` is the
+    // operator-driven altitude setpoint, integrated from the throttle stick
+    // and clamped to MISSION_CEILING_M. `throttle_captured` gates rate
+    // control until the stick has first been brought to center, so the
+    // bottomed stick at entry cannot command an instant full descent.
+    // `ground_first_hit` is shared by the AutoHover descent disarm and
+    // AutoLand to track continuous near-ground lidar (see ground_hold_elapsed).
+    let mut hover_alt_sp: f32 = 0.0;
+    let mut throttle_captured: bool = false;
+    let mut hover_log_t = embassy_time::Instant::now();
+    let mut ground_first_hit: Option<embassy_time::Instant> = None;
     // Periodic "FC is ready" log while sitting in GroundIdle, so the
     // operator on the BT terminal sees a continuous heartbeat instead
     // of silence after preflight passes.
@@ -1685,48 +1746,108 @@ async fn mission_fsm_task() -> ! {
                     ALTITUDE_SETPOINT.signal(TARGET_ALT);
                     ulog::log("[fsm] AutoTakeoff -> AutoHover");
                     drain_rc_events();
+                    // Seed the operator-driven altitude setpoint at the
+                    // takeoff hover height and require a fresh throttle
+                    // capture before the stick can move it.
+                    hover_alt_sp = TARGET_ALT;
+                    throttle_captured = false;
+                    ground_first_hit = None;
                     state = State::AutoHover;
                     entered_at = embassy_time::Instant::now();
                 }
             }
 
             State::AutoHover => {
-                ALTITUDE_SETPOINT.signal(TARGET_ALT);
+                // Throttle-stick altitude control (data-collection mode).
+                // Stick position maps to a climb/descent *rate* that is
+                // integrated into the altitude setpoint, capped at the 100 m
+                // mission ceiling. alt_hold re-clamps to ceiling() downstream.
+                let thr_n = micoairh743v2::rc_kill::stick_throttle(ch.raw[2]);
+                let d = (thr_n - 0.5) * 2.0; // -1 (bottom) .. 0 (center) .. +1 (top)
 
+                // Mid-stick capture: until the operator brings the stick into
+                // the center deadband once, hold the seeded setpoint. Prevents
+                // the bottomed stick at entry from commanding a full descent.
+                if !throttle_captured && d.abs() < CLIMB_DEADBAND {
+                    throttle_captured = true;
+                    ulog::log("[fsm] AutoHover: throttle captured -- stick controls altitude");
+                }
+
+                let rate = if !throttle_captured || d.abs() < CLIMB_DEADBAND {
+                    0.0
+                } else if d > 0.0 {
+                    (d - CLIMB_DEADBAND) / (1.0 - CLIMB_DEADBAND) * CLIMB_RATE_UP_MS
+                } else {
+                    (d + CLIMB_DEADBAND) / (1.0 - CLIMB_DEADBAND) * CLIMB_RATE_DOWN_MS
+                };
+
+                const HOVER_DT: f32 = 0.05; // matches the 50 ms tick below
+                hover_alt_sp = (hover_alt_sp + rate * HOVER_DT).clamp(MIN_ALT, MISSION_CEILING_M);
+                ALTITUDE_SETPOINT.signal(hover_alt_sp);
+
+                // Auto-disarm at ground (Part D). Only while the operator is
+                // actively commanding descent (stick clearly below center) so
+                // a momentary low lidar during a steady hover cannot disarm
+                // mid-survey. Reuses the AutoLand ground-hold predicate.
+                let descending = throttle_captured && d < -CLIMB_DEADBAND;
+                if descending
+                    && ground_hold_elapsed(lidar, &mut ground_first_hit, GROUND_DETECT_M, GROUND_HOLD_MS)
+                {
+                    let mut s: heapless::String<64> = heapless::String::new();
+                    let _ = write!(s, "[fsm] AutoHover: ground at h={:.2}m, disarming", lidar);
+                    ulog::log(s.as_str());
+                    log_flow_disp().await;
+                    COMMAD_ARM_VEHICLE.send(false);
+                    zero_setpoints();
+                    ground_first_hit = None;
+                    throttle_captured = false;
+                    state = State::GroundIdle;
+                    entered_at = embassy_time::Instant::now();
+                    drain_rc_events();
+                    ulog::log("[fsm] state=GroundIdle");
+                    continue;
+                }
+
+                // Operator-commanded exit (Land trigger / mode Idle) and the
+                // absolute mission-time safety backstop fall through to AutoLand.
                 let mut go_land = false;
-                let mut refresh = false;
                 while let Ok(ev) = RC_EVENT.try_receive() {
                     if let RcEvent::TriggerPressed = ev {
-                        match ch.maneuver {
-                            Maneuver::Land => go_land = true,
-                            Maneuver::Hover => refresh = true,
-                            Maneuver::Takeoff => { /* ignore */ }
+                        if ch.maneuver == Maneuver::Land {
+                            go_land = true;
                         }
                     }
                 }
 
-                if refresh {
-                    ulog::log("[fsm] AutoHover: timeout refreshed");
-                    entered_at = embassy_time::Instant::now();
-                }
-
                 if go_land
                     || ch.mode == Mode::Idle
-                    || entered_at.elapsed().as_secs() >= AUTO_HOVER_TIMEOUT_S
+                    || entered_at.elapsed().as_secs() >= MISSION_MAX_S
                 {
                     let reason = if go_land {
                         "trigger=Land"
                     } else if ch.mode == Mode::Idle {
                         "mode=Idle"
                     } else {
-                        "timeout"
+                        "mission-max"
                     };
                     let mut s: heapless::String<64> = heapless::String::new();
                     let _ = write!(s, "[fsm] AutoHover -> AutoLand ({})", reason);
                     ulog::log(s.as_str());
+                    throttle_captured = false;
+                    ground_first_hit = None;
                     state = State::AutoLand;
                     entered_at = embassy_time::Instant::now();
                 } else {
+                    if hover_log_t.elapsed().as_millis() as u64 >= MANUAL_LOG_PERIOD_MS {
+                        hover_log_t = embassy_time::Instant::now();
+                        let mut s: heapless::String<96> = heapless::String::new();
+                        let _ = write!(
+                            s,
+                            "[fsm] hover cap={} sp={:.1}m h={:.2}m rate={:+.1} d={:+.2}",
+                            throttle_captured as u8, hover_alt_sp, lidar, rate, d
+                        );
+                        ulog::log(s.as_str());
+                    }
                     Timer::after_millis(50).await;
                 }
             }
@@ -1756,33 +1877,19 @@ async fn mission_fsm_task() -> ! {
                 };
                 ALTITUDE_SETPOINT.signal(sp);
 
-                if lidar < GROUND_DETECT_M {
-                    // Reuse entered_at as ground-since timer once we cross
-                    // the threshold; reset entered_at on first crossing.
-                    // To avoid clobbering the descent timer, use a separate
-                    // tracking variable. Hold for GROUND_HOLD_MS continuous.
-                    static GROUND_FIRST_HIT: AtomicI32 = AtomicI32::new(-1);
-                    let now_ms = embassy_time::Instant::now().as_millis() as i32;
-                    let first = GROUND_FIRST_HIT.load(Ordering::Relaxed);
-                    if first < 0 {
-                        GROUND_FIRST_HIT.store(now_ms, Ordering::Relaxed);
-                    } else if (now_ms - first) as u64 >= GROUND_HOLD_MS {
-                        let mut s: heapless::String<64> = heapless::String::new();
-                        let _ = write!(s, "[fsm] AutoLand: ground at h={:.2}m, disarming", lidar);
-                        ulog::log(s.as_str());
-                        log_flow_disp().await;
-                        COMMAD_ARM_VEHICLE.send(false);
-                        zero_setpoints();
-                        GROUND_FIRST_HIT.store(-1, Ordering::Relaxed);
-                        state = State::GroundIdle;
-                        entered_at = embassy_time::Instant::now();
-                        drain_rc_events();
-                        ulog::log("[fsm] state=GroundIdle");
-                        continue;
-                    }
-                } else {
-                    static GROUND_FIRST_HIT: AtomicI32 = AtomicI32::new(-1);
-                    GROUND_FIRST_HIT.store(-1, Ordering::Relaxed);
+                if ground_hold_elapsed(lidar, &mut ground_first_hit, GROUND_DETECT_M, GROUND_HOLD_MS) {
+                    let mut s: heapless::String<64> = heapless::String::new();
+                    let _ = write!(s, "[fsm] AutoLand: ground at h={:.2}m, disarming", lidar);
+                    ulog::log(s.as_str());
+                    log_flow_disp().await;
+                    COMMAD_ARM_VEHICLE.send(false);
+                    zero_setpoints();
+                    ground_first_hit = None;
+                    state = State::GroundIdle;
+                    entered_at = embassy_time::Instant::now();
+                    drain_rc_events();
+                    ulog::log("[fsm] state=GroundIdle");
+                    continue;
                 }
 
                 Timer::after_millis(50).await;
@@ -2097,6 +2204,14 @@ async fn flow_hold() -> ! {
         let pitch_cmd = (kp * est_x + KD_VEL * vx).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
         let roll_cmd = (-(kp * est_y + KD_VEL * vy)).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
 
+        // Yield to GPS lateral hold while it owns the setpoint (above the
+        // handover band). Keep integrating est_x/est_y above so the handover
+        // back to flow near the ground is seamless; we just do not write a
+        // competing TRUE_ATTITUDE_Q_SP.
+        if GPS_OWNS_LATERAL.load(Ordering::Relaxed) {
+            continue;
+        }
+
         let q = UnitQuaternion::from_euler_angles(roll_cmd, pitch_cmd, 0.0);
         snd_att.send(q);
 
@@ -2109,6 +2224,144 @@ async fn flow_hold() -> ! {
                 s,
                 "[flow] {}q={} ex={:.2} ey={:.2} vx={:.2} vy={:.2} p={:.2} r={:.2}",
                 mode, fq, est_x, est_y, vx, vy, pitch_cmd, roll_cmd
+            );
+            ulog::log(s.as_str());
+        }
+    }
+}
+
+/// GPS-based lateral position hold for the data-collection mode. Provides the
+/// lateral reference that optical flow cannot above its ~8 m range. Owns
+/// `TRUE_ATTITUDE_Q_SP` whenever `GPS_OWNS_LATERAL` is set; `flow_hold` yields
+/// its sender while that flag is true, so there is a single writer at any
+/// instant. Engages above the flow/GPS handover band on a good 3D fix and
+/// relinquishes near the ground (where flow takes over) or on fix loss.
+///
+/// The control law mirrors `flow_hold`'s validated sign convention exactly:
+/// a body-forward displacement/velocity error yields `pitch_cmd = +error`, a
+/// body-right error yields `roll_cmd = -error`. GPS gives us NED position
+/// (from the latched home) and NED velocity directly; we rotate both into the
+/// body frame using the AHRS yaw before applying the same PD.
+///
+/// Expect a loose hold (a few metres, bounded by GPS hAcc), not a tight hover.
+#[embassy_executor::task]
+async fn gps_pos_hold() -> ! {
+    use common::types::actuators::MotorsState;
+    use common::types::measurements::GnssFix;
+
+    // Flight-tunable. KP gives ~0.10 rad (5.7 deg) tilt at 5 m of position
+    // error; KD damps using the GPS-reported NED velocity directly (no noisy
+    // differentiation needed). MAX_TILT matches flow_hold's clamp.
+    const KP_GPS: f32 = 0.02; // rad per metre of position error
+    const KD_GPS: f32 = 0.05; // rad per (m/s) of velocity
+    const MAX_TILT_RAD: f32 = 0.17; // ~9.7 deg
+    // Engage above HANDOVER_HI, relinquish below HANDOVER_LO -- a hysteresis
+    // band against the flow controller so ownership cannot flap at the seam.
+    // Altitude comes from LIDAR_ALT_M (valid 0-8 m; it freezes at the last
+    // in-range value ~8 m above range, which keeps us engaged once high).
+    const HANDOVER_LO_M: f32 = 4.0;
+    const HANDOVER_HI_M: f32 = 6.0;
+    const HACC_MAX_M: f32 = 5.0; // max GPS horizontal accuracy to trust
+    const MIN_SATS: u8 = 8;
+    // 1e-7 deg of latitude == 0.0111320 m (111320 m per degree).
+    const M_PER_LATRAW: f32 = 0.0111320;
+    const DEG_PER_LATRAW: f32 = 1e-7;
+
+    let mut gnss_rcv = common::signals::RAW_GNSS_DATA.receiver();
+    let mut snd_att = signals::TRUE_ATTITUDE_Q_SP.sender();
+
+    // Home reference, latched on each fresh engage.
+    let mut home_lat_raw: i32 = 0;
+    let mut home_lon_raw: i32 = 0;
+    let mut cos_home_lat: f32 = 1.0;
+    let mut owns = false;
+    let mut log_div: u8 = 0;
+
+    loop {
+        let g = gnss_rcv.changed().await;
+
+        // Altitude gate (lidar, with the stale-high behaviour noted above).
+        let lidar = micoairh743v2::alt_hold::LIDAR_ALT_M.try_get();
+        let high_enough = lidar.map(|h| h > HANDOVER_HI_M).unwrap_or(false);
+        let low_enough = lidar.map(|h| h < HANDOVER_LO_M).unwrap_or(false);
+
+        let fix_ok = matches!(g.fix, GnssFix::Fix3D)
+            && g.num_satellites >= MIN_SATS
+            && g.horizontal_accuracy > 0.0
+            && g.horizontal_accuracy < HACC_MAX_M;
+
+        let armed = common::signals::MOTORS_STATE
+            .try_get()
+            .map(|m| matches!(m, MotorsState::Armed(_) | MotorsState::ArmedIdle))
+            .unwrap_or(false);
+
+        // Engage / relinquish with hysteresis.
+        if owns {
+            if !armed || !fix_ok || low_enough {
+                owns = false;
+                GPS_OWNS_LATERAL.store(false, Ordering::Relaxed);
+                ulog::log("[gps] lateral hold RELEASED (flow/low-alt or fix lost)");
+            }
+        } else if armed && fix_ok && high_enough {
+            owns = true;
+            home_lat_raw = g.latitude_raw;
+            home_lon_raw = g.longitude_raw;
+            let home_lat_rad =
+                (home_lat_raw as f32) * DEG_PER_LATRAW * core::f32::consts::PI / 180.0;
+            cos_home_lat = libm::cosf(home_lat_rad);
+            GPS_OWNS_LATERAL.store(true, Ordering::Relaxed);
+            let mut s: heapless::String<96> = heapless::String::new();
+            let _ = write!(
+                s,
+                "[gps] lateral hold ENGAGED sats={} hacc={:.1}m",
+                g.num_satellites, g.horizontal_accuracy
+            );
+            ulog::log(s.as_str());
+        }
+
+        if !owns {
+            continue;
+        }
+
+        // Position error in local NED metres relative to the latched home.
+        let north_m = (g.latitude_raw - home_lat_raw) as f32 * M_PER_LATRAW;
+        let east_m = (g.longitude_raw - home_lon_raw) as f32 * M_PER_LATRAW * cos_home_lat;
+
+        // Rotate NED error + velocity into the body frame using AHRS yaw.
+        let yaw = signals::AHRS_ATTITUDE_Q
+            .try_get()
+            .map(|q| q.euler_angles().2)
+            .unwrap_or(0.0);
+        let (s_yaw, c_yaw) = (libm::sinf(yaw), libm::cosf(yaw));
+        let pos_fwd = north_m * c_yaw + east_m * s_yaw;
+        let pos_right = -north_m * s_yaw + east_m * c_yaw;
+        let vel_fwd = g.velocity_north * c_yaw + g.velocity_east * s_yaw;
+        let vel_right = -g.velocity_north * s_yaw + g.velocity_east * c_yaw;
+
+        // Same PD + sign convention as flow_hold: pitch = +fwd error term,
+        // roll = -right error term.
+        let ef = KP_GPS * pos_fwd + KD_GPS * vel_fwd;
+        let er = KP_GPS * pos_right + KD_GPS * vel_right;
+        let pitch_cmd = ef.clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
+        let roll_cmd = (-er).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
+
+        let q = UnitQuaternion::from_euler_angles(roll_cmd, pitch_cmd, 0.0);
+        snd_att.send(q);
+
+        log_div = log_div.wrapping_add(1);
+        if log_div >= 5 {
+            log_div = 0;
+            let mut s: heapless::String<128> = heapless::String::new();
+            let _ = write!(
+                s,
+                "[gps] n={:.1} e={:.1} vn={:.1} ve={:.1} p={:.2} r={:.2} hacc={:.1}",
+                north_m,
+                east_m,
+                g.velocity_north,
+                g.velocity_east,
+                pitch_cmd,
+                roll_cmd,
+                g.horizontal_accuracy
             );
             ulog::log(s.as_str());
         }
