@@ -1224,13 +1224,21 @@ async fn mission_fsm_task() -> ! {
     const TARGET_ALT: f32 = 1.0;
     const P0_RAMP_MS: u64 = 1_000;
     const P1_RAMP_MS: u64 = 3_000;
-    const P3A_RAMP_MS: u64 = 1_000;
-    const P3A_FINAL: f32 = 0.25;
-    const P3B_RAMP_MS: u64 = 1_000;
-    const P3B_FINAL: f32 = 0.05;
     const GROUND_DETECT_M: f32 = 0.15;
     const GROUND_HOLD_MS: u64 = 300;
-    const DESCENT_TIMEOUT_MS: u64 = 5_000;
+    // AutoLand descends the *current* commanded altitude at a controlled rate
+    // from wherever the drone is, instead of snapping to a fixed 1 m target.
+    // This makes the Land trigger / RC-loss failsafe safe from altitude: a
+    // smooth ramp down + the validated ground-detect disarm, never a jump.
+    // alt_hold's own open-loop flare (setpoint < 0.20 m) cushions touchdown.
+    const AUTOLAND_RATE_MS: f32 = 2.0; // autonomous descent rate (m/s)
+    const LAND_FLOOR_M: f32 = 0.05; // setpoint floor; below GROUND_DETECT_M
+    // Floor-dwell safety: only force-disarm once the setpoint has bottomed
+    // out (we have descended all the way) and sat at the floor this long
+    // without a lidar ground-detect. Cannot fire at altitude because the
+    // setpoint is far above the floor there -- this is the altitude-safe
+    // replacement for the old fixed 5 s from-entry timeout.
+    const FLOOR_TIMEOUT_MS: u64 = 3_000;
 
     // -- data-collection altitude-stick mode (extends AutoHover) --
     // Once the operator has "captured" the throttle stick (raised it to the
@@ -1352,17 +1360,21 @@ async fn mission_fsm_task() -> ! {
     // normal flight is permitted.
     let mut force_descent_since: Option<embassy_time::Instant> = None;
 
-    // Data-collection AutoHover state (Part A/D). `hover_alt_sp` is the
-    // operator-driven altitude setpoint, integrated from the throttle stick
-    // and clamped to MISSION_CEILING_M. `throttle_captured` gates rate
-    // control until the stick has first been brought to center, so the
-    // bottomed stick at entry cannot command an instant full descent.
-    // `ground_first_hit` is shared by the AutoHover descent disarm and
-    // AutoLand to track continuous near-ground lidar (see ground_hold_elapsed).
-    let mut hover_alt_sp: f32 = 0.0;
+    // Current auto-commanded altitude setpoint, shared across AutoTakeoff,
+    // AutoHover and AutoLand so the descent always continues smoothly from
+    // wherever the drone is. In AutoHover it is integrated from the throttle
+    // stick and clamped to MISSION_CEILING_M; in AutoLand it is ramped down
+    // at a controlled rate. `throttle_captured` gates AutoHover rate control
+    // until the stick has first been brought to center, so the bottomed
+    // stick at entry cannot command an instant full descent. `ground_first_hit`
+    // is shared by the AutoHover descent disarm and AutoLand to track
+    // continuous near-ground lidar (see ground_hold_elapsed). `land_floor_since`
+    // times how long AutoLand has held the floor for the altitude-safe disarm.
+    let mut auto_alt_sp: f32 = 0.0;
     let mut throttle_captured: bool = false;
     let mut hover_log_t = embassy_time::Instant::now();
     let mut ground_first_hit: Option<embassy_time::Instant> = None;
+    let mut land_floor_since: Option<embassy_time::Instant> = None;
     // Periodic "FC is ready" log while sitting in GroundIdle, so the
     // operator on the BT terminal sees a continuous heartbeat instead
     // of silence after preflight passes.
@@ -1578,6 +1590,12 @@ async fn mission_fsm_task() -> ! {
                             ulog::log("[fsm] GroundIdle -> AutoTakeoff (trigger)");
                             state = State::AutoTakeoff;
                             entered_at = embassy_time::Instant::now();
+                            // Start the auto altitude command from the ground so
+                            // an RC-loss -> AutoLand during the takeoff ramp
+                            // descends from ~0 m, never from a stale value.
+                            auto_alt_sp = 0.0;
+                            ground_first_hit = None;
+                            land_floor_since = None;
                             zero_setpoints();
                             COMMAD_ARM_VEHICLE.send(true);
                         }
@@ -1740,6 +1758,7 @@ async fn mission_fsm_task() -> ! {
                 } else if elapsed < P0_RAMP_MS + P1_RAMP_MS {
                     let t = (elapsed - P0_RAMP_MS) as f32 / P1_RAMP_MS as f32;
                     let sp = TARGET_ALT * t;
+                    auto_alt_sp = sp;
                     ALTITUDE_SETPOINT.signal(sp);
                     Timer::after_millis(50).await;
                 } else {
@@ -1749,7 +1768,7 @@ async fn mission_fsm_task() -> ! {
                     // Seed the operator-driven altitude setpoint at the
                     // takeoff hover height and require a fresh throttle
                     // capture before the stick can move it.
-                    hover_alt_sp = TARGET_ALT;
+                    auto_alt_sp = TARGET_ALT;
                     throttle_captured = false;
                     ground_first_hit = None;
                     state = State::AutoHover;
@@ -1782,8 +1801,8 @@ async fn mission_fsm_task() -> ! {
                 };
 
                 const HOVER_DT: f32 = 0.05; // matches the 50 ms tick below
-                hover_alt_sp = (hover_alt_sp + rate * HOVER_DT).clamp(MIN_ALT, MISSION_CEILING_M);
-                ALTITUDE_SETPOINT.signal(hover_alt_sp);
+                auto_alt_sp = (auto_alt_sp + rate * HOVER_DT).clamp(MIN_ALT, MISSION_CEILING_M);
+                ALTITUDE_SETPOINT.signal(auto_alt_sp);
 
                 // Auto-disarm at ground (Part D). Only while the operator is
                 // actively commanding descent (stick clearly below center) so
@@ -1835,6 +1854,7 @@ async fn mission_fsm_task() -> ! {
                     ulog::log(s.as_str());
                     throttle_captured = false;
                     ground_first_hit = None;
+                    land_floor_since = None;
                     state = State::AutoLand;
                     entered_at = embassy_time::Instant::now();
                 } else {
@@ -1844,7 +1864,7 @@ async fn mission_fsm_task() -> ! {
                         let _ = write!(
                             s,
                             "[fsm] hover cap={} sp={:.1}m h={:.2}m rate={:+.1} d={:+.2}",
-                            throttle_captured as u8, hover_alt_sp, lidar, rate, d
+                            throttle_captured as u8, auto_alt_sp, lidar, rate, d
                         );
                         ulog::log(s.as_str());
                     }
@@ -1853,38 +1873,49 @@ async fn mission_fsm_task() -> ! {
             }
 
             State::AutoLand => {
-                let elapsed = entered_at.elapsed().as_millis() as u64;
-                if elapsed >= DESCENT_TIMEOUT_MS {
-                    ulog::log("[fsm] AutoLand: descent timeout, disarming");
-                    log_flow_disp().await;
-                    COMMAD_ARM_VEHICLE.send(false);
-                    zero_setpoints();
-                    state = State::GroundIdle;
-                    entered_at = embassy_time::Instant::now();
-                    drain_rc_events();
-                    ulog::log("[fsm] state=GroundIdle");
-                    continue;
-                }
+                // Controlled descent from the *current* commanded altitude.
+                // Ramp the setpoint down at AUTOLAND_RATE_MS from wherever the
+                // drone is -- safe from any altitude (Land trigger, SA=Idle,
+                // mission-max, or RC-loss failsafe). GPS/flow keep lateral
+                // position during the descent; alt_hold's open-loop flare
+                // (setpoint < 0.20 m) cushions the final touchdown.
+                const LAND_DT: f32 = 0.05; // matches the 50 ms tick below
+                auto_alt_sp = (auto_alt_sp - AUTOLAND_RATE_MS * LAND_DT).max(LAND_FLOOR_M);
+                ALTITUDE_SETPOINT.signal(auto_alt_sp);
 
-                let sp = if elapsed < P3A_RAMP_MS {
-                    let f = elapsed as f32 / P3A_RAMP_MS as f32;
-                    TARGET_ALT * (1.0 - f) + P3A_FINAL * f
-                } else if elapsed < P3A_RAMP_MS + P3B_RAMP_MS {
-                    let f = (elapsed - P3A_RAMP_MS) as f32 / P3B_RAMP_MS as f32;
-                    P3A_FINAL * (1.0 - f) + P3B_FINAL * f
+                // Primary disarm: lidar confirms ground contact.
+                let ground = ground_hold_elapsed(
+                    lidar,
+                    &mut ground_first_hit,
+                    GROUND_DETECT_M,
+                    GROUND_HOLD_MS,
+                );
+
+                // Backup disarm: the setpoint has bottomed out (we descended
+                // all the way) and we have sat at the floor without a lidar
+                // ground-detect for FLOOR_TIMEOUT_MS. This cannot fire at
+                // altitude because auto_alt_sp is far above the floor there,
+                // so it never disarms mid-air -- it only catches a flaky lidar
+                // on the last few centimetres.
+                let at_floor = auto_alt_sp <= LAND_FLOOR_M + 0.001;
+                let floor_timeout = if at_floor {
+                    let t = land_floor_since.get_or_insert_with(embassy_time::Instant::now);
+                    t.elapsed().as_millis() as u64 >= FLOOR_TIMEOUT_MS
                 } else {
-                    P3B_FINAL
+                    land_floor_since = None;
+                    false
                 };
-                ALTITUDE_SETPOINT.signal(sp);
 
-                if ground_hold_elapsed(lidar, &mut ground_first_hit, GROUND_DETECT_M, GROUND_HOLD_MS) {
+                if ground || floor_timeout {
+                    let reason = if ground { "ground" } else { "floor-timeout" };
                     let mut s: heapless::String<64> = heapless::String::new();
-                    let _ = write!(s, "[fsm] AutoLand: ground at h={:.2}m, disarming", lidar);
+                    let _ = write!(s, "[fsm] AutoLand: {} h={:.2}m, disarming", reason, lidar);
                     ulog::log(s.as_str());
                     log_flow_disp().await;
                     COMMAD_ARM_VEHICLE.send(false);
                     zero_setpoints();
                     ground_first_hit = None;
+                    land_floor_since = None;
                     state = State::GroundIdle;
                     entered_at = embassy_time::Instant::now();
                     drain_rc_events();
