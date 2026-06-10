@@ -134,6 +134,17 @@ const LANDING_TRIGGER_ALT_M: f32 = 0.35;
 /// slow = PID-like "hover in ground effect forever" behaviour.
 const LANDING_DURATION_S: f32 = 0.8;
 
+/// Ground-idle gate (DJI takeoff model). When the commanded altitude is
+/// essentially the floor AND the drone is physically near the ground, hold
+/// motors at idle (0 thrust) instead of the BASE_THRUST hover feed-forward.
+/// Non-latching, so the moment the throttle commands a real altitude (setpoint
+/// rises above SP) the PID engages and the drone lifts off; conversely pulling
+/// the throttle to the bottom in flight descends (PID) and idles on touchdown.
+/// This is what makes "auto-arm sits idle until you raise the throttle" work --
+/// without it, alt_hold would feed-forward hover thrust the instant it armed.
+const GROUND_IDLE_SP_M: f32 = 0.08;
+const GROUND_IDLE_ALT_M: f32 = 0.20;
+
 fn pressure_to_altitude(p: f32, p0: f32) -> f32 {
     44330.0 * (1.0 - powf(p / p0, 0.1903))
 }
@@ -270,27 +281,36 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
             .ok()
             .map(|d| pressure_to_altitude(d.pressure_pa, baseline_pa));
 
-        // SAFETY: hard baro-based ceiling. If the drone is above the
-        // active ceiling regardless of what lidar says, force a gentle
-        // descent and skip the normal PID for this cycle. The drone will
-        // keep sinking until baro reads below the ceiling, at which point
-        // normal control resumes. The check uses an EWMA over raw baro
-        // so a single propwash spike cannot trip it -- important at the
-        // outdoor 110 m cap where there is no room ceiling backup.
-        if let Some(b) = baro_alt {
-            baro_ewma = EWMA_ALPHA * b + (1.0 - EWMA_ALPHA) * baro_ewma;
-            if baro_ewma > ceiling() {
-                let mut s: heapless::String<64> = heapless::String::new();
-                let _ = write!(
-                    s, "[alt] CEILING BREACH baro={:.2}m cap={:.1}m -- forced descent",
-                    baro_ewma, ceiling()
-                );
-                crate::log::log(s.as_str());
-                if !MANUAL_BYPASS.load(Ordering::Relaxed) {
-                    snd_thrust.send(CEILING_EMERGENCY_THRUST);
+        // Indoors (SC=Low, ~2 m ceiling) the lidar's 0-8 m range covers the
+        // whole flight envelope, so the barometer contributes nothing but
+        // propwash noise: with props spinning near the ground it reads 1-2 m
+        // high, which made the lidar-disagree cross-check trust the bad baro,
+        // conclude the drone was already at the ceiling, and command idle
+        // thrust -- no takeoff (D000490). So indoors we run lidar-only: no baro
+        // ceiling breach and no baro measurement. The baro path stays for
+        // outdoor flight, where lidar cannot reach the 100 m cap.
+        let indoor = ceiling() < 10.0;
+
+        // SAFETY: hard baro-based ceiling (OUTDOOR only -- see above). If the
+        // drone is above the active ceiling regardless of what lidar says,
+        // force a gentle descent and skip the normal PID for this cycle. EWMA
+        // over raw baro so a single propwash spike cannot trip it.
+        if !indoor {
+            if let Some(b) = baro_alt {
+                baro_ewma = EWMA_ALPHA * b + (1.0 - EWMA_ALPHA) * baro_ewma;
+                if baro_ewma > ceiling() {
+                    let mut s: heapless::String<64> = heapless::String::new();
+                    let _ = write!(
+                        s, "[alt] CEILING BREACH baro={:.2}m cap={:.1}m -- forced descent",
+                        baro_ewma, ceiling()
+                    );
+                    crate::log::log(s.as_str());
+                    if !MANUAL_BYPASS.load(Ordering::Relaxed) {
+                        snd_thrust.send(CEILING_EMERGENCY_THRUST);
+                    }
+                    Timer::after_millis((DT * 1000.0) as u64).await;
+                    continue;
                 }
-                Timer::after_millis((DT * 1000.0) as u64).await;
-                continue;
             }
         }
 
@@ -299,43 +319,58 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
             .try_changed()
             .filter(|&l| (0.0..=8.0).contains(&l));
 
-        // Measurement-source selection with a baro cross-check:
-        //   - lidar + baro agree (or baro not available): use lidar
-        //   - baro is notably higher than lidar (D000009 failure mode):
-        //     switch to baro as the measurement source
-        //   - lidar missing this cycle: fall back to baro
-        //   - neither source: sleep and retry
-        let alt_raw = match (lidar_valid, baro_alt) {
-            (Some(lidar), Some(baro)) if baro > lidar + LIDAR_DISAGREE_M => {
-                if use_lidar {
-                    let mut s: heapless::String<64> = heapless::String::new();
-                    let _ = write!(
-                        s,
-                        "[alt] LIDAR DISAGREE lid={:.2} bar={:.2} -- using baro",
-                        lidar, baro
-                    );
-                    crate::log::log(s.as_str());
-                    use_lidar = false;
+        // Measurement-source selection.
+        let alt_raw = if indoor {
+            // Lidar-only indoors. On a brief lidar dropout (quality glitch near
+            // the ~0.1 m minimum range) hold the last filtered altitude rather
+            // than falling back to the propwash-corrupted baro -- holding keeps
+            // the control loop (and thus the motor-governor keepalive) alive.
+            match lidar_valid {
+                Some(lidar) => {
+                    if !use_lidar {
+                        crate::log::log("[alt] switching to lidar");
+                        use_lidar = true;
+                    }
+                    lidar
                 }
-                baro
+                None => alt_filtered,
             }
-            (Some(lidar), _) => {
-                if !use_lidar {
-                    crate::log::log("[alt] switching to lidar");
-                    use_lidar = true;
+        } else {
+            // Outdoor: lidar with a baro cross-check. Baro is the primary
+            // source above the 8 m lidar range and the D000009 stuck-lidar
+            // safety witness (baro notably higher than a "stuck" lidar).
+            match (lidar_valid, baro_alt) {
+                (Some(lidar), Some(baro)) if baro > lidar + LIDAR_DISAGREE_M => {
+                    if use_lidar {
+                        let mut s: heapless::String<64> = heapless::String::new();
+                        let _ = write!(
+                            s,
+                            "[alt] LIDAR DISAGREE lid={:.2} bar={:.2} -- using baro",
+                            lidar, baro
+                        );
+                        crate::log::log(s.as_str());
+                        use_lidar = false;
+                    }
+                    baro
                 }
-                lidar
-            }
-            (None, Some(baro)) => {
-                if use_lidar {
-                    crate::log::log("[alt] lidar lost -- using baro");
-                    use_lidar = false;
+                (Some(lidar), _) => {
+                    if !use_lidar {
+                        crate::log::log("[alt] switching to lidar");
+                        use_lidar = true;
+                    }
+                    lidar
                 }
-                baro
-            }
-            (None, None) => {
-                Timer::after_millis((DT * 1000.0) as u64).await;
-                continue;
+                (None, Some(baro)) => {
+                    if use_lidar {
+                        crate::log::log("[alt] lidar lost -- using baro");
+                        use_lidar = false;
+                    }
+                    baro
+                }
+                (None, None) => {
+                    Timer::after_millis((DT * 1000.0) as u64).await;
+                    continue;
+                }
             }
         };
 
@@ -386,17 +421,28 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
             crate::log::log(s.as_str());
         }
 
-        let thrust = match landing_state {
-            Some((start, anchor)) => {
-                // Open-loop linear ramp to zero. Altitude-independent: if
-                // lidar drops out mid-flare the drone still lands because
-                // thrust is driven to zero regardless of what altitude
-                // says. PID is bypassed entirely.
-                let t = start.elapsed().as_millis() as f32 / 1000.0;
-                let factor = (1.0 - t / LANDING_DURATION_S).clamp(0.0, 1.0);
-                anchor * factor
+        // Ground idle (non-latching) takes priority over the hover feed-forward:
+        // when the throttle commands the floor and we are near the ground, idle.
+        let ground_idle = setpoint_m < GROUND_IDLE_SP_M && alt_filtered < GROUND_IDLE_ALT_M;
+
+        let thrust = if ground_idle {
+            // Bleed the integrator while idling so it cannot wind up against the
+            // floor error and blunt the next takeoff.
+            integral = 0.0;
+            0.0
+        } else {
+            match landing_state {
+                Some((start, anchor)) => {
+                    // Open-loop linear ramp to zero. Altitude-independent: if
+                    // lidar drops out mid-flare the drone still lands because
+                    // thrust is driven to zero regardless of what altitude
+                    // says. PID is bypassed entirely.
+                    let t = start.elapsed().as_millis() as f32 / 1000.0;
+                    let factor = (1.0 - t / LANDING_DURATION_S).clamp(0.0, 1.0);
+                    anchor * factor
+                }
+                None => pid_thrust,
             }
-            None => pid_thrust,
         };
         // Upper clamp raised from 5.0 -> 10.0 after D000130: alt_hold output
         // was pinned at 4.96 with sp=1.0m and h=0.05m, so the drone could not

@@ -1316,7 +1316,11 @@ async fn mission_fsm_task() -> ! {
     const AUTO_ALT_RATE: f32 = 3.0;
     const AUTO_DT: f32 = 0.02; // Auto/Landing tick period (s), 50 Hz
     const ALT_CAPTURE_BAND: f32 = 0.30; // throttle->alt capture window (m)
-    const AUTOARM_THROTTLE_MAX: f32 = 0.10; // throttle must be below this to auto-arm
+    // Throttle must be essentially at the bottom to auto-arm, so the
+    // position-based altitude maps into alt_hold's ground-idle band and the
+    // drone arms at idle instead of lurching up. Raising the throttle then
+    // commands the climb.
+    const AUTOARM_THROTTLE_MAX: f32 = 0.05;
     const AUTOARM_LEVEL_DEG: f32 = 10.0; // max tilt to auto-arm into Auto
 
     const ON_GROUND_LIDAR_M: f32 = 0.20;
@@ -2404,9 +2408,13 @@ async fn lateral_controller() -> ! {
         let vsp_fwd = load_f32(&AUTO_VEL_SP_FWD);
         let vsp_right = load_f32(&AUTO_VEL_SP_RIGHT);
 
-        // Pick a velocity feedback source by altitude.
+        // Pick a velocity feedback source by altitude. Flow is only trusted
+        // between 0.25 m and FLOW_MAX_M: below 0.25 m the MTF-01 reader stops
+        // publishing (FLOW_VEL_MS goes stale), and acting on that stale value on
+        // the ground produced phantom tilt jitter (D000490). Mirror the reader's
+        // 0.25 m gate so the ground/landing regime is pure self-level.
         let lidar = micoairh743v2::alt_hold::LIDAR_ALT_M.try_get();
-        let flow_in_range = lidar.map(|h| h < FLOW_MAX_M).unwrap_or(false);
+        let flow_in_range = lidar.map(|h| (0.25..FLOW_MAX_M).contains(&h)).unwrap_or(false);
         let fq = FLOW_QUALITY.load(Ordering::Relaxed);
 
         let mut src = 'n'; // 'f' flow, 'g' gps, 'n' none
