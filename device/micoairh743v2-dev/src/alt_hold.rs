@@ -27,6 +27,16 @@ pub static ALTITUDE_SETPOINT: Signal<CriticalSectionRawMutex, f32> = Signal::new
 /// `mission_fsm_task` to `matches!(state, State::Manual)`.
 pub static MANUAL_BYPASS: AtomicBool = AtomicBool::new(false);
 
+/// Set by the FSM while Auto runs the throttle as DIRECT thrust (the pilot
+/// owns vertical, like Manual) instead of a position-based altitude command.
+/// When set, alt_hold still computes normally -- so it keeps tracking baro for
+/// `filtered_altitude`/`vertical_speed` and a clean AutoLand handoff -- but it
+/// does NOT drive TRUE_Z_THRUST_SP; the FSM sends thrust directly. Unlike
+/// MANUAL_BYPASS this does NOT disable the self-level angle controller, so Auto
+/// keeps its attitude + GPS-lateral hold. Note: while set, the baro hard
+/// ceiling is not auto-enforced -- the pilot owns altitude.
+pub static AUTO_DIRECT_THRUST: AtomicBool = AtomicBool::new(false);
+
 /// Lidar distance in metres, published by the MTF-01 reader task at ~50 Hz.
 /// Negative value or quality=0 means invalid reading.
 pub static LIDAR_ALT_M: Watch<CriticalSectionRawMutex, f32, 2> = Watch::new();
@@ -160,6 +170,18 @@ static VERTICAL_SPEED_BITS: AtomicU32 = AtomicU32::new(0); // 0.0_f32.to_bits()
 /// takes over thrust.
 pub fn vertical_speed() -> f32 {
     f32::from_bits(VERTICAL_SPEED_BITS.load(Ordering::Relaxed))
+}
+
+/// EWMA-filtered altitude (m), f32 bits in a u32. Published every control
+/// cycle so the FSM can seed an AutoLand descent (and shadow the setpoint
+/// during direct-thrust Auto) at the real current altitude instead of a stale
+/// or floored value, which would otherwise cut thrust mid-air on handoff.
+static FILTERED_ALT_BITS: AtomicU32 = AtomicU32::new(0); // 0.0_f32.to_bits()
+
+/// Latest EWMA-filtered altitude (m) from alt_hold's active source (lidar or
+/// baro). 0.0 before alt_hold takes over thrust.
+pub fn filtered_altitude() -> f32 {
+    f32::from_bits(FILTERED_ALT_BITS.load(Ordering::Relaxed))
 }
 
 /// Number of baro readings to average for the baseline pressure.
@@ -375,7 +397,9 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
                         baro_ewma, ceiling()
                     );
                     crate::log::log(s.as_str());
-                    if !MANUAL_BYPASS.load(Ordering::Relaxed) {
+                    if !MANUAL_BYPASS.load(Ordering::Relaxed)
+                        && !AUTO_DIRECT_THRUST.load(Ordering::Relaxed)
+                    {
                         snd_thrust.send(CEILING_EMERGENCY_THRUST);
                     }
                     Timer::after_millis((DT * 1000.0) as u64).await;
@@ -445,6 +469,7 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
         };
 
         alt_filtered = EWMA_ALPHA * alt_raw + (1.0 - EWMA_ALPHA) * alt_filtered;
+        FILTERED_ALT_BITS.store(alt_filtered.to_bits(), Ordering::Relaxed);
 
         let err = setpoint_m - alt_filtered;
         let vel = (alt_filtered - prev_alt) / DT; // positive = climbing
@@ -522,7 +547,9 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
         // software cap from an era before the closed-loop was trusted. 10.0
         // is 2.2x BASE_THRUST, plenty for normal climb while still bounded
         // well below full motor authority.
-        if !MANUAL_BYPASS.load(Ordering::Relaxed) {
+        if !MANUAL_BYPASS.load(Ordering::Relaxed)
+            && !AUTO_DIRECT_THRUST.load(Ordering::Relaxed)
+        {
             snd_thrust.send(thrust.clamp(0.0, 10.0));
         }
 

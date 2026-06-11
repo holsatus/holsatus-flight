@@ -1326,16 +1326,10 @@ async fn mission_fsm_task() -> ! {
     const AUTO_MAX_VEL: f32 = 1.5; // right-stick full deflection -> m/s
     const AUTO_MAX_YAW_RATE: f32 = 2.0; // yaw-stick full deflection -> rad/s
     const ATT_SLEW_RATE: f32 = 2.0; // attitude-setpoint slew (rad/s); < 5 rad/s kill
-    // Max altitude-setpoint slew (m/s). Bounds the vertical response so a fast
-    // throttle move on the ratcheted stick can never command a hard drop/climb
-    // -- the setpoint chases the stick at this rate instead of jumping.
-    const AUTO_ALT_RATE: f32 = 3.0;
     const AUTO_DT: f32 = 0.02; // Auto/Landing tick period (s), 50 Hz
-    const ALT_CAPTURE_BAND: f32 = 0.30; // throttle->alt capture window (m)
-    // Throttle must be essentially at the bottom to auto-arm, so the
-    // position-based altitude maps into alt_hold's ground-idle band and the
-    // drone arms at idle instead of lurching up. Raising the throttle then
-    // commands the climb.
+    // Throttle must be essentially at the bottom to auto-arm, so the direct
+    // thrust starts near zero and the drone arms at idle instead of lurching
+    // up. Raising the throttle then commands the climb.
     const AUTOARM_THROTTLE_MAX: f32 = 0.05;
     const AUTOARM_LEVEL_DEG: f32 = 10.0; // max tilt to auto-arm into Auto
 
@@ -1439,18 +1433,15 @@ async fn mission_fsm_task() -> ! {
     // normal flight is permitted.
     let mut force_descent_since: Option<embassy_time::Instant> = None;
 
-    // Current auto-commanded altitude setpoint, shared across AutoTakeoff,
-    // AutoHover and AutoLand so the descent always continues smoothly from
-    // wherever the drone is. In AutoHover it is integrated from the throttle
-    // stick and clamped to MISSION_CEILING_M; in AutoLand it is ramped down
-    // at a controlled rate. `throttle_captured` gates AutoHover rate control
-    // until the stick has first been brought to center, so the bottomed
-    // stick at entry cannot command an instant full descent. `ground_first_hit`
-    // is shared by the AutoHover descent disarm and AutoLand to track
-    // continuous near-ground lidar (see ground_hold_elapsed). `land_floor_since`
-    // times how long AutoLand has held the floor for the altitude-safe disarm.
+    // Current auto-commanded altitude setpoint, shared across AutoHover and
+    // AutoLand so the descent always continues smoothly from wherever the drone
+    // is. In AutoHover (direct-thrust) it tracks the live filtered altitude so
+    // an AutoLand handoff starts from the real height; in AutoLand it is ramped
+    // down at a controlled rate. `ground_first_hit` is shared by the AutoHover
+    // descent disarm and AutoLand to track continuous near-ground lidar (see
+    // ground_hold_elapsed). `land_floor_since` times how long AutoLand has held
+    // the floor for the altitude-safe disarm.
     let mut auto_alt_sp: f32 = 0.0;
-    let mut throttle_captured: bool = false;
     let mut hover_log_t = embassy_time::Instant::now();
     let mut ground_first_hit: Option<embassy_time::Instant> = None;
     let mut land_floor_since: Option<embassy_time::Instant> = None;
@@ -1526,6 +1517,11 @@ async fn mission_fsm_task() -> ! {
         // link-loss failsafe) is reflected immediately.
         micoairh743v2::alt_hold::MANUAL_BYPASS
             .store(matches!(state, State::Manual), Ordering::Relaxed);
+        // AutoHover runs the throttle as direct thrust (pilot owns vertical),
+        // so alt_hold yields TRUE_Z_THRUST_SP but keeps running for the AutoLand
+        // handoff. Unlike MANUAL_BYPASS this leaves the self-level controller on.
+        micoairh743v2::alt_hold::AUTO_DIRECT_THRUST
+            .store(matches!(state, State::AutoHover), Ordering::Relaxed);
         // The lateral velocity controller runs in the self-levelling states
         // (Auto + Landing). Outside Auto, hold the Auto command signals at zero
         // so a stale yaw-rate / velocity setpoint can never leak into another
@@ -1739,10 +1735,9 @@ async fn mission_fsm_task() -> ! {
                             ulog::log("[fsm] Idle -> Auto (auto-arm)");
                             auto_arm_latch = false;
                             state = State::AutoHover;
-                            // Altitude command starts at the floor; the throttle
-                            // must be raised to "capture" before it can move it.
+                            // Direct-thrust AutoHover; auto_alt_sp tracks the
+                            // live altitude from here, seeded at the floor.
                             auto_alt_sp = ALT_FLOOR_M;
-                            throttle_captured = false;
                             self_level_seed = true;
                             ground_first_hit = None;
                             land_floor_since = None;
@@ -1802,11 +1797,11 @@ async fn mission_fsm_task() -> ! {
                         signals::TRUE_ATTITUDE_Q_SP.send(cur);
                         self_level_seed = false;
                         state = State::AutoHover;
-                        throttle_captured = false;
                         auto_alt_sp = if lidar < 8.0 {
                             lidar.clamp(ALT_FLOOR_M, MISSION_CEILING_M)
                         } else {
-                            auto_alt_sp.clamp(ALT_FLOOR_M, MISSION_CEILING_M)
+                            micoairh743v2::alt_hold::filtered_altitude()
+                                .clamp(ALT_FLOOR_M, MISSION_CEILING_M)
                         };
                         ground_first_hit = None;
                         land_floor_since = None;
@@ -1827,10 +1822,15 @@ async fn mission_fsm_task() -> ! {
                     signals::TRUE_ATTITUDE_Q_SP.send(cur);
                     self_level_seed = false;
                     state = State::AutoLand;
+                    // Seed the descent from the real altitude. Without lidar,
+                    // Manual does not track auto_alt_sp, so use the baro-filtered
+                    // altitude rather than a stale value that could floor the
+                    // setpoint and cut thrust mid-air.
                     auto_alt_sp = if lidar < 8.0 {
                         lidar.clamp(ALT_FLOOR_M, MISSION_CEILING_M)
                     } else {
-                        auto_alt_sp.clamp(ALT_FLOOR_M, MISSION_CEILING_M)
+                        micoairh743v2::alt_hold::filtered_altitude()
+                            .clamp(ALT_FLOOR_M, MISSION_CEILING_M)
                     };
                     ground_first_hit = None;
                     land_floor_since = None;
@@ -2044,26 +2044,19 @@ async fn mission_fsm_task() -> ! {
                 // the [lat] log before flight.
                 let pitch_n = -micoairh743v2::rc_kill::stick_norm(ch.raw[1]);
 
-                // Altitude: throttle position -> target altitude (position-based;
-                // natural for the ratcheted stick). Capture-gated so a parked
-                // throttle on entry cannot lurch the altitude -- the held value
-                // is tracked until the throttle maps to within ALT_CAPTURE_BAND
-                // of it. alt_hold re-clamps to the SC ceiling downstream.
-                let ceiling = micoairh743v2::alt_hold::ceiling();
-                let target_alt =
-                    (ALT_FLOOR_M + thr_n * (ceiling - ALT_FLOOR_M)).clamp(ALT_FLOOR_M, MISSION_CEILING_M);
-                if !throttle_captured && (target_alt - auto_alt_sp).abs() < ALT_CAPTURE_BAND {
-                    throttle_captured = true;
-                    ulog::log("[fsm] Auto: throttle captured -- altitude follows the stick");
-                }
-                if throttle_captured {
-                    // Slew toward the throttle's target at a bounded vertical
-                    // rate so a fast ratcheted-throttle move can never command a
-                    // hard drop or climb -- the setpoint chases the stick.
-                    let max_step = AUTO_ALT_RATE * AUTO_DT;
-                    let dz = (target_alt - auto_alt_sp).clamp(-max_step, max_step);
-                    auto_alt_sp = (auto_alt_sp + dz).clamp(ALT_FLOOR_M, MISSION_CEILING_M);
-                }
+                // Throttle = DIRECT thrust, identical mapping to Manual (hover
+                // near mid-stick), so the pilot owns vertical and the stick
+                // feels like a normal quad -- not the old position-based
+                // altitude over the full 0-100 m ceiling that surprised the
+                // pilot into an unexpected climb (D000510). alt_hold yields
+                // TRUE_Z_THRUST_SP via AUTO_DIRECT_THRUST but keeps running.
+                signals::TRUE_Z_THRUST_SP.send(thr_n * MANUAL_THRUST_GAIN);
+                // Track + shadow at the live filtered altitude (zero error, so
+                // alt_hold's integrator stays parked) so an AutoLand handoff
+                // starts the descent from the real altitude, never a stale or
+                // floored setpoint that would cut thrust mid-air.
+                auto_alt_sp = micoairh743v2::alt_hold::filtered_altitude()
+                    .clamp(ALT_FLOOR_M, MISSION_CEILING_M);
                 ALTITUDE_SETPOINT.signal(auto_alt_sp);
 
                 // Yaw rate (bridge injects it) + body velocity setpoint (lateral
@@ -2084,8 +2077,8 @@ async fn mission_fsm_task() -> ! {
                     let mut s: heapless::String<112> = heapless::String::new();
                     let _ = write!(
                         s,
-                        "[fsm] auto cap={} sp={:.1}m h={:.2}m thr={:.2} yaw={:+.2} tilt=({:+.2},{:+.2})",
-                        throttle_captured as u8, auto_alt_sp, lidar, thr_n,
+                        "[fsm] auto thr={:.2} thrust={:.1} alt={:.2}m yaw={:+.2} tilt=({:+.2},{:+.2})",
+                        thr_n, thr_n * MANUAL_THRUST_GAIN, auto_alt_sp,
                         yaw_n * AUTO_MAX_YAW_RATE, tilt_roll, tilt_pitch,
                     );
                     ulog::log(s.as_str());
