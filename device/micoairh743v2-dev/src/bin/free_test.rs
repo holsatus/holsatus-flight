@@ -1295,8 +1295,21 @@ async fn mission_fsm_task() -> ! {
     // out (we have descended all the way) and sat at the floor this long
     // without a lidar ground-detect. Cannot fire at altitude because the
     // setpoint is far above the floor there -- this is the altitude-safe
-    // replacement for the old fixed 5 s from-entry timeout.
+    // replacement for the old fixed 5 s from-entry timeout. Kept unchanged as
+    // the worst-case backstop; the settle detector below normally disarms
+    // sooner.
     const FLOOR_TIMEOUT_MS: u64 = 3_000;
+
+    // Touchdown confirmation (primary fallback when the MTF-01 lidar is gone):
+    // once the setpoint is at the floor AND the filtered vertical speed has
+    // stalled to near zero for SETTLE_DWELL_MS, the descent has physically
+    // stopped -- i.e. we are on the ground -- so disarm promptly instead of
+    // waiting out the full blind FLOOR_TIMEOUT_MS. Safe against an airborne
+    // cut: a still-descending drone reads |v| ~ AUTOLAND_RATE_MS, far above
+    // the threshold, so this can only fire after real ground contact. Baro
+    // noise can only DELAY it (re-arming the dwell), never trip it early.
+    const SETTLE_VSPEED_MPS: f32 = 0.25;
+    const SETTLE_DWELL_MS: u64 = 500;
 
     // -- DJI-style Auto control --
     // Throttle stick position maps directly to a target altitude (natural for
@@ -1438,6 +1451,9 @@ async fn mission_fsm_task() -> ! {
     let mut hover_log_t = embassy_time::Instant::now();
     let mut ground_first_hit: Option<embassy_time::Instant> = None;
     let mut land_floor_since: Option<embassy_time::Instant> = None;
+    // Times how long AutoLand's vertical speed has stayed stalled at the floor,
+    // for the touchdown-confirmation disarm (primary fallback without lidar).
+    let mut land_settle_since: Option<embassy_time::Instant> = None;
     // Slewing attitude setpoint for Auto/Landing (self-levelling states). Seeded
     // to the measured attitude whenever `self_level_seed` is set on entry, then
     // slewed toward level + the lateral tilt command. Single owner of
@@ -1646,7 +1662,16 @@ async fn mission_fsm_task() -> ! {
                 // On-ground gate: armed must be false, lidar low, AHRS ready
                 // is implicit (we don't transition into GroundIdle until
                 // wait_for_ahrs_ready returned). Mode level is sampled here.
-                let on_ground = !armed && lidar < ON_GROUND_LIDAR_M;
+                //
+                // With the MTF-01 not streaming (unplugged/dead) lidar reads a
+                // permanent 99.0 (no frames published), which would pin
+                // on_ground=false forever and trap the FSM in GroundIdle --
+                // blocking both Manual and Auto. When the module is absent,
+                // fall back to "disarmed implies on the ground" (the operator
+                // launches from the ground), so arming can proceed. Detected at
+                // runtime, so a refitted module restores the gate on its own.
+                let on_ground = !armed
+                    && (!micoairh743v2::alt_hold::lidar_is_live() || lidar < ON_GROUND_LIDAR_M);
 
                 // SA-only scheme: mode is read from the live level, not edge
                 // events. Drain RC_EVENT so the bounded queue never backs up.
@@ -2075,13 +2100,28 @@ async fn mission_fsm_task() -> ! {
                     GROUND_HOLD_MS,
                 );
 
-                // Backup disarm: the setpoint has bottomed out (we descended
-                // all the way) and we have sat at the floor without a lidar
-                // ground-detect for FLOOR_TIMEOUT_MS. This cannot fire at
-                // altitude because auto_alt_sp is far above the floor there,
-                // so it never disarms mid-air -- it only catches a flaky lidar
-                // on the last few centimetres.
+                // Both fallbacks below require the setpoint to have bottomed
+                // out (we descended all the way), so neither can fire at
+                // altitude -- auto_alt_sp is far above the floor there.
                 let at_floor = auto_alt_sp <= LAND_FLOOR_M + 0.001;
+
+                // Touchdown confirmation (primary fallback without lidar): the
+                // descent has physically stalled at the floor, so we are down.
+                // Disarms promptly at real ground contact -- |v| ~ descent rate
+                // while still airborne keeps this from firing early.
+                let settled = if at_floor
+                    && micoairh743v2::alt_hold::vertical_speed().abs() < SETTLE_VSPEED_MPS
+                {
+                    let t = land_settle_since.get_or_insert_with(embassy_time::Instant::now);
+                    t.elapsed().as_millis() as u64 >= SETTLE_DWELL_MS
+                } else {
+                    land_settle_since = None;
+                    false
+                };
+
+                // Backup disarm: sat at the floor without a lidar ground-detect
+                // or a confirmed touchdown for FLOOR_TIMEOUT_MS. Worst-case net
+                // so the drone can never hang armed on the ground.
                 let floor_timeout = if at_floor {
                     let t = land_floor_since.get_or_insert_with(embassy_time::Instant::now);
                     t.elapsed().as_millis() as u64 >= FLOOR_TIMEOUT_MS
@@ -2090,8 +2130,14 @@ async fn mission_fsm_task() -> ! {
                     false
                 };
 
-                if ground || floor_timeout {
-                    let reason = if ground { "ground" } else { "floor-timeout" };
+                if ground || settled || floor_timeout {
+                    let reason = if ground {
+                        "ground"
+                    } else if settled {
+                        "settled"
+                    } else {
+                        "floor-timeout"
+                    };
                     let mut s: heapless::String<64> = heapless::String::new();
                     let _ = write!(s, "[fsm] AutoLand: {} h={:.2}m, disarming", reason, lidar);
                     ulog::log(s.as_str());
@@ -2100,6 +2146,7 @@ async fn mission_fsm_task() -> ! {
                     zero_setpoints();
                     ground_first_hit = None;
                     land_floor_since = None;
+                    land_settle_since = None;
                     state = State::GroundIdle;
                     drain_rc_events();
                     ulog::log("[fsm] state=GroundIdle");
@@ -2807,6 +2854,9 @@ async fn mtf01_reader_task(r: Mtf01Resources) -> ! {
                     let h = l.distance_mm as f32 / 1000.0;
                     snd_lidar.send(h);
                     last_height_m = h;
+                    // Stamp liveness so alt_hold / the FSM can auto-detect a
+                    // missing module (no frames -> baro-only + ground-gate bypass).
+                    micoairh743v2::alt_hold::note_lidar_frame();
                 }
             }
             Some(mtf01::Frame::Flow(f)) => {

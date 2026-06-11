@@ -112,6 +112,56 @@ const CEILING_EMERGENCY_THRUST: f32 = 4.0;
 /// (~0.1-0.3 m) but small enough to catch lidar-stuck-at-zero cases early.
 const LIDAR_DISAGREE_M: f32 = 0.5;
 
+/// Boot-tick (ms, truncated to u32) of the most recent valid MTF-01 lidar
+/// frame, stamped by `note_lidar_frame` from the reader task. The u32 ms
+/// counter wraps after ~49 days of uptime, which a flight never reaches;
+/// `wrapping_sub` in `lidar_is_live` keeps the delta correct across a wrap
+/// regardless. 0 = no frame seen yet. Read by `lidar_is_live` to auto-detect
+/// a missing/unplugged module.
+static LIDAR_LAST_FRAME_MS: AtomicU32 = AtomicU32::new(0);
+
+/// How long without a valid lidar frame before the MTF-01 is treated as
+/// absent. The module streams at ~50 Hz, so 1 s is ~50 missed frames --
+/// far beyond any quality-glitch dropout, but quick to react to an unplugged
+/// or dead module.
+const LIDAR_LIVE_TIMEOUT_MS: u32 = 1000;
+
+/// Stamp the arrival of a valid lidar frame. Called by the MTF-01 reader.
+pub fn note_lidar_frame() {
+    LIDAR_LAST_FRAME_MS.store(Instant::now().as_millis() as u32, Ordering::Relaxed);
+}
+
+/// True while the MTF-01 lidar is actively streaming (a valid frame arrived
+/// within LIDAR_LIVE_TIMEOUT_MS). False if the module is unplugged, dead, or
+/// has not booted yet -- in which case LIDAR_ALT_M never updates and every
+/// lidar-gated check would otherwise misfire (the FSM ground gate would block
+/// arming forever, and alt_hold would trap itself in the indoor lidar-only
+/// branch with no altitude source).
+///
+/// This auto-detects rather than relying on a hand-set flag: pull the module
+/// and the firmware degrades to baro-only altitude + lidar-gate bypass on its
+/// own; plug a working one back in and normal behavior resumes within ~1 s,
+/// no recompile. A half-dead sensor that keeps emitting valid frames is NOT
+/// covered -- unplug it rather than leaving it on the bus.
+pub fn lidar_is_live() -> bool {
+    let last = LIDAR_LAST_FRAME_MS.load(Ordering::Relaxed);
+    last != 0 && (Instant::now().as_millis() as u32).wrapping_sub(last) < LIDAR_LIVE_TIMEOUT_MS
+}
+
+/// Filtered vertical speed (m/s, +climb / -descend), f32 bits in a u32, the
+/// same trick as ACTIVE_CEILING_M_BITS. Published every control cycle so the
+/// FSM can detect touchdown (descent stalls to ~0) without a lidar -- the
+/// only ground-contact signal still available once the MTF-01 is gone, since
+/// low commanded thrust looks identical whether descending or already landed.
+static VERTICAL_SPEED_BITS: AtomicU32 = AtomicU32::new(0); // 0.0_f32.to_bits()
+
+/// Latest filtered vertical speed (m/s, + = climbing). Derived from whatever
+/// altitude source alt_hold is using (lidar or baro). 0.0 before alt_hold
+/// takes over thrust.
+pub fn vertical_speed() -> f32 {
+    f32::from_bits(VERTICAL_SPEED_BITS.load(Ordering::Relaxed))
+}
+
 /// Number of baro readings to average for the baseline pressure.
 const BASELINE_SAMPLES: usize = 20;
 
@@ -236,6 +286,12 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
 
     let mut snd_thrust = common::signals::TRUE_Z_THRUST_SP.sender();
 
+    // Edge-tracker for lidar liveness so the operator gets one log line when
+    // the MTF-01 drops off the bus (-> baro-only) and one when it comes back,
+    // instead of silence. Seeded live so a boot with the module absent emits
+    // the "lost" line on the first cycle.
+    let mut lidar_live_prev = true;
+
     // Wait for the mission sequencer to hand over altitude control by
     // signalling the first ALTITUDE_SETPOINT. Before that point, the mission
     // owns TRUE_Z_THRUST_SP directly (P0 thrust ramp), and if we ran our
@@ -289,7 +345,21 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
         // thrust -- no takeoff (D000490). So indoors we run lidar-only: no baro
         // ceiling breach and no baro measurement. The baro path stays for
         // outdoor flight, where lidar cannot reach the 100 m cap.
-        let indoor = ceiling() < 10.0;
+        //
+        // With the MTF-01 not streaming (unplugged/dead) there is no lidar to
+        // run the indoor-only branch on, so force the outdoor/baro path
+        // regardless of the active ceiling -- otherwise a low (indoor) ceiling
+        // would strand alt_hold with no altitude source at all.
+        let lidar_live = lidar_is_live();
+        if lidar_live != lidar_live_prev {
+            crate::log::log(if lidar_live {
+                "[alt] MTF-01 lidar streaming -- normal altitude source"
+            } else {
+                "[alt] MTF-01 lidar lost -- baro-only altitude, lidar gates bypassed"
+            });
+            lidar_live_prev = lidar_live;
+        }
+        let indoor = lidar_live && ceiling() < 10.0;
 
         // SAFETY: hard baro-based ceiling (OUTDOOR only -- see above). If the
         // drone is above the active ceiling regardless of what lidar says,
@@ -379,6 +449,7 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
         let err = setpoint_m - alt_filtered;
         let vel = (alt_filtered - prev_alt) / DT; // positive = climbing
         prev_alt = alt_filtered;
+        VERTICAL_SPEED_BITS.store(vel.to_bits(), Ordering::Relaxed);
         // Integral clamp tightened 3.0 -> 1.0 after D000020: the drone
         // integrated a full 6 s of err>0 during P1 climb, saturated the
         // +/-3.0 window, then overshot by 0.22 m AND couldn't unwind fast
