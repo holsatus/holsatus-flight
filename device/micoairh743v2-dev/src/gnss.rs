@@ -58,6 +58,13 @@ pub async fn gnss_reader_task(r: GpsResources) -> ! {
     let mut hdr  = [0u8; 4];
     let mut pbuf = [0u8; MAX_PAYLOAD + 2];
 
+    // GPS status logging: every LOG_PERIOD_MS, plus immediately on any fix-type
+    // change, so satellite acquisition is visible in the SD log (there was no
+    // such telemetry before -- a no-fix outdoor attempt looked silent).
+    const LOG_PERIOD_MS: u64 = 2_000;
+    let mut last_log = Instant::now();
+    let mut last_fix_u8 = u8::MAX; // != any real fix -> log the first frame
+
     loop {
         // Sync to UBX preamble.
         loop {
@@ -75,8 +82,38 @@ pub async fn gnss_reader_task(r: GpsResources) -> ! {
         if rx.read(&mut pbuf[..len + 2]).await.is_err() { continue; }
 
         if id == NAV_PVT_ID && len == NAV_PVT_LEN {
-            snd.send(parse_nav_pvt(&pbuf));
+            let data = parse_nav_pvt(&pbuf);
+            let (fix, sats, hacc) =
+                (data.fix, data.num_satellites, data.horizontal_accuracy);
+            snd.send(data);
+
+            let now = Instant::now();
+            let fix_u8 = fix as u8;
+            if fix_u8 != last_fix_u8
+                || now.duration_since(last_log).as_millis() as u64 >= LOG_PERIOD_MS
+            {
+                last_fix_u8 = fix_u8;
+                last_log = now;
+                let mut s: heapless::String<96> = heapless::String::new();
+                let _ = core::fmt::Write::write_fmt(
+                    &mut s,
+                    format_args!(
+                        "[gnss] fix={} sats={} hacc={:.1}m",
+                        fix_label(fix), sats, hacc,
+                    ),
+                );
+                ulog::log(s.as_str());
+            }
         }
+    }
+}
+
+fn fix_label(fix: GnssFix) -> &'static str {
+    match fix {
+        GnssFix::NoFix    => "NoFix",
+        GnssFix::TimeOnly => "TimeOnly",
+        GnssFix::Fix2D    => "2D",
+        GnssFix::Fix3D    => "3D",
     }
 }
 

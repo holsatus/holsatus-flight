@@ -1195,7 +1195,10 @@ async fn mission_fsm_task() -> ! {
             stick_norm, stick_throttle, Maneuver, Mode, PITCH_IDX, ROLL_IDX, THROTTLE_IDX, YAW_IDX,
         };
         const STICK_CENTER_TOL: f32 = 0.10;
-        const THROTTLE_BOTTOM_TOL: f32 = 0.02;
+        // 0.05 matches the auto-arm throttle gate (AUTOARM_THROTTLE_MAX) and
+        // tolerates a TX endpoint that rests slightly off zero: D000508 idled
+        // at 0.03, which the old 0.02 limit rejected so preflight never cleared.
+        const THROTTLE_BOTTOM_TOL: f32 = 0.05;
         let mut last_log = embassy_time::Instant::now() - embassy_time::Duration::from_secs(10);
         let mut warned = false;
         loop {
