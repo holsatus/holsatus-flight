@@ -1716,7 +1716,23 @@ async fn mission_fsm_task() -> ! {
                         let level = roll_q.to_degrees().abs() < AUTOARM_LEVEL_DEG
                             && pitch_q.to_degrees().abs() < AUTOARM_LEVEL_DEG;
                         let throttle_low = thr_n_for_gate < AUTOARM_THROTTLE_MAX;
-                        if auto_arm_latch && throttle_low && level && battery_allows_flight {
+                        // Lateral-reference gate: Auto holds position from optical
+                        // flow (needs a live MTF-01) or GPS. With neither, the
+                        // lateral stick is dead and the drone drifts downwind with
+                        // no pilot authority (observed 2026-06-11). Refuse to
+                        // auto-arm into Auto unless a usable lateral reference
+                        // exists -- a good GPS fix, or the flow module present (it
+                        // provides the low-altitude hold). Manual is unaffected.
+                        let gnss = common::signals::RAW_GNSS_DATA.try_get();
+                        let gps_ok = gnss.as_ref().map(gnss_lateral_ok).unwrap_or(false);
+                        let lateral_ref_ok =
+                            gps_ok || micoairh743v2::alt_hold::lidar_is_live();
+                        if auto_arm_latch
+                            && throttle_low
+                            && level
+                            && battery_allows_flight
+                            && lateral_ref_ok
+                        {
                             ulog::log("[fsm] Idle -> Auto (auto-arm)");
                             auto_arm_latch = false;
                             state = State::AutoHover;
@@ -1735,11 +1751,19 @@ async fn mission_fsm_task() -> ! {
                         {
                             // Share the heartbeat cadence so this never spams.
                             last_ground_idle_log = embassy_time::Instant::now();
-                            let mut s: heapless::String<96> = heapless::String::new();
+                            let (sats, hacc) = gnss
+                                .map(|g| (g.num_satellites, g.horizontal_accuracy))
+                                .unwrap_or((0, -1.0));
+                            let mut s: heapless::String<128> = heapless::String::new();
                             let _ = write!(
                                 s,
-                                "[fsm] Auto auto-arm BLOCKED: thr_low={} level={} batt_ok={}",
-                                throttle_low as u8, level as u8, battery_allows_flight as u8,
+                                "[fsm] Auto auto-arm BLOCKED: thr_low={} level={} batt_ok={} lat_ref={} (sats={} hacc={:.1}m)",
+                                throttle_low as u8,
+                                level as u8,
+                                battery_allows_flight as u8,
+                                lateral_ref_ok as u8,
+                                sats,
+                                hacc,
                             );
                             ulog::log(s.as_str());
                         }
@@ -2403,6 +2427,23 @@ async fn gyro_runaway_kill() -> ! {
     }
 }
 
+/// GPS quality thresholds for a usable horizontal hold. Shared by the lateral
+/// controller (which consumes the fix) and the Auto auto-arm gate (which
+/// refuses to arm without one), so "armable into Auto" always implies the
+/// lateral controller will actually accept the fix -- no arm-then-no-hold gap.
+const GNSS_MIN_SATS: u8 = 8;
+const GNSS_HACC_MAX_M: f32 = 5.0;
+
+/// True when the GNSS fix is good enough to drive the lateral velocity hold:
+/// a 3D fix, enough satellites, and a tight, positive horizontal accuracy.
+fn gnss_lateral_ok(g: &common::types::measurements::GnssData) -> bool {
+    use common::types::measurements::GnssFix;
+    matches!(g.fix, GnssFix::Fix3D)
+        && g.num_satellites >= GNSS_MIN_SATS
+        && g.horizontal_accuracy > 0.0
+        && g.horizontal_accuracy < GNSS_HACC_MAX_M
+}
+
 /// Unified lateral velocity controller for Auto/Landing (replaces the old
 /// `flow_hold` + `gps_pos_hold`). Tracks a body-frame velocity setpoint
 /// (`AUTO_VEL_SP_*`, written by the FSM from the right stick) and publishes a
@@ -2424,7 +2465,6 @@ async fn gyro_runaway_kill() -> ! {
 #[embassy_executor::task]
 async fn lateral_controller() -> ! {
     use common::types::actuators::MotorsState;
-    use common::types::measurements::GnssFix;
 
     // Velocity-tracking gain (rad per m/s). 0.10 is the validated flow_hold
     // value: 1.5 m/s of error -> 0.15 rad (~8.6 deg), just under the clamp.
@@ -2432,9 +2472,6 @@ async fn lateral_controller() -> ! {
     const MAX_TILT_RAD: f32 = 0.17; // ~9.7 deg
     const FLOW_MAX_M: f32 = 7.0; // use flow only while lidar is solidly in range
     const MAX_FLOW_VEL: f32 = 1.5; // reject flow spikes above this (m/s)
-    // GPS gates (only trusted high + with a good 3D fix).
-    const HACC_MAX_M: f32 = 5.0;
-    const MIN_SATS: u8 = 8;
 
     let mut log_div: u8 = 0;
 
@@ -2481,11 +2518,7 @@ async fn lateral_controller() -> ! {
         if src == 'n' {
             // Try GPS (rotate NED velocity into body via AHRS yaw).
             if let Some(g) = common::signals::RAW_GNSS_DATA.try_get() {
-                let gps_ok = matches!(g.fix, GnssFix::Fix3D)
-                    && g.num_satellites >= MIN_SATS
-                    && g.horizontal_accuracy > 0.0
-                    && g.horizontal_accuracy < HACC_MAX_M;
-                if gps_ok {
+                if gnss_lateral_ok(&g) {
                     let yaw = signals::AHRS_ATTITUDE_Q
                         .try_get()
                         .map(|q| q.euler_angles().2)
