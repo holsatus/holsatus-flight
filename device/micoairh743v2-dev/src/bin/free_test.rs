@@ -585,6 +585,8 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     //     logger sees zero MAVLink and the bench debug console is dark.
     //     Tracked to D000350/D000360/D000365 silent USART2 incident.
     thread_spawner.spawn(micoairh743v2::rc_kill::rc_kill_task(r.rc).unwrap());
+    // Find-my-drone: beep the ESCs if RC is gone >30 s (crash / TX off / out of range).
+    thread_spawner.spawn(micoairh743v2::resources::rc_loss_beacon_task().unwrap());
     thread_spawner.spawn(micoairh743v2::ceiling_mode::ceiling_mode_task().unwrap());
     thread_spawner.spawn(micoairh743v2::gnss::gnss_reader_task(r.gps).unwrap());
     thread_spawner.spawn(micoairh743v2::odid::odid_tx_task(r.odid).unwrap());

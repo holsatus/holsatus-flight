@@ -135,6 +135,14 @@ where
     }
 }
 
+/// Find-my-drone request: set by `rc_loss_beacon_task` when RC has been gone
+/// for >30 s. While set, the motor-output loops pulse the DShot beacon (a tone,
+/// no motor spin). Honoured in BOTH `pre_arm_loop` (so a crash-rebooted,
+/// never-armed drone still beeps) and `dshot_keepalive_sender` (lost after
+/// flying). The keepalive side additionally gates on motors-idle.
+pub static RC_BEACON_ACTIVE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// Loop DShot keep-alive batches until the arm predicate returns `true`.
 ///
 /// Each iteration sends ~3000 DShot-0 frames (~390 ms at ~7.7 kHz) and then
@@ -144,6 +152,10 @@ where
 /// BLHeli/BlueJay require a gap-free DShot-0 stream to recognise the FC.
 /// This loop replaces the old single-shot approach (narrow ~400 ms boot window)
 /// with a continuous stream that works at any LiPo connection time.
+///
+/// While RC_BEACON_ACTIVE (RC gone >30 s, always disarmed here), it pulses the
+/// DShot beacon -- a ~10 ms burst every ~1.5 s -- so a crash-rebooted, never-
+/// armed drone is still findable by ear. The beacon never spins the motor.
 pub async fn pre_arm_loop<T, WAV>(
     driver: &mut DshotDriver<'_, T, WAV>,
     mut is_armed: impl FnMut() -> bool,
@@ -151,9 +163,21 @@ pub async fn pre_arm_loop<T, WAV>(
     T: GeneralInstance4Channel,
     WAV: WaveformGenerator<Timer = T>,
 {
+    // Cadence in frames at this loop's ~50 us/frame rate: ~10 ms burst (200
+    // frames) every ~1.5 s (30000 frames).
+    const BEACON_PERIOD: u32 = 30_000;
+    const BEACON_BURST: u32 = 200;
+    let mut frame: u32 = 0;
     loop {
         for _ in 0u32..3_000 {
-            driver.set_motor_speeds_min().await;
+            if RC_BEACON_ACTIVE.load(core::sync::atomic::Ordering::Relaxed)
+                && frame % BEACON_PERIOD < BEACON_BURST
+            {
+                driver.make_beep().await;
+            } else {
+                driver.set_motor_speeds_min().await;
+            }
+            frame = frame.wrapping_add(1);
             embassy_time::Timer::after_micros(50).await;
         }
         if is_armed() {

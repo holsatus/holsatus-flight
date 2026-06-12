@@ -394,8 +394,6 @@ where
     use core::fmt::Write;
     let mut frame_count: u32 = 0;
     let mut dir_burst_count: u32 = 0;
-    // Find-my-drone beeper: SD up while disarmed beeps the ESCs.
-    let mut rc_rcv = crate::rc_kill::RC_CHANNELS.receiver().unwrap();
     let mut beeping_prev = false;
 
     loop {
@@ -427,22 +425,22 @@ where
         let speeds = DSHOT_SPEEDS.each_ref().map(|a| a.load(AtOrd::Relaxed));
         let disarmed = speeds == [0, 0, 0, 0];
 
-        // Find-my-drone: while DISARMED and SD is up, beep the ESCs on a
-        // ~1.5 s cycle -- a short DShot-beacon burst the ESC registers, then
-        // idle frames so the ~1 s tone plays and the stream stays gap-free.
-        // The beacon never spins the motor, so it is safe at any orientation;
-        // SD-high also blocks arming, so this can never run with motors live.
-        // (Only active once the keepalive sender is running, i.e. after the
-        // first arm of the session -- covers a drone lost after flying.)
+        // Find-my-drone: while DISARMED and RC has been gone >30 s
+        // (RC_BEACON_ACTIVE, set by rc_loss_beacon_task), pulse the DShot
+        // beacon on a ~1.5 s cycle -- a short beacon burst the ESC registers,
+        // then idle frames so the ~1 s tone plays and the stream stays
+        // gap-free. The beacon never spins the motor. The disarmed (speeds==0)
+        // gate means an in-flight RC-loss failsafe never beeps mid-air; it only
+        // starts once the drone has landed and disarmed.
         const BEEP_PERIOD: u32 = 1500; // frames (~1.5 s at 1 kHz)
         const BEEP_BURST: u32 = 10; // consecutive beacon frames to register
-        let sd_high = rc_rcv.try_get().map(|c| c.raw[8] > 1400).unwrap_or(false);
-        let beeping = disarmed && sd_high;
+        let beeping =
+            disarmed && crate::dshot_driver::RC_BEACON_ACTIVE.load(AtOrd::Relaxed);
         if beeping != beeping_prev {
             crate::log::log(if beeping {
-                "[dshot] beep ON (SD up, disarmed) -- find-my-drone"
+                "[dshot] beacon pulsing (RC lost, disarmed)"
             } else {
-                "[dshot] beep OFF"
+                "[dshot] beacon off"
             });
             beeping_prev = beeping;
         }
@@ -472,6 +470,34 @@ where
         }
 
         embassy_time::Timer::after_micros(1000).await;
+    }
+}
+
+/// Find-my-drone monitor: watches the RC link and drives RC_BEACON_ACTIVE.
+/// `RC_CHANNELS` is published on every CRSF frame (~50 Hz), so a 30 s gap with
+/// no new frame means the link is gone (crash, out of range, or TX off) ->
+/// request the beacon; the first frame back clears it. Runs from boot, so it
+/// works even on a crash-reboot before any arm. The motor-output loops turn the
+/// request into an actual pulsing tone (and gate it to disarmed).
+#[embassy_executor::task]
+pub async fn rc_loss_beacon_task() -> ! {
+    const RC_LOSS_BEACON_S: u64 = 30;
+    let mut rcv = crate::rc_kill::RC_CHANNELS.receiver().unwrap();
+    loop {
+        let lost = embassy_time::with_timeout(
+            embassy_time::Duration::from_secs(RC_LOSS_BEACON_S),
+            rcv.changed(),
+        )
+        .await
+        .is_err();
+        let was = crate::dshot_driver::RC_BEACON_ACTIVE.swap(lost, AtOrd::Relaxed);
+        if lost != was {
+            crate::log::log(if lost {
+                "[beacon] RC lost >30s -- beacon ON (find-my-drone)"
+            } else {
+                "[beacon] RC restored -- beacon OFF"
+            });
+        }
     }
 }
 
