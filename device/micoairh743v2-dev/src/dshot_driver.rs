@@ -163,10 +163,12 @@ pub async fn pre_arm_loop<T, WAV>(
     T: GeneralInstance4Channel,
     WAV: WaveformGenerator<Timer = T>,
 {
-    // Cadence in frames at this loop's ~50 us/frame rate: ~10 ms burst (200
-    // frames) every ~1.5 s (30000 frames).
-    const BEACON_PERIOD: u32 = 30_000;
-    const BEACON_BURST: u32 = 200;
+    // Cadence in frames. Measured ~400 us/frame here (the DMA waveform
+    // dominates, not the 50 us timer): 30000 frames was ~12 s, so 7500 ~= 3 s.
+    // Burst 500 frames (~200 ms) sends the beacon long enough to reliably
+    // trigger the tone every cycle.
+    const BEACON_PERIOD: u32 = 7_500;
+    const BEACON_BURST: u32 = 500;
     let mut frame: u32 = 0;
     loop {
         for _ in 0u32..3_000 {

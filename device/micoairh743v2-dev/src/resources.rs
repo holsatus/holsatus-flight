@@ -432,8 +432,8 @@ where
         // gap-free. The beacon never spins the motor. The disarmed (speeds==0)
         // gate means an in-flight RC-loss failsafe never beeps mid-air; it only
         // starts once the drone has landed and disarmed.
-        const BEEP_PERIOD: u32 = 1500; // frames (~1.5 s at 1 kHz)
-        const BEEP_BURST: u32 = 10; // consecutive beacon frames to register
+        const BEEP_PERIOD: u32 = 2100; // frames (~3 s at ~1.4 ms/frame)
+        const BEEP_BURST: u32 = 40; // consecutive beacon frames to register
         let beeping =
             disarmed && crate::dshot_driver::RC_BEACON_ACTIVE.load(AtOrd::Relaxed);
         if beeping != beeping_prev {
