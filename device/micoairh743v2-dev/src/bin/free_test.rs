@@ -436,10 +436,11 @@ static FLOW_QUALITY: AtomicU8 = AtomicU8::new(0);
 // writer of the *_SP / yaw / active signals; `lateral_controller` is the only
 // writer of LAT_TILT_*; the FSM is the only reader of LAT_TILT_*.
 
-/// Auto lateral velocity setpoint, body frame (m/s): forward (+x) and right
-/// (+y). Written by the FSM from the right stick; tracked by `lateral_controller`.
-static AUTO_VEL_SP_FWD: AtomicU32 = AtomicU32::new(0);
-static AUTO_VEL_SP_RIGHT: AtomicU32 = AtomicU32::new(0);
+/// Auto lateral stick deflection, normalised [-1, 1]: forward (+x, pitch stick)
+/// and right (+y, roll stick). Written by the FSM; `lateral_controller` maps it
+/// to a direct tilt and fades the GPS auto-brake out as the stick deflects.
+static AUTO_LAT_STICK_FWD: AtomicU32 = AtomicU32::new(0);
+static AUTO_LAT_STICK_RIGHT: AtomicU32 = AtomicU32::new(0);
 
 /// Lateral tilt command (rad), body frame: roll (+ = right-down) and pitch
 /// (+ = nose-up), produced by `lateral_controller` to achieve the commanded
@@ -1323,7 +1324,6 @@ async fn mission_fsm_task() -> ! {
     // attitude on entry so a Manual->Auto/Landing handoff cannot trip the kill.
     const MISSION_CEILING_M: f32 = 100.0; // absolute setpoint clamp (SC ceiling is tighter)
     const ALT_FLOOR_M: f32 = 0.0; // throttle-bottom target = ground (alt_hold idles there)
-    const AUTO_MAX_VEL: f32 = 1.5; // right-stick full deflection -> m/s
     const AUTO_MAX_YAW_RATE: f32 = 2.0; // yaw-stick full deflection -> rad/s
     const ATT_SLEW_RATE: f32 = 2.0; // attitude-setpoint slew (rad/s); < 5 rad/s kill
     const AUTO_DT: f32 = 0.02; // Auto/Landing tick period (s), 50 Hz
@@ -1532,8 +1532,8 @@ async fn mission_fsm_task() -> ! {
         );
         if !matches!(state, State::AutoHover) {
             store_f32(&AUTO_YAW_RATE, 0.0);
-            store_f32(&AUTO_VEL_SP_FWD, 0.0);
-            store_f32(&AUTO_VEL_SP_RIGHT, 0.0);
+            store_f32(&AUTO_LAT_STICK_FWD, 0.0);
+            store_f32(&AUTO_LAT_STICK_RIGHT, 0.0);
         }
 
         // Sample throttle here once per tick; ground-grace + Manual reuse.
@@ -2059,11 +2059,12 @@ async fn mission_fsm_task() -> ! {
                     .clamp(ALT_FLOOR_M, MISSION_CEILING_M);
                 ALTITUDE_SETPOINT.signal(auto_alt_sp);
 
-                // Yaw rate (bridge injects it) + body velocity setpoint (lateral
-                // controller tracks it).
+                // Yaw rate (bridge injects it) + lateral stick deflection (the
+                // lateral controller maps it to a direct tilt, GPS auto-braking
+                // when centred).
                 store_f32(&AUTO_YAW_RATE, yaw_n * AUTO_MAX_YAW_RATE);
-                store_f32(&AUTO_VEL_SP_FWD, pitch_n * AUTO_MAX_VEL);
-                store_f32(&AUTO_VEL_SP_RIGHT, roll_n * AUTO_MAX_VEL);
+                store_f32(&AUTO_LAT_STICK_FWD, pitch_n);
+                store_f32(&AUTO_LAT_STICK_RIGHT, roll_n);
 
                 // Compose + slew the attitude setpoint toward (level + the
                 // lateral controller's tilt). Bounded slew keeps the commanded
@@ -2440,32 +2441,44 @@ fn gnss_lateral_ok(g: &common::types::measurements::GnssData) -> bool {
         && g.horizontal_accuracy < GNSS_HACC_MAX_M
 }
 
-/// Unified lateral velocity controller for Auto/Landing (replaces the old
-/// `flow_hold` + `gps_pos_hold`). Tracks a body-frame velocity setpoint
-/// (`AUTO_VEL_SP_*`, written by the FSM from the right stick) and publishes a
-/// tilt command (`LAT_TILT_*`) that the FSM folds into TRUE_ATTITUDE_Q_SP. It
-/// never writes the attitude setpoint itself, so there is a single attitude
-/// writer (the FSM) at all times.
+/// Lateral controller for Auto/Landing: direct angle stick + GPS auto-brake.
+/// Reads the lateral stick deflection (`AUTO_LAT_STICK_*`, written by the FSM)
+/// and publishes a tilt command (`LAT_TILT_*`) that the FSM folds into
+/// TRUE_ATTITUDE_Q_SP. It never writes the attitude setpoint itself, so there
+/// is a single attitude writer (the FSM) at all times.
+///
+/// Two superimposed terms:
+///   - Direct angle: stick deflection maps straight to a tilt up to MAX_TILT_RAD
+///     (full pilot authority to fly / fight wind, like the now-direct throttle).
+///   - GPS auto-brake: velocity damping toward zero, faded out as the stick
+///     deflects (weight 1-|stick|), so full stick = pure direct authority and
+///     centred sticks = full brake (drift hold). With the stick centred this is
+///     EXACTLY the validated flow_hold damping law (pitch = +KP_V*vmeas_fwd,
+///     roll = -KP_V*vmeas_right), so the proven sign convention is preserved.
 ///
 /// Velocity feedback source, selected by altitude:
 ///   - low (lidar in range, < FLOW_MAX_M): MTF-01 optical flow body velocity
 ///   - high (above flow range): GPS NED velocity rotated to body via AHRS yaw
-///   - neither available: publish zero tilt (pure self-level, no hold)
+///   - neither available: direct-only (no brake), like manual angle mode
 ///
-/// Control law mirrors the validated `flow_hold` sign convention:
-///   pitch = +KP_V * (vsp_fwd - vmeas_fwd),  roll = -KP_V * (vsp_right - vmeas_right)
-/// With the stick centred (vsp = 0) this is velocity-damping-to-zero, i.e. the
-/// same drift-damped "hold" the old flow_hold provided. True position-lock when
-/// centred (KP_POS > 0) is the D000145 gyro-runaway risk and is left at 0 here
-/// pending flight validation -- it is the single knob to enable later.
+/// D000518 showed the old velocity-tracking controller saturated at 9.7 deg and
+/// could not fight wind; this gives the pilot real authority (MAX_TILT_RAD) and
+/// stronger braking. NOTE: lateral stick polarity is still bench-unverified --
+/// confirm via the [lat] log before flight. True position-lock (return to a
+/// held point) is the D000145 gyro-runaway risk and is intentionally not here.
 #[embassy_executor::task]
 async fn lateral_controller() -> ! {
     use common::types::actuators::MotorsState;
 
-    // Velocity-tracking gain (rad per m/s). 0.10 is the validated flow_hold
-    // value: 1.5 m/s of error -> 0.15 rad (~8.6 deg), just under the clamp.
+    // Auto-brake velocity-damping gain (rad per m/s); 0.10 is the validated
+    // flow_hold value. Clamped to MAX_TILT_RAD, so braking now reaches the full
+    // bank instead of the old 9.7 deg cap that could not arrest an outdoor
+    // drift (D000518).
     const KP_V: f32 = 0.10;
-    const MAX_TILT_RAD: f32 = 0.17; // ~9.7 deg
+    // Max bank the pilot can command (and the brake can use). ~25 deg gives
+    // g*tan(25) ~ 4.6 m/s^2 of horizontal authority -- enough to fight wind.
+    // Bench/flight-tunable; raise for more authority, lower if it feels twitchy.
+    const MAX_TILT_RAD: f32 = 0.44; // ~25 deg
     const FLOW_MAX_M: f32 = 7.0; // use flow only while lidar is solidly in range
     const MAX_FLOW_VEL: f32 = 1.5; // reject flow spikes above this (m/s)
 
@@ -2485,8 +2498,8 @@ async fn lateral_controller() -> ! {
             continue;
         }
 
-        let vsp_fwd = load_f32(&AUTO_VEL_SP_FWD);
-        let vsp_right = load_f32(&AUTO_VEL_SP_RIGHT);
+        let stick_fwd = load_f32(&AUTO_LAT_STICK_FWD);
+        let stick_right = load_f32(&AUTO_LAT_STICK_RIGHT);
 
         // Pick a velocity feedback source by altitude. Flow is only trusted
         // between 0.25 m and FLOW_MAX_M: below 0.25 m the MTF-01 reader stops
@@ -2527,20 +2540,30 @@ async fn lateral_controller() -> ! {
             }
         }
 
-        // No velocity reference -> command zero tilt (self-level only). Never
-        // hold a stale velocity estimate.
-        if src == 'n' {
-            store_f32(&LAT_TILT_ROLL, 0.0);
-            store_f32(&LAT_TILT_PITCH, 0.0);
-            continue;
-        }
+        // Direct angle from the stick: full pilot authority, no velocity
+        // reference needed. Signs match the old velocity-command convention
+        // (forward stick -> negative pitch -> forward; right stick -> positive
+        // roll -> right), so polarity is unchanged from before (still
+        // bench-unverified -- see the doc comment).
+        let pitch_direct = -stick_fwd * MAX_TILT_RAD;
+        let roll_direct = stick_right * MAX_TILT_RAD;
 
-        // Negative feedback toward the velocity setpoint. With vsp = 0 this is
-        // exactly flow_hold's validated damping law (pitch = +KP*vmeas_fwd,
-        // roll = -KP*vmeas_right), so the stable sign convention is preserved;
-        // a nonzero setpoint just shifts the target the loop drives toward.
-        let pitch_cmd = (KP_V * (vmeas_fwd - vsp_fwd)).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
-        let roll_cmd = (-(KP_V * (vmeas_right - vsp_right))).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
+        // GPS/flow auto-brake: the validated flow_hold damping law (pitch =
+        // +KP*vmeas_fwd, roll = -KP*vmeas_right), faded out as the stick
+        // deflects so full stick = pure direct authority and centred = full
+        // brake. Skipped when there is no velocity reference (src='n') -> the
+        // mode degrades to direct-only, like manual angle mode.
+        let (pitch_brake, roll_brake) = if src != 'n' {
+            (KP_V * vmeas_fwd, -KP_V * vmeas_right)
+        } else {
+            (0.0, 0.0)
+        };
+        let w_fwd = 1.0 - stick_fwd.abs().min(1.0);
+        let w_right = 1.0 - stick_right.abs().min(1.0);
+        let pitch_cmd =
+            (pitch_direct + w_fwd * pitch_brake).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
+        let roll_cmd =
+            (roll_direct + w_right * roll_brake).clamp(-MAX_TILT_RAD, MAX_TILT_RAD);
         store_f32(&LAT_TILT_ROLL, roll_cmd);
         store_f32(&LAT_TILT_PITCH, pitch_cmd);
 
@@ -2550,8 +2573,8 @@ async fn lateral_controller() -> ! {
             let mut s: heapless::String<112> = heapless::String::new();
             let _ = write!(
                 s,
-                "[lat] src={} vsp=({:+.2},{:+.2}) vm=({:+.2},{:+.2}) p={:+.2} r={:+.2}",
-                src, vsp_fwd, vsp_right, vmeas_fwd, vmeas_right, pitch_cmd, roll_cmd
+                "[lat] src={} stk=({:+.2},{:+.2}) vm=({:+.2},{:+.2}) p={:+.2} r={:+.2}",
+                src, stick_fwd, stick_right, vmeas_fwd, vmeas_right, pitch_cmd, roll_cmd
             );
             ulog::log(s.as_str());
         }
