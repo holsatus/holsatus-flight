@@ -125,7 +125,14 @@ where
         self.transmit([0u16; 4]).await
     }
 
-    async fn make_beep(&mut self) {}
+    async fn make_beep(&mut self) {
+        // DShot beacon: the ESC plays a tone WITHOUT spinning the motor, so
+        // this is safe at any orientation and needs no arming. Beep5 is the
+        // longest/loudest tone (~1020 ms). The caller must pace bursts at least
+        // that far apart (see dshot_keepalive_sender).
+        let frame = dshot_encoder::command(dshot_encoder::DshotCmdT::DigitalCmdBeep5);
+        self.transmit([frame; 4]).await
+    }
 }
 
 /// Loop DShot keep-alive batches until the arm predicate returns `true`.

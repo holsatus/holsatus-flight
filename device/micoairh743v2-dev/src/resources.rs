@@ -394,6 +394,9 @@ where
     use core::fmt::Write;
     let mut frame_count: u32 = 0;
     let mut dir_burst_count: u32 = 0;
+    // Find-my-drone beeper: SD up while disarmed beeps the ESCs.
+    let mut rc_rcv = crate::rc_kill::RC_CHANNELS.receiver().unwrap();
+    let mut beeping_prev = false;
 
     loop {
         // Process pending direction command (rare). BLHeli ESCs require
@@ -422,7 +425,35 @@ where
         // throttle_clamp(0) would send DShot 48 (min throttle = motors spin),
         // which causes ESCs to reject direction commands.
         let speeds = DSHOT_SPEEDS.each_ref().map(|a| a.load(AtOrd::Relaxed));
-        if speeds == [0, 0, 0, 0] {
+        let disarmed = speeds == [0, 0, 0, 0];
+
+        // Find-my-drone: while DISARMED and SD is up, beep the ESCs on a
+        // ~1.5 s cycle -- a short DShot-beacon burst the ESC registers, then
+        // idle frames so the ~1 s tone plays and the stream stays gap-free.
+        // The beacon never spins the motor, so it is safe at any orientation;
+        // SD-high also blocks arming, so this can never run with motors live.
+        // (Only active once the keepalive sender is running, i.e. after the
+        // first arm of the session -- covers a drone lost after flying.)
+        const BEEP_PERIOD: u32 = 1500; // frames (~1.5 s at 1 kHz)
+        const BEEP_BURST: u32 = 10; // consecutive beacon frames to register
+        let sd_high = rc_rcv.try_get().map(|c| c.raw[8] > 1400).unwrap_or(false);
+        let beeping = disarmed && sd_high;
+        if beeping != beeping_prev {
+            crate::log::log(if beeping {
+                "[dshot] beep ON (SD up, disarmed) -- find-my-drone"
+            } else {
+                "[dshot] beep OFF"
+            });
+            beeping_prev = beeping;
+        }
+
+        if beeping {
+            if frame_count % BEEP_PERIOD < BEEP_BURST {
+                driver.make_beep().await;
+            } else {
+                driver.set_motor_speeds_min().await;
+            }
+        } else if disarmed {
             driver.set_motor_speeds_min().await;
         } else {
             driver.set_motor_speeds(speeds).await;
