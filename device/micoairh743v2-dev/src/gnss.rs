@@ -85,6 +85,8 @@ pub async fn gnss_reader_task(r: GpsResources) -> ! {
             let data = parse_nav_pvt(&pbuf);
             let (fix, sats, hacc) =
                 (data.fix, data.num_satellites, data.horizontal_accuracy);
+            let (lat_raw, lon_raw, alt) =
+                (data.latitude_raw, data.longitude_raw, data.height_above_msl);
             snd.send(data);
 
             let now = Instant::now();
@@ -94,12 +96,21 @@ pub async fn gnss_reader_task(r: GpsResources) -> ! {
             {
                 last_fix_u8 = fix_u8;
                 last_log = now;
-                let mut s: heapless::String<96> = heapless::String::new();
+                // lat/lon are i32 in 1e-7 deg; cast to f64 before scaling so the
+                // 7 fractional digits survive (f32 only holds ~7 sig figs total).
+                // `pos=lat,lon` is the exact Google Maps paste format -- copy the
+                // value after `pos=` straight into the search box.
+                let mut s: heapless::String<128> = heapless::String::new();
                 let _ = core::fmt::Write::write_fmt(
                     &mut s,
                     format_args!(
-                        "[gnss] fix={} sats={} hacc={:.1}m",
-                        fix_label(fix), sats, hacc,
+                        "[gnss] fix={} sats={} hacc={:.1}m pos={:.7},{:.7} alt={:.1}m",
+                        fix_label(fix),
+                        sats,
+                        hacc,
+                        lat_raw as f64 * 1e-7,
+                        lon_raw as f64 * 1e-7,
+                        alt,
                     ),
                 );
                 ulog::log(s.as_str());
