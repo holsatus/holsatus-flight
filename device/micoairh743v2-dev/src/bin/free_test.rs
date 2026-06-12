@@ -2551,13 +2551,16 @@ async fn lateral_controller() -> ! {
         let pitch_direct = stick_fwd * MAX_TILT_RAD;
         let roll_direct = stick_right * MAX_TILT_RAD;
 
-        // GPS/flow auto-brake: the validated flow_hold damping law (pitch =
-        // +KP*vmeas_fwd, roll = -KP*vmeas_right), faded out as the stick
-        // deflects so full stick = pure direct authority and centred = full
-        // brake. Skipped when there is no velocity reference (src='n') -> the
-        // mode degrades to direct-only, like manual angle mode.
+        // GPS/flow auto-brake: velocity damping toward zero, faded out as the
+        // stick deflects so full stick = pure direct authority and centred =
+        // full brake. Both signs are -KP*vmeas (symmetric with the +stick*MAX
+        // direct terms): D000547 proved the old pitch brake (+KP*vmeas_fwd) was
+        // positive feedback -- centred sticks accelerated the forward drift --
+        // because the pitch axis is inverted vs roll (the pitch_n negation
+        // upstream). Roll was always correct. Skipped with no velocity
+        // reference (src='n') -> direct-only, like manual angle mode.
         let (pitch_brake, roll_brake) = if src != 'n' {
-            (KP_V * vmeas_fwd, -KP_V * vmeas_right)
+            (-KP_V * vmeas_fwd, -KP_V * vmeas_right)
         } else {
             (0.0, 0.0)
         };
