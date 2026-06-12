@@ -2541,11 +2541,14 @@ async fn lateral_controller() -> ! {
         }
 
         // Direct angle from the stick: full pilot authority, no velocity
-        // reference needed. Signs match the old velocity-command convention
-        // (forward stick -> negative pitch -> forward; right stick -> positive
-        // roll -> right), so polarity is unchanged from before (still
-        // bench-unverified -- see the doc comment).
-        let pitch_direct = -stick_fwd * MAX_TILT_RAD;
+        // reference needed. Pitch sign was FIELD-CORRECTED after the first
+        // flight of the direct-angle controller flew pitch inverted (forward
+        // stick drove the drone backward); roll flew correct and is unchanged.
+        // The auto-brake sign below is independently correct (it opposed the
+        // drift in D000518), so flipping only the direct term keeps the two
+        // consistent: a forward command and a forward-drift brake now tilt
+        // opposite ways (accelerate vs decelerate).
+        let pitch_direct = stick_fwd * MAX_TILT_RAD;
         let roll_direct = stick_right * MAX_TILT_RAD;
 
         // GPS/flow auto-brake: the validated flow_hold damping law (pitch =
