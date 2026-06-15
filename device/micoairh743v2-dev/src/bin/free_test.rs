@@ -2270,6 +2270,37 @@ async fn imu_monitor() -> ! {
                 t, d.acc[0], d.acc[1], d.acc[2], d.gyr[0], d.gyr[1], d.gyr[2], m0, m1, m2, m3
             );
             ulog::log(s.as_str());
+
+            // O: auto-mode outer loop. Altitude + climb rate, commanded vs
+            // optical-flow-measured horizontal velocity, and the commanded
+            // attitude from the velocity controller (measured attitude is in
+            // the B line). Lets us localise auto jerkiness to the altitude,
+            // velocity, or angle setpoint. All reads are non-consuming
+            // try_get()/accessors -- no receiver slots taken.
+            let vsp = signals::TRUE_VELOCITY_SP.try_get().unwrap_or([0.0; 3]);
+            let vmeas = micoairh743v2::alt_hold::FLOW_VEL_MS.try_get().unwrap_or([0.0; 2]);
+            let (asp_roll, asp_pitch) = match signals::VEL_TO_ANGLE_SP.try_get() {
+                Some(q) => {
+                    let (r, p, _y) = q.euler_angles();
+                    (r.to_degrees(), p.to_degrees())
+                }
+                None => (0.0, 0.0),
+            };
+            let mut s: heapless::String<96> = heapless::String::new();
+            let _ = write!(
+                s,
+                "O,{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.1},{:.1}",
+                t,
+                micoairh743v2::alt_hold::filtered_altitude(),
+                micoairh743v2::alt_hold::vertical_speed(),
+                vsp[0],
+                vsp[1],
+                vmeas[0],
+                vmeas[1],
+                asp_roll,
+                asp_pitch
+            );
+            ulog::log(s.as_str());
         } else {
             let pid = pid_rcv.try_get();
             let rsp = ref_rcv.try_get();
@@ -2300,6 +2331,29 @@ async fn imu_monitor() -> ! {
                     pid[1].p_out,
                     pid[1].i_out,
                     thr
+                );
+                ulog::log(s.as_str());
+
+                // K: completes the inner rate-loop picture the B line omits --
+                // yaw rate setpoint + yaw P/I/D, plus roll/pitch D-terms (D =
+                // derivative-on-measurement + on-error). With A (measured
+                // rates, motors) and B (attitude, roll/pitch P/I, thrust) this
+                // gives full per-axis rate-PID observability for smoothness
+                // tuning. Yaw [2] is the axis under active tuning.
+                let yd_term = pid[2].dr_out + pid[2].dm_out;
+                let rd_term = pid[0].dr_out + pid[0].dm_out;
+                let pd_term = pid[1].dr_out + pid[1].dm_out;
+                let mut s: heapless::String<96> = heapless::String::new();
+                let _ = write!(
+                    s,
+                    "K,{},{:.2},{:.3},{:.3},{:.3},{:.3},{:.3}",
+                    t,
+                    r[2],
+                    pid[2].p_out,
+                    pid[2].i_out,
+                    yd_term,
+                    rd_term,
+                    pd_term
                 );
                 ulog::log(s.as_str());
             }
