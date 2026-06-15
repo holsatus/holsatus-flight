@@ -103,7 +103,10 @@ icm20948-async = { version = "0.6.0", features = [
     "serde",
 ] }
 
-ahrs = { git = "https://github.com/jmagnuson/ahrs-rs", rev = "4a4fb76", default-features = false }
+# field_access exposes beta_mut()/quat accessors (used by att_estimator to
+# switch Madgwick mag trust at runtime). It is a pure-accessor feature, no
+# extra deps and no std.
+ahrs = { git = "https://github.com/jmagnuson/ahrs-rs", rev = "4a4fb76", default-features = false, features = ["field_access"] }
 mag-calibrator-rs = { git = "https://github.com/peterkrull/mag-calibrator-rs" }
 
 maitake-sync = { git = "https://github.com/hawkw/mycelium", rev = "fba1499", default-features = false, features = [

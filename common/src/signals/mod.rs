@@ -125,6 +125,11 @@ pub static BLACKBOX_QUEUE: Channel<LoggableType, 10> = Channel::new();
 
 pub static OUTPUT_OVERRIDE: AtomicBool = AtomicBool::new(false);
 pub static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+/// When true, the attitude estimator leans harder on the magnetometer
+/// (higher Madgwick beta) for an absolute yaw reference. Set by the device
+/// SC-switch handler when the pilot declares outdoor (SC Mid/High), cleared
+/// indoors. Boots false so indoor/bench behaviour is unchanged.
+pub static MAG_TRUST_OUTDOOR: AtomicBool = AtomicBool::new(false);
 pub static CONTROL_FREQUENCY: AtomicU16 = AtomicU16::new(0);
 pub static ACTIVE_IMU: AtomicUsize = AtomicUsize::new(0);
 

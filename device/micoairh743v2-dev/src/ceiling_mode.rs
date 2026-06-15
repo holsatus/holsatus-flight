@@ -17,7 +17,11 @@
 //! SC is RC channel 8 (0-indexed 7) per the EdgeTX mix documented in
 //! `rc_kill.rs`. The decode threshold reuses `rc_kill::decode`.
 
+use core::sync::atomic::Ordering;
+
 use embassy_time::Timer;
+
+use common::signals::MAG_TRUST_OUTDOOR;
 
 use crate::alt_hold;
 use crate::log as ulog;
@@ -43,6 +47,10 @@ pub async fn ceiling_mode_task() -> ! {
             Pos::Mid | Pos::High => OUTDOOR_CEILING_M,
         };
         alt_hold::set_ceiling(target);
+        // Lean on the magnetometer for yaw only when the pilot has declared
+        // outdoor; indoors the building's hard/soft-iron distortion makes the
+        // mag heading unreliable. Same SC gate as the altitude ceiling.
+        MAG_TRUST_OUTDOOR.store(!matches!(pos, Pos::Low), Ordering::Relaxed);
         last = Some(pos);
 
         let label = match pos {

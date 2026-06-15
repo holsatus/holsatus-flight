@@ -1,3 +1,5 @@
+use core::sync::atomic::Ordering;
+
 use ahrs::Ahrs;
 use embassy_futures::select::{select, Either};
 use nalgebra::{UnitQuaternion, Vector3};
@@ -27,13 +29,31 @@ pub async fn main() {
     //         deg/s). Cause: mag readings shift under motor current because
     //         the D000115-120 cal was done with motors off, so mag sees
     //         current-induced field changes the cal can't correct.
-    //   0.03 (current): compromise. Enough mag weight to arrest residual gyro
-    //         bias integration over flight-test timescales, but not so much
-    //         that motor-current-induced mag noise dominates the estimate.
-    let mut ahrs = ahrs::Madgwick::new(dt, 0.03);
+    //   0.03 (BETA_INDOOR): compromise. Enough mag weight to arrest residual
+    //         gyro bias integration over flight-test timescales, but not so
+    //         much that motor-current-induced mag noise dominates the estimate.
+    // BETA_OUTDOOR: stronger mag reliance for an absolute yaw reference,
+    // selected at runtime only when the SC switch declares outdoor
+    // (signals::MAG_TRUST_OUTDOOR). Safe to lean harder outside because the
+    // building hard/soft-iron distortion that forced 0.03 indoors is absent;
+    // the |B|norm gate below still rejects motor-EMI-corrupted samples.
+    // Experimental starting point -- tune from logs.
+    const BETA_INDOOR: f32 = 0.03;
+    const BETA_OUTDOOR: f32 = 0.10;
+    let mut ahrs = ahrs::Madgwick::new(dt, BETA_INDOOR);
 
     info!("{}: Entering main loop at {} Hz", ID, 1. / dt);
     '_infinite: loop {
+        // Pick mag trust from the SC-gated outdoor flag (set by the device
+        // ceiling-mode handler). beta_mut() updates the gain in place without
+        // resetting the filter's attitude quaternion, so flipping SC mid-air
+        // does not glitch the estimate.
+        *ahrs.beta_mut() = if s::MAG_TRUST_OUTDOOR.load(Ordering::Relaxed) {
+            BETA_OUTDOOR
+        } else {
+            BETA_INDOOR
+        };
+
         // NOTE The madgwick filter implementation assumes a coordinate system
         // where the positive Z direction is up. This is opposite to the
         // coordinate system used in the drone firmware. To correct for this, we
