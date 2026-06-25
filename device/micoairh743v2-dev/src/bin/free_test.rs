@@ -2537,8 +2537,18 @@ async fn lateral_controller() -> ! {
     const MAX_TILT_RAD: f32 = 0.44; // ~25 deg
     const FLOW_MAX_M: f32 = 7.0; // use flow only while lidar is solidly in range
     const MAX_FLOW_VEL: f32 = 1.5; // reject flow spikes above this (m/s)
+    // Position hold: outer-P gain maps position error (m) to a velocity setpoint
+    // (m/s), clamped to MAX_HOLD_VEL. That setpoint is then fed into the existing
+    // velocity damping loop as the reference, giving a cascaded P-P position hold
+    // that eliminates steady-state wind/CoM drift without a true integrator.
+    const KP_POS: f32 = 0.5; // (m/s) / m
+    const MAX_HOLD_VEL: f32 = 1.0; // m/s -- cap on position-derived vel setpoint
+    const STICK_CENTER_THRESH: f32 = 0.05; // deadband for "sticks centred"
 
     let mut log_div: u8 = 0;
+    // Captured GPS position target (lat_raw, lon_raw in 1e-7 deg). Set when
+    // sticks centre with a good fix; cleared on stick movement or GPS loss.
+    let mut pos_target: Option<(i32, i32)> = None;
 
     loop {
         Timer::after_millis(20).await; // 50 Hz
@@ -2551,6 +2561,7 @@ async fn lateral_controller() -> ! {
         if !active || !armed {
             store_f32(&LAT_TILT_ROLL, 0.0);
             store_f32(&LAT_TILT_PITCH, 0.0);
+            pos_target = None;
             continue;
         }
 
@@ -2580,21 +2591,63 @@ async fn lateral_controller() -> ! {
             }
         }
 
+        // Fetch GPS and yaw once; both are needed for velocity rotation and
+        // for the position hold correction below.
+        let gnss_data = common::signals::RAW_GNSS_DATA.try_get();
+        let yaw = signals::AHRS_ATTITUDE_Q
+            .try_get()
+            .map(|q| q.euler_angles().2)
+            .unwrap_or(0.0);
+        let (s_yaw, c_yaw) = (libm::sinf(yaw), libm::cosf(yaw));
+
         if src == 'n' {
             // Try GPS (rotate NED velocity into body via AHRS yaw).
-            if let Some(g) = common::signals::RAW_GNSS_DATA.try_get() {
+            if let Some(g) = gnss_data {
                 if gnss_lateral_ok(&g) {
-                    let yaw = signals::AHRS_ATTITUDE_Q
-                        .try_get()
-                        .map(|q| q.euler_angles().2)
-                        .unwrap_or(0.0);
-                    let (s_yaw, c_yaw) = (libm::sinf(yaw), libm::cosf(yaw));
                     vmeas_fwd = g.velocity_north * c_yaw + g.velocity_east * s_yaw;
                     vmeas_right = -g.velocity_north * s_yaw + g.velocity_east * c_yaw;
                     src = 'g';
                 }
             }
         }
+
+        // Position hold: reset target on any stick deflection or GPS loss so the
+        // drone re-captures its position when the pilot releases the stick.
+        let sticks_centered = stick_fwd.abs() < STICK_CENTER_THRESH
+            && stick_right.abs() < STICK_CENTER_THRESH;
+        if src != 'g' || !sticks_centered {
+            pos_target = None;
+        }
+        if src == 'g' && sticks_centered && pos_target.is_none() {
+            if let Some(g) = gnss_data {
+                pos_target = Some((g.latitude_raw, g.longitude_raw));
+            }
+        }
+
+        // Convert position error to a velocity setpoint (outer-P loop).
+        // 1e-7 deg * 111_111 m/deg = m per raw unit of lat/lon.
+        // Longitude metres are additionally scaled by cos(lat).
+        let (vel_sp_fwd, vel_sp_right) = match pos_target {
+            Some((lat_t, lon_t)) => {
+                if let Some(g) = gnss_data {
+                    let lat_err_m = (lat_t - g.latitude_raw) as f32 * (1e-7 * 111_111.0);
+                    let cos_lat = libm::cosf(
+                        g.latitude_raw as f32 * (1e-7 * core::f32::consts::PI / 180.0),
+                    );
+                    let lon_err_m =
+                        (lon_t - g.longitude_raw) as f32 * (1e-7 * 111_111.0 * cos_lat);
+                    // NED error rotated to body frame (same transform as vmeas).
+                    let sp_fwd = (KP_POS * (lat_err_m * c_yaw + lon_err_m * s_yaw))
+                        .clamp(-MAX_HOLD_VEL, MAX_HOLD_VEL);
+                    let sp_right = (KP_POS * (-lat_err_m * s_yaw + lon_err_m * c_yaw))
+                        .clamp(-MAX_HOLD_VEL, MAX_HOLD_VEL);
+                    (sp_fwd, sp_right)
+                } else {
+                    (0.0, 0.0)
+                }
+            }
+            None => (0.0, 0.0),
+        };
 
         // Direct angle from the stick: full pilot authority, no velocity
         // reference needed. Pitch sign was FIELD-CORRECTED after the first
@@ -2615,8 +2668,15 @@ async fn lateral_controller() -> ! {
         // because the pitch axis is inverted vs roll (the pitch_n negation
         // upstream). Roll was always correct. Skipped with no velocity
         // reference (src='n') -> direct-only, like manual angle mode.
+        // Brake on velocity error vs the position-hold setpoint. When no target
+        // is held (vel_sp = 0) this reduces exactly to the original velocity
+        // damper. When a target is held the drone drives velocity toward vel_sp,
+        // which in turn drives position toward the captured point.
         let (pitch_brake, roll_brake) = if src != 'n' {
-            (-KP_V * vmeas_fwd, -KP_V * vmeas_right)
+            (
+                -KP_V * (vmeas_fwd - vel_sp_fwd),
+                -KP_V * (vmeas_right - vel_sp_right),
+            )
         } else {
             (0.0, 0.0)
         };
@@ -2635,8 +2695,13 @@ async fn lateral_controller() -> ! {
             let mut s: heapless::String<112> = heapless::String::new();
             let _ = write!(
                 s,
-                "[lat] src={} stk=({:+.2},{:+.2}) vm=({:+.2},{:+.2}) p={:+.2} r={:+.2}",
-                src, stick_fwd, stick_right, vmeas_fwd, vmeas_right, pitch_cmd, roll_cmd
+                "[lat] src={} hold={} stk=({:+.2},{:+.2}) vm=({:+.2},{:+.2}) sp=({:+.2},{:+.2}) p={:+.2} r={:+.2}",
+                src,
+                if pos_target.is_some() { 'y' } else { 'n' },
+                stick_fwd, stick_right,
+                vmeas_fwd, vmeas_right,
+                vel_sp_fwd, vel_sp_right,
+                pitch_cmd, roll_cmd
             );
             ulog::log(s.as_str());
         }
