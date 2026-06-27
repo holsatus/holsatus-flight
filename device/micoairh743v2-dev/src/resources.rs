@@ -13,16 +13,16 @@
 
 use assign_resources::assign_resources;
 
-use embassy_stm32::{bind_interrupts, mode::Async, peripherals, Peri, Peripherals};
+use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
+use embassy_embedded_hal::shared_bus::asynch::spi::SpiDeviceWithConfig;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
-use embassy_stm32::spi::{Config as SpiConfig, mode::Master as SpiMaster, Spi};
 use embassy_stm32::i2c::Config as I2cConfig;
-use embassy_stm32::time::Hertz;
 use embassy_stm32::spi;
+use embassy_stm32::spi::{mode::Master as SpiMaster, Config as SpiConfig, Spi};
+use embassy_stm32::time::Hertz;
+use embassy_stm32::{bind_interrupts, mode::Async, peripherals, Peri, Peripherals};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_embedded_hal::shared_bus::asynch::spi::SpiDeviceWithConfig;
-use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use static_cell::StaticCell;
 
 use common::hw_abstraction::OutputGroup;
@@ -101,7 +101,9 @@ assign_resources! {
     uart_log: UartLogResources {
         usart: USART1,
         tx:    PA9,
+        rx: PA10,
         dma:   DMA1_CH0,
+        dma_rx: DMA2_CH7,
     }
     /// Onboard Bluetooth telemetry module. UART8 TX=PE1, RX=PE0 per the
     /// MicoAir H743v2 spec sheet. We only use TX -- the BT module bridges
@@ -215,24 +217,20 @@ static SPI2_BUS: StaticCell<Spi2Bus> = StaticCell::new();
 
 #[embassy_executor::task]
 pub async fn imu_reader_task(r: ImuResources) -> ! {
-
     let mut spi_cfg = SpiConfig::default();
     spi_cfg.frequency = Hertz(8_000_000);
     spi_cfg.mode = spi::MODE_3;
     spi_cfg.miso_pull = Pull::Up;
 
     let spi = Spi::new(
-        r.spi, r.sclk, r.mosi, r.miso,
-        r.dma_tx, r.dma_rx,
-        Spi2Irqs,
-        spi_cfg,
+        r.spi, r.sclk, r.mosi, r.miso, r.dma_tx, r.dma_rx, Spi2Irqs, spi_cfg,
     );
 
     let bus = SPI2_BUS.init(Mutex::new(spi));
     let cs_acc = Output::new(r.cs_acc, Level::High, Speed::High);
     let cs_gyr = Output::new(r.cs_gyr, Level::High, Speed::High);
     let accel_dev = SpiDeviceWithConfig::new(bus, cs_acc, spi_cfg);
-    let gyro_dev  = SpiDeviceWithConfig::new(bus, cs_gyr, spi_cfg);
+    let gyro_dev = SpiDeviceWithConfig::new(bus, cs_gyr, spi_cfg);
 
     let inner = Bmi088::new(accel_dev, gyro_dev);
     let mut imu = Bmi088Imu6Dof::new(inner);
@@ -271,12 +269,16 @@ use embassy_sync::signal::Signal;
 
 /// Latest motor speeds written by motor_governor, read by the DShot sender.
 static DSHOT_SPEEDS: [AtomicU16; 4] = [
-    AtomicU16::new(0), AtomicU16::new(0), AtomicU16::new(0), AtomicU16::new(0),
+    AtomicU16::new(0),
+    AtomicU16::new(0),
+    AtomicU16::new(0),
+    AtomicU16::new(0),
 ];
 
 /// Pending direction command (rare, only at startup).
 static DSHOT_REVERSE: Signal<
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, [bool; 4]
+    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+    [bool; 4],
 > = Signal::new();
 
 /// Proxy OutputGroup that writes to atomics instead of sending DShot directly.
@@ -297,13 +299,12 @@ impl common::hw_abstraction::OutputGroup for DshotProxy {
         // commanding motors independently of whatever CSV flooding is doing.
         static LOGGED_FIRST_NONZERO: core::sync::atomic::AtomicBool =
             core::sync::atomic::AtomicBool::new(false);
-        if speed.iter().any(|&s| s > 0)
-            && !LOGGED_FIRST_NONZERO.swap(true, AtOrd::Relaxed)
-        {
+        if speed.iter().any(|&s| s > 0) && !LOGGED_FIRST_NONZERO.swap(true, AtOrd::Relaxed) {
             use core::fmt::Write;
             let mut s: heapless::String<64> = heapless::String::new();
             let _ = write!(
-                s, "[proxy] FIRST nonzero speed [{},{},{},{}]",
+                s,
+                "[proxy] FIRST nonzero speed [{},{},{},{}]",
                 speed[0], speed[1], speed[2], speed[3]
             );
             crate::log::log_critical(s.as_str()).await;
@@ -320,17 +321,24 @@ impl common::hw_abstraction::OutputGroup for DshotProxy {
         ];
         let mut s: heapless::String<64> = heapless::String::new();
         let _ = write!(
-            s, "[proxy] dir motor=[{},{},{},{}] ch=[{},{},{},{}]",
-            direction[0] as u8, direction[1] as u8,
-            direction[2] as u8, direction[3] as u8,
-            ch_dir[0] as u8, ch_dir[1] as u8,
-            ch_dir[2] as u8, ch_dir[3] as u8,
+            s,
+            "[proxy] dir motor=[{},{},{},{}] ch=[{},{},{},{}]",
+            direction[0] as u8,
+            direction[1] as u8,
+            direction[2] as u8,
+            direction[3] as u8,
+            ch_dir[0] as u8,
+            ch_dir[1] as u8,
+            ch_dir[2] as u8,
+            ch_dir[3] as u8,
         );
         crate::log::log(s.as_str());
         DSHOT_REVERSE.signal(ch_dir);
     }
     async fn set_motor_speeds_min(&mut self) {
-        for a in &DSHOT_SPEEDS { a.store(0, AtOrd::Relaxed); }
+        for a in &DSHOT_SPEEDS {
+            a.store(0, AtOrd::Relaxed);
+        }
 
         // Diagnostic: log the first call via log_critical. motor_governor
         // calls this 50 times during the min-throttle arming phase (right
@@ -365,10 +373,7 @@ pub async fn motor_governor_task(r: MotorResources, dshot: DshotConfig) -> ! {
     // the FC. pre_arm_loop sends one ~390 ms burst per iteration and exits as
     // soon as the arm command arrives, regardless of when the LiPo is connected.
     let mut arm_rcv = common::tasks::commander::COMMAD_ARM_VEHICLE.receiver();
-    crate::dshot_driver::pre_arm_loop(
-        &mut driver,
-        || arm_rcv.try_get() == Some(true),
-    ).await;
+    crate::dshot_driver::pre_arm_loop(&mut driver, || arm_rcv.try_get() == Some(true)).await;
 
     crate::log::log("[mtr] pre_arm_loop done -> keepalive sender");
 
@@ -379,7 +384,8 @@ pub async fn motor_governor_task(r: MotorResources, dshot: DshotConfig) -> ! {
     embassy_futures::join::join(
         common::tasks::motor_governor::main(DshotProxy),
         dshot_keepalive_sender(driver),
-    ).await;
+    )
+    .await;
 
     unreachable!()
 }
@@ -404,9 +410,9 @@ where
             dir_burst_count += 1;
             let mut s: heapless::String<64> = heapless::String::new();
             let _ = write!(
-                s, "[dshot] dir#{} f={} [{},{},{},{}]",
-                dir_burst_count, frame_count,
-                d[0] as u8, d[1] as u8, d[2] as u8, d[3] as u8,
+                s,
+                "[dshot] dir#{} f={} [{},{},{},{}]",
+                dir_burst_count, frame_count, d[0] as u8, d[1] as u8, d[2] as u8, d[3] as u8,
             );
             crate::log::log(s.as_str());
 
@@ -434,8 +440,7 @@ where
         // starts once the drone has landed and disarmed.
         const BEEP_PERIOD: u32 = 2100; // frames (~3 s at ~1.4 ms/frame)
         const BEEP_BURST: u32 = 40; // consecutive beacon frames to register
-        let beeping =
-            disarmed && crate::dshot_driver::RC_BEACON_ACTIVE.load(AtOrd::Relaxed);
+        let beeping = disarmed && crate::dshot_driver::RC_BEACON_ACTIVE.load(AtOrd::Relaxed);
         if beeping != beeping_prev {
             crate::log::log(if beeping {
                 "[dshot] beacon pulsing (RC lost, disarmed)"
@@ -462,9 +467,9 @@ where
         if frame_count % 500 == 0 && frame_count <= 10_000 {
             let mut s: heapless::String<64> = heapless::String::new();
             let _ = write!(
-                s, "[dshot] f={} spd=[{},{},{},{}] (clamp 0->48)",
-                frame_count,
-                speeds[0], speeds[1], speeds[2], speeds[3],
+                s,
+                "[dshot] f={} spd=[{},{},{},{}] (clamp 0->48)",
+                frame_count, speeds[0], speeds[1], speeds[2], speeds[3],
             );
             crate::log::log(s.as_str());
         }
@@ -526,17 +531,13 @@ async fn setup_i2c2(r: BaroResources) -> (&'static I2c2Bus, u8) {
     i2c_cfg.scl_pullup = true;
     i2c_cfg.frequency = Hertz(400_000);
 
-    let i2c = embassy_stm32::i2c::I2c::new(
-        r.i2c, r.scl, r.sda,
-        r.dma_tx, r.dma_rx,
-        I2c2Irqs,
-        i2c_cfg,
-    );
+    let i2c =
+        embassy_stm32::i2c::I2c::new(r.i2c, r.scl, r.sda, r.dma_tx, r.dma_rx, I2c2Irqs, i2c_cfg);
 
     let bus: &'static I2c2Bus = I2C2_BUS.init(Mutex::new(i2c));
 
     let baro_addr = {
-        use crate::dps310_i2c::{ADDR_SDO_LOW, ADDR_SDO_HIGH};
+        use crate::dps310_i2c::{ADDR_SDO_HIGH, ADDR_SDO_LOW};
         let mut b = bus.lock().await;
         if b.write(ADDR_SDO_LOW, &[]).await.is_ok() {
             crate::log::log("[baro] SPL06 found at 0x76");
@@ -565,7 +566,8 @@ pub async fn alt_hold_task(r: BaroResources) -> ! {
     embassy_futures::join::join(
         crate::alt_hold::main(I2cDevice::new(bus), baro_addr),
         compass_reader(I2cDevice::new(bus)),
-    ).await;
+    )
+    .await;
 
     unreachable!()
 }
@@ -619,9 +621,15 @@ async fn compass_reader(i2c: impl embedded_hal_async::i2c::I2c) -> ! {
                 d.z as f32 * SENSITIVITY_UT_PER_LSB - MAG_BIAS_UT[2],
             ];
             snd.send([
-                MAG_CAL_MAT[0][0] * centered[0] + MAG_CAL_MAT[0][1] * centered[1] + MAG_CAL_MAT[0][2] * centered[2],
-                MAG_CAL_MAT[1][0] * centered[0] + MAG_CAL_MAT[1][1] * centered[1] + MAG_CAL_MAT[1][2] * centered[2],
-                MAG_CAL_MAT[2][0] * centered[0] + MAG_CAL_MAT[2][1] * centered[1] + MAG_CAL_MAT[2][2] * centered[2],
+                MAG_CAL_MAT[0][0] * centered[0]
+                    + MAG_CAL_MAT[0][1] * centered[1]
+                    + MAG_CAL_MAT[0][2] * centered[2],
+                MAG_CAL_MAT[1][0] * centered[0]
+                    + MAG_CAL_MAT[1][1] * centered[1]
+                    + MAG_CAL_MAT[1][2] * centered[2],
+                MAG_CAL_MAT[2][0] * centered[0]
+                    + MAG_CAL_MAT[2][1] * centered[1]
+                    + MAG_CAL_MAT[2][2] * centered[2],
             ]);
         }
         embassy_time::Timer::after_millis(20).await;
