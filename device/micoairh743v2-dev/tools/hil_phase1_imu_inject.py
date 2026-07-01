@@ -25,7 +25,10 @@ import math
 import struct
 import time
 
-BAUD = 2_000_000  # confirmed in Phase 0, see hil_link_test_result_h743v2.md
+BAUD = 115_200  # only rate with a genuine matched-baud Phase 0 measurement;
+# the "2,000,000" Phase 0 result was a mismatch artefact -- hil_echo.rs never
+# set cfg.baudrate, so firmware stayed pinned at embassy's 115200 default
+# while the host thought it was running at 2M. See hil.rs HIL_LINK_BAUD.
 SENSOR_FRAME_LEN = 32
 ATTITUDE_FRAME_LEN = 24
 GRAVITY = 9.81

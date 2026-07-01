@@ -3086,12 +3086,18 @@ async fn mtf01_reader_task(r: Mtf01Resources) -> ! {
 // as the real BMI088 reader would.
 // =============================================================================
 
-/// Link baud rate. Confirmed in Phase 0 (hil_echo.rs +
-/// tools/hil_test_link_char.py, see tools/hil_link_test_result_h743v2.md):
-/// 2,000,000 baud settles to ~3.3-3.5ms median/p99 RTT with ~93us jitter.
-/// That RTT is well over the sub-1ms bar for free-running 1kHz, which
-/// confirms we stay lockstep through Phase 3 as the plan anticipated.
-const HIL_LINK_BAUD: u32 = 2_000_000;
+/// Link baud rate. NOTE: the "2,000,000 baud" Phase 0 result in
+/// tools/hil_link_test_result_h743v2.md is not trustworthy -- hil_echo.rs
+/// passed UartConfig::default() unmodified, and embassy-stm32's default
+/// baudrate is 115200 (see embassy-stm32/src/usart/mod.rs), so that run
+/// actually had the host at 2M talking to firmware pinned at 115200. The
+/// ~54% loss it measured was a baud mismatch artefact, not a real 2M
+/// link result -- and Phase 1 (which does set this field correctly) saw
+/// 100% loss at a genuine, matched 2M, so 2M is unproven on this
+/// adapter/cable. 115200 is the only rate with a real matched-baud
+/// measurement (n=49941/50000, ~99.9%) behind it, and lockstep doesn't
+/// need more than that -- use it until there's a reason to revisit.
+const HIL_LINK_BAUD: u32 = 115_200;
 
 /// Host -> FC sensor frame (Phase 1: IMU only). Fixed 32 bytes, all
 /// multi-byte fields little-endian:
