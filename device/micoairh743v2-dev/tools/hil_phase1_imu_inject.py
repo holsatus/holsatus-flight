@@ -102,10 +102,25 @@ def main():
     ap.add_argument("--duration", type=float, default=5.0)
     ap.add_argument("--roll-deg", type=float, default=30.0, help="tilt mode: commanded roll angle")
     ap.add_argument("--roll-rate", type=float, default=0.5, help="dynamic mode: gyr_x rad/s")
+    ap.add_argument("--warmup", type=float, default=10.0,
+                     help="seconds of level/stationary data sent before the requested mode, "
+                          "to carry imu_cal::apply()'s gate (1s hold + 5s hands-off + 2s "
+                          "capture, ~8s) through on genuinely level data. See imu_cal.rs: the "
+                          "bias capture doesn't re-check level, so a gap here (e.g. between "
+                          "separate script runs) can let it consume whatever the *next* run "
+                          "happens to send -- D000077-style bad bias baked in.")
+    ap.add_argument("--skip-warmup", action="store_true",
+                     help="skip the warm-up (only safe if calibration already completed on "
+                          "level data in the current boot session, e.g. right after a prior "
+                          "static/warm-up run with no idle gap since)")
     args = ap.parse_args()
 
     import serial
     ser = serial.Serial(args.port, args.baud, timeout=0.05)
+
+    if args.mode != "static" and not args.skip_warmup:
+        run(ser, lambda _t: (0.0, 0.0, -GRAVITY), lambda _t: (0.0, 0.0, 0.0),
+            args.warmup, "calibration warm-up: level, stationary")
 
     if args.mode == "static":
         run(ser, lambda _t: (0.0, 0.0, -GRAVITY), lambda _t: (0.0, 0.0, 0.0),
