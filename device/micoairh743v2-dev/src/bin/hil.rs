@@ -3111,15 +3111,22 @@ const SENSOR_FRAME_LEN: usize = 32;
 const SENSOR_FRAME_SYNC: u8 = 0xA5;
 const SENSOR_FRAME_TYPE: u8 = 0x01;
 
-/// FC -> Host attitude debug frame. Fixed 24 bytes:
+/// FC -> Host attitude debug frame. Fixed 25 bytes:
 ///   [0]       sync  = 0x5A
 ///   [1]       type  = 0x02
 ///   [2..6)    seq   : u32   -- echoes the sensor frame that produced this estimate
 ///   [6..22)   q     : f32x4 -- AHRS_ATTITUDE_Q, nalgebra coords order (i, j, k, w)
-///   [22..24)  crc16 : u16   -- CRC-16/CCITT-FALSE over bytes [0..22)
-const ATTITUDE_FRAME_LEN: usize = 24;
+///   [22]      flags : u8    -- bit0 = imu_cal::CAL_DONE. Before this is set,
+///                              q is just hil_link_task's identity fallback
+///                              (att_estimator isn't spawned yet), not a real
+///                              estimate -- a host waiting to inject a
+///                              non-level test profile should poll this
+///                              instead of guessing a fixed warm-up duration.
+///   [23..25)  crc16 : u16   -- CRC-16/CCITT-FALSE over bytes [0..23)
+const ATTITUDE_FRAME_LEN: usize = 25;
 const ATTITUDE_FRAME_SYNC: u8 = 0x5A;
 const ATTITUDE_FRAME_TYPE: u8 = 0x02;
+const ATTITUDE_FLAG_CAL_DONE: u8 = 1 << 0;
 
 /// CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF). Matches the Python host's
 /// crcmod/manual implementation -- see phase1_imu_inject.py.
@@ -3162,7 +3169,11 @@ fn decode_sensor_frame(buf: &[u8; SENSOR_FRAME_LEN]) -> Option<SensorFrame> {
     Some(SensorFrame { seq, acc, gyr })
 }
 
-fn encode_attitude_frame(seq: u32, q: &UnitQuaternion<f32>) -> [u8; ATTITUDE_FRAME_LEN] {
+fn encode_attitude_frame(
+    seq: u32,
+    q: &UnitQuaternion<f32>,
+    cal_done: bool,
+) -> [u8; ATTITUDE_FRAME_LEN] {
     let mut buf = [0u8; ATTITUDE_FRAME_LEN];
     buf[0] = ATTITUDE_FRAME_SYNC;
     buf[1] = ATTITUDE_FRAME_TYPE;
@@ -3172,8 +3183,9 @@ fn encode_attitude_frame(seq: u32, q: &UnitQuaternion<f32>) -> [u8; ATTITUDE_FRA
     buf[10..14].copy_from_slice(&c[1].to_le_bytes());
     buf[14..18].copy_from_slice(&c[2].to_le_bytes());
     buf[18..22].copy_from_slice(&c[3].to_le_bytes());
-    let crc = crc16_ccitt(&buf[0..22]);
-    buf[22..24].copy_from_slice(&crc.to_le_bytes());
+    buf[22] = if cal_done { ATTITUDE_FLAG_CAL_DONE } else { 0 };
+    let crc = crc16_ccitt(&buf[0..23]);
+    buf[23..25].copy_from_slice(&crc.to_le_bytes());
     buf
 }
 
@@ -3254,7 +3266,8 @@ async fn hil_link_task(r: UartLogResources) -> ! {
             .await;
 
         let q = att_rcv.try_get().unwrap_or(UnitQuaternion::identity());
-        let out = encode_attitude_frame(frame.seq, &q);
+        let cal_done = micoairh743v2::imu_cal::CAL_DONE.load(core::sync::atomic::Ordering::Relaxed);
+        let out = encode_attitude_frame(frame.seq, &q, cal_done);
         tx.write(&out).await.ok();
     }
 }

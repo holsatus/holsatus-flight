@@ -9,11 +9,20 @@ Wire protocol (must match src/bin/hil.rs SENSOR_FRAME_*/ATTITUDE_FRAME_*):
   SensorFrame (host -> FC, 32 bytes, little-endian):
     u8  sync=0xA5, u8 type=0x01, u32 seq, f32 acc[3], f32 gyr[3], u16 crc16
 
-  AttitudeFrame (FC -> host, 24 bytes, little-endian):
-    u8  sync=0x5A, u8 type=0x02, u32 seq, f32 q[4] (i,j,k,w), u16 crc16
+  AttitudeFrame (FC -> host, 25 bytes, little-endian):
+    u8  sync=0x5A, u8 type=0x02, u32 seq, f32 q[4] (i,j,k,w), u8 flags, u16 crc16
+    flags bit0 = imu_cal::CAL_DONE. Before it's set, q is hil_link_task's
+    identity fallback (att_estimator isn't spawned yet), not a real estimate.
 
 CRC is CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over all preceding
 bytes in the frame -- matches hil.rs::crc16_ccitt exactly.
+
+Every mode waits for CAL_DONE (streaming level/stationary data) before
+switching to its actual profile -- see wait_for_calibration(). Guessing a
+fixed warm-up duration doesn't work: the bias-capture window's length
+depends on the link's effective sample rate, not the "~2s at 1kHz" real
+hardware assumes, so a fixed sleep can straddle the transition and bake a
+tilted sample into the bias (see imu_cal.rs, D000077-style).
 
 Usage:
     python3 hil_phase1_imu_inject.py /dev/tty.usbserial-XXXX static
@@ -30,7 +39,8 @@ BAUD = 115_200  # only rate with a genuine matched-baud Phase 0 measurement;
 # set cfg.baudrate, so firmware stayed pinned at embassy's 115200 default
 # while the host thought it was running at 2M. See hil.rs HIL_LINK_BAUD.
 SENSOR_FRAME_LEN = 32
-ATTITUDE_FRAME_LEN = 24
+ATTITUDE_FRAME_LEN = 25
+ATTITUDE_FLAG_CAL_DONE = 1 << 0
 GRAVITY = 9.81
 
 
@@ -55,11 +65,15 @@ def build_sensor_frame(seq: int, acc: tuple, gyr: tuple) -> bytes:
 def parse_attitude_frame(buf: bytes):
     if len(buf) != ATTITUDE_FRAME_LEN or buf[0] != 0x5A or buf[1] != 0x02:
         return None
-    body, crc_rx = buf[:22], struct.unpack("<H", buf[22:24])[0]
+    body, crc_rx = buf[:23], struct.unpack("<H", buf[23:25])[0]
     if crc16_ccitt(body) != crc_rx:
         return None
-    seq, i, j, k, w = struct.unpack("<Iffff", buf[2:22])
-    return {"seq": seq, "quat_ijkw": (i, j, k, w)}
+    seq, i, j, k, w, flags = struct.unpack("<IffffB", buf[2:23])
+    return {
+        "seq": seq,
+        "quat_ijkw": (i, j, k, w),
+        "cal_done": bool(flags & ATTITUDE_FLAG_CAL_DONE),
+    }
 
 
 def quat_to_euler_deg(i, j, k, w):
@@ -71,6 +85,32 @@ def quat_to_euler_deg(i, j, k, w):
     pitch = math.asin(sinp)
     yaw = math.atan2(2 * (w * k + i * j), 1 - 2 * (j * j + k * k))
     return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
+
+
+def wait_for_calibration(ser, max_wait_s: float) -> bool:
+    """Stream level/stationary data until the firmware reports CAL_DONE.
+
+    Returns True once confirmed, False if max_wait_s elapses first (in
+    which case the caller's actual test would just be reading the identity
+    fallback, not a real estimate -- worth a loud warning, not a silent
+    proceed).
+    """
+    print(f"-- calibration warm-up: level, stationary (up to {max_wait_s:.0f}s) --")
+    t0 = time.perf_counter()
+    seq = 0
+    while True:
+        t = time.perf_counter() - t0
+        if t > max_wait_s:
+            print(f"WARNING: CAL_DONE not seen after {max_wait_s:.0f}s -- proceeding anyway; "
+                  f"replies will likely be the identity fallback, not a real estimate\n")
+            return False
+        ser.write(build_sensor_frame(seq, (0.0, 0.0, -GRAVITY), (0.0, 0.0, 0.0)))
+        reply = ser.read(ATTITUDE_FRAME_LEN)
+        att = parse_attitude_frame(reply)
+        if att is not None and att["cal_done"]:
+            print(f"calibration confirmed done at t={t:.2f}s (seq={seq})\n")
+            return True
+        seq += 1
 
 
 def run(ser, acc_fn, gyr_fn, duration_s: float, label: str):
@@ -89,7 +129,8 @@ def run(ser, acc_fn, gyr_fn, duration_s: float, label: str):
         elif t - last_print > 0.2:
             last_print = t
             r, p, y = quat_to_euler_deg(*att["quat_ijkw"])
-            print(f"t={t:5.2f}s seq={seq:6d} roll={r:6.2f} pitch={p:6.2f} yaw={y:6.2f}")
+            cal = "Y" if att["cal_done"] else "N"
+            print(f"t={t:5.2f}s seq={seq:6d} cal={cal} roll={r:6.2f} pitch={p:6.2f} yaw={y:6.2f}")
         seq += 1
     print(f"done: {seq} sent, {n_bad} bad/missing replies\n")
 
@@ -102,25 +143,20 @@ def main():
     ap.add_argument("--duration", type=float, default=5.0)
     ap.add_argument("--roll-deg", type=float, default=30.0, help="tilt mode: commanded roll angle")
     ap.add_argument("--roll-rate", type=float, default=0.5, help="dynamic mode: gyr_x rad/s")
-    ap.add_argument("--warmup", type=float, default=10.0,
-                     help="seconds of level/stationary data sent before the requested mode, "
-                          "to carry imu_cal::apply()'s gate (1s hold + 5s hands-off + 2s "
-                          "capture, ~8s) through on genuinely level data. See imu_cal.rs: the "
-                          "bias capture doesn't re-check level, so a gap here (e.g. between "
-                          "separate script runs) can let it consume whatever the *next* run "
-                          "happens to send -- D000077-style bad bias baked in.")
+    ap.add_argument("--warmup-timeout", type=float, default=30.0,
+                     help="max seconds to wait for imu_cal::CAL_DONE before giving up and "
+                          "running the requested mode anyway (see wait_for_calibration)")
     ap.add_argument("--skip-warmup", action="store_true",
-                     help="skip the warm-up (only safe if calibration already completed on "
-                          "level data in the current boot session, e.g. right after a prior "
-                          "static/warm-up run with no idle gap since)")
+                     help="skip waiting for CAL_DONE (only safe if calibration already "
+                          "completed in the current boot session, e.g. right after a prior "
+                          "run against the same, still-powered board)")
     args = ap.parse_args()
 
     import serial
     ser = serial.Serial(args.port, args.baud, timeout=0.05)
 
     if args.mode != "static" and not args.skip_warmup:
-        run(ser, lambda _t: (0.0, 0.0, -GRAVITY), lambda _t: (0.0, 0.0, 0.0),
-            args.warmup, "calibration warm-up: level, stationary")
+        wait_for_calibration(ser, args.warmup_timeout)
 
     if args.mode == "static":
         run(ser, lambda _t: (0.0, 0.0, -GRAVITY), lambda _t: (0.0, 0.0, 0.0),

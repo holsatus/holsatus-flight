@@ -19,10 +19,19 @@
 //! passes, but a hand-held one does not.
 
 use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use common::signals::RAW_MULTI_IMU_DATA;
 use common::tasks::imu_reader;
 use embassy_time::{Duration, Instant, Timer};
+
+/// Set once apply() has captured a bias from genuinely stationary+level data
+/// and returned. HIL's hil_link_task exposes this in its AttitudeFrame reply
+/// (see src/bin/hil.rs) so a host script can wait for real calibration
+/// instead of guessing a fixed warm-up duration -- the capture window's
+/// real-time length depends on how fast the link delivers samples, which is
+/// nothing like the "~2s at 1kHz" this module assumes for real hardware.
+pub static CAL_DONE: AtomicBool = AtomicBool::new(false);
 
 use crate::log as ulog;
 
@@ -182,4 +191,6 @@ pub async fn apply() {
         gyr_bias[0], gyr_bias[1], gyr_bias[2]
     );
     ulog::log(s.as_str());
+
+    CAL_DONE.store(true, Ordering::Relaxed);
 }
