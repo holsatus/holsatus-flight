@@ -8,11 +8,14 @@
 //! Modes (selected from the TX15 via rc_kill):
 //!   Manual:  pure ACRO/rate mode. Sticks command angular rates directly
 //!            (no self-levelling); throttle stick maps to collective thrust.
-//!            Arms on first non-idle throttle, disarms after the throttle +
-//!            mode have been idle for MANUAL_IDLE_DWELL_MS. The arm is
-//!            aborted if the throttle rises above ARM_GUARD_MAX_THR before
-//!            the governor's arm sequence completes (throttle-high-on-arm
-//!            guard, D000020).
+//!            Pre-arms on Manual entry while the stick is at idle (the
+//!            governor's ~2.25 s arm window runs before the operator
+//!            reaches the throttle; wait for the solid-green LED). Disarms
+//!            after throttle + mode have been idle for
+//!            MANUAL_IDLE_DWELL_MS. The arm is aborted if the throttle
+//!            rises above ARM_GUARD_MAX_THR before the sequence completes
+//!            (throttle-high-on-arm guard, D000020) and re-fires once the
+//!            stick returns to idle.
 //!   Auto:    closed-loop altitude-hold mission, trigger-armed from
 //!            GroundIdle, running AutoTakeoff -> AutoHover -> AutoLand:
 //!     AutoTakeoff: 1 s open-loop thrust ramp to BASE_THRUST (pushes through
@@ -1873,12 +1876,12 @@ async fn mission_fsm_task() -> ! {
                 }
 
                 // LED: armed = green solid (fly), arm sequence running =
-                // green blink (hands off the throttle), guard tripped =
-                // solid red (lower the stick), otherwise blue (raise
-                // throttle to arm).
+                // green blink (hands off the throttle), guard tripped or
+                // stick too high to start the arm = solid red (lower the
+                // stick), otherwise blue (arm fires on the next tick).
                 led::set(if armed {
                     LedMode::Armed
-                } else if arm_guard_wait_idle {
+                } else if arm_guard_wait_idle || thr_n > ARM_GUARD_MAX_THR {
                     LedMode::Blocked
                 } else if arm_command_sent {
                     LedMode::Arming
@@ -1971,15 +1974,22 @@ async fn mission_fsm_task() -> ! {
                     ulog::log(s.as_str());
                 }
 
-                // Arm on first non-idle throttle. One-shot per Manual entry:
-                // motor governor takes ~4.5 s to flip `armed` to true, and
-                // the per-tick re-fire would otherwise log + re-send ~450
-                // times during that window. Battery must also permit
-                // flight: tiers below HEALTHY block arming until the
-                // pack is charged + the FC rebooted.
-                if !armed && !arm_command_sent && !arm_guard_wait_idle && thr_n > 0.0 {
+                // Keep the governor armed whenever Manual is active and the
+                // guard is not holding. Entering Manual pre-arms immediately
+                // (the stick is at idle then), so the ~2.25 s arm window
+                // runs BEFORE the operator reaches for the throttle. The
+                // previous arm-on-first-throttle trigger made every normal
+                // smooth throttle raise abort (D000001/D000004: 17 ARM
+                // ABORTs, zero completed arms -- a thumb crosses the 10%
+                // guard line ~20 ms after leaving zero). After a guard
+                // abort this re-fires automatically once the stick is back
+                // at idle. One-shot per attempt via arm_command_sent.
+                // Battery must permit flight: tiers below HEALTHY block
+                // arming until the pack is charged + the FC rebooted.
+                if !armed && !arm_command_sent && !arm_guard_wait_idle && thr_n <= ARM_GUARD_MAX_THR
+                {
                     if battery_allows_flight {
-                        ulog::log("[fsm] Manual: throttle raised -- arming");
+                        ulog::log("[fsm] Manual: arming -- throttle up when LED is solid green");
                         COMMAD_ARM_VEHICLE.send(true);
                         arm_command_sent = true;
                     } else if !arm_refused_logged {

@@ -52,12 +52,32 @@ pub enum LedMode {
     Error = 5,
 }
 
+impl LedMode {
+    /// Color-first label so a bench log line reads like what the eye sees.
+    fn label(self) -> &'static str {
+        match self {
+            LedMode::Init => "dark (init/cal)",
+            LedMode::Ready => "blue (ready to arm)",
+            LedMode::Arming => "green blink (arm sequence)",
+            LedMode::Armed => "green (armed)",
+            LedMode::Blocked => "red (blocked)",
+            LedMode::Error => "red strobe (error)",
+        }
+    }
+}
+
 static MODE: AtomicU8 = AtomicU8::new(LedMode::Init as u8);
 
 /// Publish the LED mode. Callable from any task; the LED task picks the
-/// latest value up within one 50 ms tick.
+/// latest value up within one 50 ms tick. Every transition is logged so
+/// SD/BT logs can be correlated with what the lamp showed on the bench.
 pub fn set(mode: LedMode) {
-    MODE.store(mode as u8, Ordering::Relaxed);
+    let prev = MODE.swap(mode as u8, Ordering::Relaxed);
+    if prev != mode as u8 {
+        let mut s: heapless::String<48> = heapless::String::new();
+        let _ = core::fmt::Write::write_fmt(&mut s, format_args!("[led] {}", mode.label()));
+        crate::log::log(s.as_str());
+    }
 }
 
 fn get() -> LedMode {
@@ -85,11 +105,20 @@ pub async fn led_task(r: LedResources) -> ! {
         .expect("BATTERY_TIER receiver slot (led)");
 
     let mut tick: u32 = 0;
+    let mut prev_severe = false;
     loop {
         Timer::after_millis(50).await;
         tick = tick.wrapping_add(1);
 
         let severe = bat_rcv.try_get().map(|t| t.is_severe()).unwrap_or(false);
+        if severe != prev_severe {
+            prev_severe = severe;
+            crate::log::log(if severe {
+                "[led] battery-severe override: red strobe"
+            } else {
+                "[led] battery-severe override released"
+            });
+        }
         let mode = if severe { LedMode::Error } else { get() };
 
         // Liveness flick: solid colors go dark for one tick every 2 s.

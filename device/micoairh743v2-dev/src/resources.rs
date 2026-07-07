@@ -380,7 +380,16 @@ pub async fn motor_governor_task(r: MotorResources, dshot: DshotConfig) -> ! {
     // the FC. pre_arm_loop sends one ~390 ms burst per iteration and exits as
     // soon as the arm command arrives, regardless of when the LiPo is connected.
     let mut arm_rcv = common::tasks::commander::COMMAD_ARM_VEHICLE.receiver();
-    crate::dshot_driver::pre_arm_loop(&mut driver, || arm_rcv.try_get() == Some(true)).await;
+    // Exit on ANY value on the arm watch, not just a standing `true`: the
+    // loop only POLLS between ~1.2 s frame bursts, and the FSM's arm guard
+    // (D000020) can turn an arm command into a ~20 ms true->false pulse
+    // that a poll of the latest value will simply never see. D000003 and
+    // D000004 sat with the whole governor+keepalive stack unstarted through
+    // nine arm attempts exactly because of this. Any traffic on the watch
+    // means the mission layer is alive; from then on the governor's
+    // wake-based receiver catches every send, and the keepalive sender
+    // takes over the dense DShot stream, so exiting early is safe.
+    crate::dshot_driver::pre_arm_loop(&mut driver, || arm_rcv.try_get().is_some()).await;
 
     crate::log::log("[mtr] pre_arm_loop done -> keepalive sender");
 
