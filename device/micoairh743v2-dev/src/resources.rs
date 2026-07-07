@@ -93,10 +93,17 @@ assign_resources! {
         m4:  PE9,
         dma: DMA1_CH1,
     }
+    // LED pin-to-color mapping validated on the REPLACEMENT board
+    // (2026-07, after the original FC died). The old board had
+    // red=PE3 / blue=PE4 / green=PE2; on the replacement the three
+    // LEDs are rotated. Evidence: D000001 bench test -- the Ready
+    // rendering (drives `blue`) appeared green and the Blocked
+    // rendering (drives `red`) appeared blue. If a future board
+    // swap changes colors again, re-verify with led.rs modes.
     leds: LedResources {
-        red:   PE3,
-        blue:  PE4,
-        green: PE2,
+        red:   PE2,
+        blue:  PE3,
+        green: PE4,
     }
     uart_log: UartLogResources {
         usart: USART1,
