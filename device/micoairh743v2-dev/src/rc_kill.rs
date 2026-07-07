@@ -439,6 +439,10 @@ pub async fn rc_kill_task(r: RcResources) -> ! {
             // SF = RESTART. Checked first so it always works, even
             // after SE has latched a kill.
             if raw_changed(sf0, sf_raw) {
+                // Latch first: a plain store cannot be blocked, so the
+                // keepalive stops the motors even if everything below
+                // wedges. Cleared by the reboot itself.
+                crate::dshot_driver::MOTOR_KILL.store(true, Ordering::Relaxed);
                 COMMAD_ARM_VEHICLE.send(false);
                 let mut s: String<96> = String::new();
                 let _ = write!(
@@ -453,6 +457,11 @@ pub async fn rc_kill_task(r: RcResources) -> ! {
 
             // SE = KILL. Latches disarm on first press.
             if raw_changed(se0, se_raw) && !killed {
+                // Latch BEFORE the watch send and the log: the store is the
+                // one operation that cannot be blocked by a wedged governor,
+                // a full log channel, or a lost wake (2026-07-08 incident).
+                // The keepalive forces DShot 0 from its next 1 ms frame.
+                crate::dshot_driver::MOTOR_KILL.store(true, Ordering::Relaxed);
                 COMMAD_ARM_VEHICLE.send(false);
                 killed = true;
                 let mut s: String<96> = String::new();

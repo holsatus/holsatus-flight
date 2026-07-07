@@ -2475,6 +2475,8 @@ async fn flip_kill() -> ! {
         if d.acc[2] > AZ_INVERTED_THRESHOLD {
             inverted_count += 1;
             if inverted_count >= FLIP_COUNT_THRESHOLD {
+                // Latch first (unblockable), then the normal disarm path.
+                micoairh743v2::dshot_driver::MOTOR_KILL.store(true, Ordering::Relaxed);
                 COMMAD_ARM_VEHICLE.send(false);
                 ulog::log("[kill] FLIP DETECTED -- motors disarmed");
 
@@ -2511,6 +2513,8 @@ async fn gyro_runaway_kill() -> ! {
         if gmax > GYRO_RUNAWAY_THRESHOLD {
             count += 1;
             if count >= GYRO_RUNAWAY_COUNT {
+                // Latch first (unblockable), then the normal disarm path.
+                micoairh743v2::dshot_driver::MOTOR_KILL.store(true, Ordering::Relaxed);
                 COMMAD_ARM_VEHICLE.send(false);
                 let mut s: heapless::String<96> = heapless::String::new();
                 let _ = write!(

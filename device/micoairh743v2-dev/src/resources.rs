@@ -444,7 +444,17 @@ where
         // so ESCs stay stopped and accept direction commands.
         // throttle_clamp(0) would send DShot 48 (min throttle = motors spin),
         // which causes ESCs to reject direction commands.
-        let speeds = DSHOT_SPEEDS.each_ref().map(|a| a.load(AtOrd::Relaxed));
+        //
+        // MOTOR_KILL overrides everything: once latched, this loop streams
+        // DShot 0 no matter what DSHOT_SPEEDS holds, so a kill works even
+        // with the governor task wedged (see MOTOR_KILL in dshot_driver.rs).
+        // The forced zeros also make `disarmed` true below, which keeps the
+        // find-my-drone beacon available after a kill.
+        let speeds = if crate::dshot_driver::MOTOR_KILL.load(AtOrd::Relaxed) {
+            [0u16; 4]
+        } else {
+            DSHOT_SPEEDS.each_ref().map(|a| a.load(AtOrd::Relaxed))
+        };
         let disarmed = speeds == [0, 0, 0, 0];
 
         // Find-my-drone: while DISARMED and RC has been gone >30 s

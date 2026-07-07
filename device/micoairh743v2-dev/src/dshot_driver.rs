@@ -143,6 +143,23 @@ where
 pub static RC_BEACON_ACTIVE: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+/// Hard motor-kill latch, enforced at the DShot keepalive -- the lowest
+/// software layer that touches the motors. When set, the keepalive streams
+/// DShot 0 (true disarm) regardless of what DSHOT_SPEEDS holds, so motors
+/// stop even if the motor governor task is wedged and deaf to
+/// COMMAD_ARM_VEHICLE (2026-07-08 incident: FSM + rc_kill + flip_kill all
+/// sent disarms on the watch, the governor consumed none of them, and the
+/// keepalive kept streaming the last speeds; the only remaining stop was
+/// pulling the battery).
+///
+/// Setters: rc_kill (SE kill, SF restart), flip_kill, gyro_runaway_kill.
+/// Set-once; cleared only by reboot (SF restart path). Setters MUST store
+/// this latch before any await, log, or watch send -- a plain atomic store
+/// is the one operation that cannot be blocked by a wedged task, a full
+/// log channel, or a lost wake.
+pub static MOTOR_KILL: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// Loop DShot keep-alive batches until the arm predicate returns `true`.
 ///
 /// Each iteration sends ~3000 DShot-0 frames (~390 ms at ~7.7 kHz) and then
