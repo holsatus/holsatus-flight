@@ -18,6 +18,7 @@ The firmware reads sensors through traits/signals and publishes to a signal bus;
 | Motors | FC -> host | `impl OutputGroup` for `HilMotors` (`set_motor_speeds([u16;4])`) | replaces DShot; sends final speeds out |
 
 Trait shapes (confirmed in `common/src/hw_abstraction/mod.rs`):
+
 ```rust
 pub trait Imu6Dof {
     async fn read_acc(&mut self) -> Result<[f32;3], DeviceError>;
@@ -61,18 +62,23 @@ Each phase has a goal, the firmware delta, the host delta, a **test runbook**, a
 **Host:** `phase0_link_char.py` — ping-pong fixed frames, measure round-trip latency + jitter.
 
 ### Runbook
+
 1. Wire the USB-serial adapter: adapter TX -> FC RX, adapter RX -> FC TX, GND -> GND. 3.3 V logic only.
 2. Flash the echo firmware (from `device/micoairh743v2-dev`):
+
    ```bash
    # Hold BOOT0, power-cycle the FC, release BOOT0, then:
    make flash-release BIN=hil_echo PORT=/dev/cu.usbserial-XXXX
    # Power-cycle again after flash to boot into the firmware.
    ```
+
 3. Find the serial device on macOS: `ls /dev/tty.usbserial-*`
 4. Run the host harness:
+
    ```bash
    python3 phase0_link_char.py /dev/tty.usbserial-XXXX 2000000
    ```
+
 5. Read the printed median / p99 / max RTT and jitter.
 
 ```python
@@ -98,6 +104,7 @@ print(f"n={len(rtts)} median={statistics.median(rtts):.1f}us "
 ```
 
 ### Pass/fail
+
 - p99 RTT well under 1000 us and bounded max -> free-running at 1 kHz is viable (Phase 4 on).
 - p99 approaching or exceeding 1000 us -> stay lockstep, or get a faster link before Phase 4.
 - **macOS gotcha:** a stock FTDI adapter defaults to a 16 ms USB latency timer. If you see ~16000 us RTT, that is the adapter, not the link. Lower the latency timer or use a low-latency adapter (e.g. an FT2232H with the timer set, or a CDC-ACM adapter). Resolve this before trusting any number.
@@ -107,12 +114,14 @@ print(f"n={len(rtts)} median={statistics.median(rtts):.1f}us "
 **Goal:** prove injected sensors propagate through calibration and the estimator on real silicon.
 
 **Firmware:** `bin/hil.rs` (sibling of `free_test.rs`):
+
 - Do not spawn the physical IMU reader. Spawn `imu_reader::main_6dof(HilImu::new(rx))`.
 - Spawn `hil_link_task` owning the UART: decode inbound frames, push IMU samples to `HilImu`'s channel.
 - Keep `att_estimator` and `eskf`. No motor tap yet.
 - Add a small FC->host debug frame carrying `AHRS_ATTITUDE_Q` (subscribe and TX). This also seeds the TX path for Phase 2.
 
 `HilImu` skeleton:
+
 ```rust
 struct HilImu { rx: Receiver<'static, CriticalSectionRawMutex, Imu6DofData<f32>, N> }
 impl Imu6Dof for HilImu {
@@ -125,12 +134,14 @@ impl Imu6Dof for HilImu {
 ```
 
 ### Runbook
+
 1. Flash: hold BOOT0, power-cycle, release BOOT0, then `make flash-release BIN=hil PORT=/dev/cu.usbserial-XXXX`. Power-cycle again to boot. Task startup is visible on the BT/UART log if the log task is running.
 2. Static test: from Python, send a steady "level, stationary" IMU frame (acc = [0,0,-9.81], gyr = [0,0,0]) at ~1 kHz for a few seconds. Read back the attitude debug frame.
 3. Tilt test: send "30 deg roll, stationary" (acc rotated 30 deg about X, gyr = 0). Read attitude.
 4. Dynamic test: send a constant roll rate (gyr_x = 0.5 rad/s) and watch reported roll ramp.
 
 ### Pass/fail
+
 - Static level -> reported attitude converges to level.
 - 30 deg tilt -> reported roll converges to ~30 deg.
 - Constant roll rate -> reported roll ramps at the commanded rate.
@@ -141,6 +152,7 @@ impl Imu6Dof for HilImu {
 **Goal:** first real HIL. The board flies the model.
 
 **Firmware:** add the motor path and RC injection.
+
 - Motor tap, low-friction option: a small task subscribing `CTRL_MOTORS` (`[f32;4]`), TX over the link. Leave ESCs disconnected.
 - Motor tap, faithful option: implement `OutputGroup` for `HilMotors`, feed it to the governor so you tap final `[u16;4]` DShot values (mirrors the IMU trait injection). Needs the governor to accept an injected output.
 - RC injection: link task publishes `RC_CHANNELS_RAW` + `RC_STATUS`. Inject baro/GNSS as the flight mode needs.
@@ -161,12 +173,14 @@ while True:
 ```
 
 ### Runbook
+
 1. Flash: hold BOOT0, power-cycle, release BOOT0, then `make flash-release BIN=hil PORT=/dev/cu.usbserial-XXXX`. Power-cycle to boot.
 2. Start the host: `python3 phase2_hil.py /dev/tty.usbserial-XXXX 2000000`.
 3. In the scenario script: hold disarm 1 s, send arm RC (throttle low, arm switch), then ramp throttle to hover.
 4. Log and plot: motor outputs, attitude, body rates, altitude.
 
 ### Pass/fail
+
 - Vehicle arms on the injected RC.
 - It lifts off and holds a bounded hover (altitude band, attitude near level) in the model.
 - If it diverges immediately, the physics model does not match the controller's tuning. Recheck mass/inertia/thrust map against `sim_config.toml` and the motor mixing sign/order.
@@ -178,6 +192,7 @@ while True:
 **Host:** scenarios = initial conditions + wind/turbulence + fault injection (GNSS dropout, IMU bias, baro step) + mission/RC + pass/fail constraints. Lockstep is not real-time-bound, so run many (slowly).
 
 Scenario format (example):
+
 ```yaml
 name: gnss_dropout_hover
 init: { alt: 5.0, level: true }
@@ -191,11 +206,13 @@ asserts:
 ```
 
 ### Runbook
+
 1. Flash `cargo run --bin hil --release`.
 2. `python3 run_suite.py scenarios/ /dev/tty.usbserial-XXXX 2000000`
 3. The runner loads each scenario, drives the rig, evaluates asserts, writes a pass/fail report + per-run logs.
 
 ### Pass/fail
+
 - The suite runs headless and emits pass/fail per scenario. This report is the artifact that reads as V&V, not a demo. Map each assert back to a UCA / safety constraint from the Capella trace.
 
 ## Phase 4 — Free-running real-time (native host)
@@ -207,11 +224,13 @@ asserts:
 **Host (native Rust):** move the link loop + physics off Python. Reuse `holsatus-sim`'s rapier3d `Sim`, or bridge to Gazebo. Hold RTF ~= 1 with bounded jitter using the Phase 0 budget.
 
 ### Runbook
-1. Flash: hold BOOT0, power-cycle, release BOOT0, then `make flash-release BIN=hil PORT=/dev/cu.usbserial-XXXX`. Power-cycle to boot.
+
+1. Flash the free-running `hil` build.
 2. Run the native host; log achieved RTF and the firmware's loop-period histogram.
 3. Re-run a Phase 3 scenario in free-running and diff outputs against the lockstep reference.
 
 ### Pass/fail
+
 - RTF sustained near 1.0; 1 kHz loop period holds with bounded jitter on target.
 - Free-running and lockstep agree on the same scenario within tolerance. Divergence means either timing-sensitive behaviour (the thing you wanted to find) or a rig artifact; the lockstep reference tells you which.
 
@@ -236,3 +255,4 @@ FC -> Host  MotorFrame:
   u16 crc
 Handshake (lockstep): SensorFrame N -> FC runs one cycle -> MotorFrame N -> host steps physics -> SensorFrame N+1.
 ```
+

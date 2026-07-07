@@ -40,6 +40,8 @@ BAUD = 115_200  # only rate with a genuine matched-baud Phase 0 measurement;
 # while the host thought it was running at 2M. See hil.rs HIL_LINK_BAUD.
 SENSOR_FRAME_LEN = 32
 ATTITUDE_FRAME_LEN = 25
+ATTITUDE_FRAME_SYNC = 0x5A
+ATTITUDE_FRAME_TYPE = 0x02
 ATTITUDE_FLAG_CAL_DONE = 1 << 0
 GRAVITY = 9.81
 
@@ -63,10 +65,11 @@ def build_sensor_frame(seq: int, acc: tuple, gyr: tuple) -> bytes:
 
 
 def parse_attitude_frame(buf: bytes):
-    if len(buf) != ATTITUDE_FRAME_LEN or buf[0] != 0x5A or buf[1] != 0x02:
+    if len(buf) != ATTITUDE_FRAME_LEN or buf[0] != ATTITUDE_FRAME_SYNC or buf[1] != ATTITUDE_FRAME_TYPE:
         return None
     body, crc_rx = buf[:23], struct.unpack("<H", buf[23:25])[0]
     if crc16_ccitt(body) != crc_rx:
+        print("CRC-16 check did not pass.")
         return None
     seq, i, j, k, w, flags = struct.unpack("<IffffB", buf[2:23])
     return {
@@ -74,6 +77,73 @@ def parse_attitude_frame(buf: bytes):
         "quat_ijkw": (i, j, k, w),
         "cal_done": bool(flags & ATTITUDE_FLAG_CAL_DONE),
     }
+
+
+class AttitudeFrameReader:
+    """Buffered, resyncing reader for AttitudeFrame replies.
+
+    hil.rs's reply path shares the executor with SD/FAT mount, loggers,
+    motor governor etc. at boot, so a reply can arrive late or truncated
+    even though the matched-baud Phase 0 echo test (no such contention)
+    measured a clean ~6ms RTT. A fixed-size ser.read(ATTITUDE_FRAME_LEN)
+    treats byte 0 of that read as frame start unconditionally: one
+    truncated read leaves stray bytes in the OS buffer and desyncs every
+    later frame for good. This instead accumulates bytes across calls and
+    scans for the sync/type pair, dropping one byte at a time on a CRC
+    miss, so a single bad read can only cost one frame, not the rest of
+    the run.
+    """
+
+    def __init__(self):
+        self.buf = bytearray()
+
+    def read(self, ser, timeout_s: float):
+        deadline = time.perf_counter() + timeout_s
+        while True:
+            frame = self._try_extract()
+            if frame is not None:
+                return frame
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                return None
+            # pyserial's read(size) blocks until `size` bytes arrive or its
+            # own timeout expires -- it does NOT return early just because
+            # some bytes showed up. Lockstep means nothing more than one
+            # frame is ever in flight, so requesting more than what's left
+            # to complete a candidate frame would burn the full per-call
+            # timeout waiting for bytes that aren't coming (measured: this
+            # turned a ~6ms round trip into a ~54ms one).
+            need = max(1, ATTITUDE_FRAME_LEN - len(self.buf))
+            chunk = ser.read(need)
+            if not chunk and time.perf_counter() >= deadline:
+                return None
+            self.buf.extend(chunk)
+
+    def _try_extract(self):
+        while True:
+            idx = self.buf.find(bytes([ATTITUDE_FRAME_SYNC]))
+            if idx == -1:
+                self.buf.clear()
+                return None
+            if idx > 0:
+                del self.buf[:idx]
+            if len(self.buf) < 2:
+                return None
+            if self.buf[1] != ATTITUDE_FRAME_TYPE:
+                del self.buf[0:1]
+                continue
+            if len(self.buf) < ATTITUDE_FRAME_LEN:
+                return None
+            candidate = bytes(self.buf[:ATTITUDE_FRAME_LEN])
+            att = parse_attitude_frame(candidate)
+            if att is None:
+                # Sync/type matched but CRC didn't -- a false sync inside
+                # unrelated bytes, not a real frame. Drop just the sync
+                # byte and keep scanning instead of trusting it.
+                del self.buf[0:1]
+                continue
+            del self.buf[:ATTITUDE_FRAME_LEN]
+            return att
 
 
 def quat_to_euler_deg(i, j, k, w):
@@ -98,6 +168,7 @@ def wait_for_calibration(ser, max_wait_s: float) -> bool:
     print(f"-- calibration warm-up: level, stationary (up to {max_wait_s:.0f}s) --")
     t0 = time.perf_counter()
     seq = 0
+    reader = AttitudeFrameReader()
     while True:
         t = time.perf_counter() - t0
         if t > max_wait_s:
@@ -105,8 +176,7 @@ def wait_for_calibration(ser, max_wait_s: float) -> bool:
                   f"replies will likely be the identity fallback, not a real estimate\n")
             return False
         ser.write(build_sensor_frame(seq, (0.0, 0.0, -GRAVITY), (0.0, 0.0, 0.0)))
-        reply = ser.read(ATTITUDE_FRAME_LEN)
-        att = parse_attitude_frame(reply)
+        att = reader.read(ser, ser.timeout)
         if att is not None and att["cal_done"]:
             print(f"calibration confirmed done at t={t:.2f}s (seq={seq})\n")
             return True
@@ -119,11 +189,11 @@ def run(ser, acc_fn, gyr_fn, duration_s: float, label: str):
     seq = 0
     last_print = 0.0
     n_bad = 0
+    reader = AttitudeFrameReader()
     while time.perf_counter() - t0 < duration_s:
         t = time.perf_counter() - t0
         ser.write(build_sensor_frame(seq, acc_fn(t), gyr_fn(t)))
-        reply = ser.read(ATTITUDE_FRAME_LEN)
-        att = parse_attitude_frame(reply)
+        att = reader.read(ser, ser.timeout)
         if att is None:
             n_bad += 1
         elif t - last_print > 0.2:
