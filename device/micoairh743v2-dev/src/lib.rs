@@ -15,6 +15,7 @@ pub mod ceiling_mode;
 pub mod config;
 pub mod fsm_state;
 pub mod imu_cal;
+pub mod led;
 pub mod log;
 pub mod gnss;
 pub mod mtf01;
