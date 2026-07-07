@@ -9,7 +9,10 @@
 //!   Manual:  pure ACRO/rate mode. Sticks command angular rates directly
 //!            (no self-levelling); throttle stick maps to collective thrust.
 //!            Arms on first non-idle throttle, disarms after the throttle +
-//!            mode have been idle for MANUAL_IDLE_DWELL_MS.
+//!            mode have been idle for MANUAL_IDLE_DWELL_MS. The arm is
+//!            aborted if the throttle rises above ARM_GUARD_MAX_THR before
+//!            the governor's arm sequence completes (throttle-high-on-arm
+//!            guard, D000020).
 //!   Auto:    closed-loop altitude-hold mission, trigger-armed from
 //!            GroundIdle, running AutoTakeoff -> AutoHover -> AutoLand:
 //!     AutoTakeoff: 1 s open-loop thrust ramp to BASE_THRUST (pushes through
@@ -1353,6 +1356,15 @@ async fn mission_fsm_task() -> ! {
     // 1.4 -> 1.75 (step 1).
     const MANUAL_THRUST_GAIN: f32 = BASE_THRUST * 2.00;
     const MANUAL_IDLE_DWELL_MS: u64 = 500;
+    // Throttle-high-on-arm guard. The governor's ~2.25 s arming sequence
+    // ignores throttle, so a stick wound up during that window slams the
+    // motors to the live command the instant arming completes (D000020:
+    // stick at 72% at completion -> instant uncontrolled leap, gyro-runaway
+    // kill 0.6 s later). If throttle rises above this while the arm
+    // sequence is still running, the FSM aborts the arm (the governor
+    // honors a disarm sent mid-sequence before applying any motor speed);
+    // the throttle must then return to idle before a new arm is accepted.
+    const ARM_GUARD_MAX_THR: f32 = 0.10;
     // Motor-saturation marker threshold (DShot command). Motors pin at the
     // governor's out_max, which defaults to common's DSHOT_MAX (2047); we
     // flag at >=2040 to absorb the output lowpass settling just shy of the
@@ -1430,6 +1442,11 @@ async fn mission_fsm_task() -> ! {
     // One-shot flag so an arm refusal by low-battery is logged once per
     // Manual session, not every tick.
     let mut arm_refused_logged: bool = false;
+    // Set when the throttle-high-on-arm guard aborts an arm attempt.
+    // Blocks re-arming until the throttle stick returns to idle, so the
+    // abort does not immediately re-trigger a fresh arm from the still-
+    // raised stick. See ARM_GUARD_MAX_THR.
+    let mut arm_guard_wait_idle: bool = false;
     // Battery-triggered forced descent: set to Some(start_instant) when
     // the FSM detects a non-flight-allowing tier while armed. None when
     // normal flight is permitted.
@@ -1703,6 +1720,7 @@ async fn mission_fsm_task() -> ! {
                         // fresh each Manual entry.
                         arm_command_sent = false;
                         arm_refused_logged = false;
+                        arm_guard_wait_idle = false;
                     }
                     Mode::Auto => {
                         // Auto-arm straight into Auto (no trigger). Gated:
@@ -1849,6 +1867,30 @@ async fn mission_fsm_task() -> ! {
                 let yaw_n = micoairh743v2::rc_kill::stick_norm(ch.raw[3]);
                 let thr_n = micoairh743v2::rc_kill::stick_throttle(ch.raw[2]);
 
+                // Throttle-high-on-arm guard: abort the arm if the stick
+                // rises past ARM_GUARD_MAX_THR while the governor's arming
+                // sequence is still running (armed=false). Skips the rest
+                // of the tick so no live thrust setpoint is published on
+                // the abort tick.
+                if arm_command_sent && !armed && thr_n > ARM_GUARD_MAX_THR {
+                    let mut s: heapless::String<96> = heapless::String::new();
+                    let _ = write!(
+                        s,
+                        "[fsm] ARM ABORT: thr={:.2} > {:.2} during arm sequence -- lower stick to idle",
+                        thr_n, ARM_GUARD_MAX_THR,
+                    );
+                    ulog::log_critical(s.as_str()).await;
+                    COMMAD_ARM_VEHICLE.send(false);
+                    zero_setpoints();
+                    arm_command_sent = false;
+                    arm_guard_wait_idle = true;
+                    continue;
+                }
+                if arm_guard_wait_idle && thr_n == 0.0 {
+                    arm_guard_wait_idle = false;
+                    ulog::log("[fsm] arm guard cleared -- throttle at idle, arming re-enabled");
+                }
+
                 fn expo(n: f32, k: f32) -> f32 {
                     (1.0 - k) * n + k * n * n * n
                 }
@@ -1940,7 +1982,7 @@ async fn mission_fsm_task() -> ! {
                 // times during that window. Battery must also permit
                 // flight: tiers below HEALTHY block arming until the
                 // pack is charged + the FC rebooted.
-                if !armed && !arm_command_sent && thr_n > 0.0 {
+                if !armed && !arm_command_sent && !arm_guard_wait_idle && thr_n > 0.0 {
                     if battery_allows_flight {
                         ulog::log("[fsm] Manual: throttle raised -- arming");
                         COMMAD_ARM_VEHICLE.send(true);
@@ -2011,6 +2053,7 @@ async fn mission_fsm_task() -> ! {
                     // Already armed; do not re-arm on first throttle in Manual.
                     arm_command_sent = true;
                     arm_refused_logged = false;
+                    arm_guard_wait_idle = false;
                     continue;
                 }
                 if ch.mode == Mode::Idle {
