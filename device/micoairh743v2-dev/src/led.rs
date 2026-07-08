@@ -106,6 +106,7 @@ pub async fn led_task(r: LedResources) -> ! {
 
     let mut tick: u32 = 0;
     let mut prev_severe = false;
+    let mut prev_killed = false;
     loop {
         Timer::after_millis(50).await;
         tick = tick.wrapping_add(1);
@@ -119,7 +120,17 @@ pub async fn led_task(r: LedResources) -> ! {
                 "[led] battery-severe override released"
             });
         }
-        let mode = if severe { LedMode::Error } else { get() };
+        // Kill-latch override: while MOTOR_KILL is set the keepalive streams
+        // DShot 0 no matter what the FSM/governor think, so any other color
+        // would be a lie (D000003: solid green "armed" for a whole session
+        // while the motors were latched dead by a boot-position SE edge).
+        // One-way until reboot, like the latch itself.
+        let killed = crate::dshot_driver::MOTOR_KILL.load(Ordering::Relaxed);
+        if killed && !prev_killed {
+            prev_killed = true;
+            crate::log::log("[led] KILL latched: red strobe (SF reboot to clear)");
+        }
+        let mode = if severe || killed { LedMode::Error } else { get() };
 
         // Liveness flick: solid colors go dark for one tick every 2 s.
         let flick = tick.is_multiple_of(40);

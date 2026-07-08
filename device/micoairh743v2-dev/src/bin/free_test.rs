@@ -1748,6 +1748,7 @@ async fn mission_fsm_task() -> ! {
                             && level
                             && battery_allows_flight
                             && lateral_ref_ok
+                            && !micoairh743v2::dshot_driver::MOTOR_KILL.load(Ordering::Relaxed)
                         {
                             ulog::log("[fsm] Idle -> Auto (auto-arm)");
                             led::set(LedMode::Arming);
@@ -2018,7 +2019,23 @@ async fn mission_fsm_task() -> ! {
                 // at idle. One-shot per attempt via arm_command_sent.
                 // Battery must permit flight: tiers below HEALTHY block
                 // arming until the pack is charged + the FC rebooted.
-                if !armed && !arm_command_sent && !arm_guard_wait_idle && thr_n <= ARM_GUARD_MAX_THR
+                // Never arm while the MOTOR_KILL latch is set: the keepalive
+                // would stream DShot 0 regardless, producing a solid-green
+                // "armed" drone whose motors can never spin (D000003 -- an
+                // SE edge at boot latched the kill for the whole session).
+                // The LED task renders the latch as a red strobe; SF reboots.
+                if micoairh743v2::dshot_driver::MOTOR_KILL.load(Ordering::Relaxed) {
+                    if !arm_refused_logged {
+                        arm_refused_logged = true;
+                        ulog::log_critical(
+                            "[fsm] arming blocked: KILL latched -- SF (reboot) to clear",
+                        )
+                        .await;
+                    }
+                } else if !armed
+                    && !arm_command_sent
+                    && !arm_guard_wait_idle
+                    && thr_n <= ARM_GUARD_MAX_THR
                 {
                     if battery_allows_flight {
                         ulog::log("[fsm] Manual: arming -- throttle up when LED is solid green");
