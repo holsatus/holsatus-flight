@@ -1669,6 +1669,24 @@ async fn mission_fsm_task() -> ! {
                 drain_rc_events();
 
                 if !on_ground {
+                    // Defensive invariant: GroundIdle means disarmed. If the
+                    // motors are armed while we sit here (any path -- known
+                    // one was a pre-arm completing after Manual bounced back
+                    // on an SA=Auto flip inside the governor's arm window),
+                    // command disarm every tick until the governor confirms.
+                    // Without this, alt_hold owns the thrust setpoint while
+                    // no state reads the sticks -- the D000008 dead-stick
+                    // armed-idle + baro-drift liftoff.
+                    if armed {
+                        COMMAD_ARM_VEHICLE.send(false);
+                        zero_setpoints();
+                        if last_ground_idle_log.elapsed().as_millis() as u64
+                            >= GROUND_IDLE_LOG_PERIOD_MS
+                        {
+                            last_ground_idle_log = embassy_time::Instant::now();
+                            ulog::log("[fsm] GroundIdle but motors armed -- disarming (defensive)");
+                        }
+                    }
                     // Cannot leave Idle until physically grounded.
                     // (e.g. just-landed; lidar still settling.)
                     led::set(LedMode::Blocked);
@@ -1811,6 +1829,17 @@ async fn mission_fsm_task() -> ! {
                         land_floor_since = None;
                         manual_idle_since = None;
                     } else {
+                        // Cancel the pre-arm BEFORE bouncing: Manual entry
+                        // already sent arm=true, and the governor's ~2.25 s
+                        // sequence completes it regardless of what state the
+                        // FSM is in by then. Without this disarm, an SA
+                        // Mid->High flip inside the arm window left the
+                        // drone armed-at-idle in GroundIdle with alt_hold
+                        // owning thrust and no stick authority (D000008:
+                        // 40 s of dead-stick armed idle, then baro-drift
+                        // liftoff, ended by SE kill).
+                        COMMAD_ARM_VEHICLE.send(false);
+                        zero_setpoints();
                         state = State::GroundIdle;
                         manual_idle_since = None;
                         arm_command_sent = false;
