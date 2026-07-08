@@ -1798,9 +1798,10 @@ async fn mission_fsm_task() -> ! {
                 drain_rc_events();
 
                 // Seamless mode switches out of Manual (read live SA level).
-                // SA=Auto: if armed (in flight) hand off to Auto with the
-                // graceful attitude slew; if not yet armed (on ground) bounce
-                // through Idle so the auto-arm gate runs. SA=Idle in the air
+                // SA=Auto: if armed, hand off to Auto with the graceful
+                // attitude slew; if the pre-arm is still completing, stay in
+                // Manual and hand off on the tick the governor goes live (an
+                // SA Mid->High flip is one fluid motion). SA=Idle in the air
                 // commits to Landing (self-levelling descent); on the ground it
                 // falls through to the existing throttle+mode-idle disarm.
                 if ch.mode == Mode::Auto {
@@ -1828,23 +1829,25 @@ async fn mission_fsm_task() -> ! {
                         ground_first_hit = None;
                         land_floor_since = None;
                         manual_idle_since = None;
+                        continue;
                     } else {
-                        // Cancel the pre-arm BEFORE bouncing: Manual entry
-                        // already sent arm=true, and the governor's ~2.25 s
-                        // sequence completes it regardless of what state the
-                        // FSM is in by then. Without this disarm, an SA
-                        // Mid->High flip inside the arm window left the
-                        // drone armed-at-idle in GroundIdle with alt_hold
-                        // owning thrust and no stick authority (D000008:
-                        // 40 s of dead-stick armed idle, then baro-drift
-                        // liftoff, ended by SE kill).
-                        COMMAD_ARM_VEHICLE.send(false);
-                        zero_setpoints();
-                        state = State::GroundIdle;
-                        manual_idle_since = None;
-                        arm_command_sent = false;
+                        // SA=Auto while the pre-arm is still completing:
+                        // STAY in Manual and let the arm finish; the armed
+                        // branch above hands off to Auto on the tick the
+                        // governor goes live. This makes SA Mid->High one
+                        // fluid motion with no timing trap. The previous
+                        // designs both failed the operator here: bouncing
+                        // to GroundIdle without cancelling the pre-arm
+                        // orphaned an arm command (D000008 dead-stick armed
+                        // idle), and bouncing WITH a cancel just landed at
+                        // the auto-arm gate, which indoors (no GPS fix, no
+                        // flow lidar) refuses forever -- the operator kept
+                        // hitting blocked-red by flipping High inside the
+                        // 2.25 s window. Falling through keeps the Manual
+                        // guard active (throttle >10% still aborts) and
+                        // GroundIdle's defensive disarm remains the
+                        // backstop for any armed-while-idle state.
                     }
-                    continue;
                 }
                 if ch.mode == Mode::Idle && armed && lidar > ON_GROUND_LIDAR_M {
                     ulog::log("[fsm] Manual -> Landing (SA=Idle in air)");
