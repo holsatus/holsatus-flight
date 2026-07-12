@@ -33,6 +33,15 @@
 //! Auto and disarms immediately in Manual; low battery while armed latches a
 //! forced descent ramp. flip_kill and gyro_runaway_kill back everything up.
 //!
+//! HIL bench mode (auto-selected at boot): if the battery sense reads USB
+//! power (< 6 V -- FC powered from the FTDI wire, no pack), USART1 is
+//! rerouted from the text-log mirror to the binary HIL link and the
+//! physical BMI088 reader is replaced by host-injected IMU data
+//! (hil_link_task / hil_imu_task at the bottom of this file); the BMI088
+//! chip-mount rotation override and the GNSS reader are skipped. On pack
+//! power everything runs the normal flight configuration. One binary, no
+//! reflashing between bench HIL sessions and flights.
+//!
 //! Status LED (see src/led.rs for the renderer):
 //!   DARK        booting / calibrating -- not ready yet
 //!   BLUE        ready to arm (flip SA: Mid=Manual, High=Auto)
@@ -492,6 +501,8 @@ static FLOW_EST_Y_MM: AtomicI32 = AtomicI32::new(0);
 
 use core::fmt::Write;
 
+use common::errors::DeviceError;
+use common::hw_abstraction::Imu6Dof;
 use common::nalgebra::{UnitQuaternion, Vector3};
 use common::signals;
 use common::tasks::att_estimator;
@@ -501,9 +512,11 @@ use common::tasks::controller_rate;
 use common::tasks::eskf::EskfEstimate;
 use common::types::actuators::MotorsState;
 use common::types::config::DshotConfig;
+use common::types::measurements::Imu6DofData;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_stm32::{bind_interrupts, peripherals};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Timer;
 use micoairh743v2::alt_hold::ALTITUDE_SETPOINT;
 use micoairh743v2::led::{self, LedMode};
@@ -546,7 +559,41 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     // the full color legend.
     thread_spawner.spawn(micoairh743v2::led::led_task(r.leds).unwrap());
 
-    thread_spawner.spawn(uart_writer_task(r.uart_log, r.bt_log, r.sdmmc).unwrap());
+    // Battery monitor first: its seed sample decides HIL-vs-flight below.
+    // It owns ADC1, samples at 10 Hz, publishes filtered mV via
+    // BATTERY_FILTERED_MV. alt_hold reads the live signal each tick for its
+    // voltage compensation; FSM/manual log can read it too.
+    thread_spawner.spawn(micoairh743v2::battery::battery_monitor_task(r.battery).unwrap());
+
+    // HIL-vs-flight switch. On USB bench power (pack sense < 6 V) USART1 is
+    // rerouted from the text-log mirror to the binary HIL link and the
+    // physical IMU/GNSS are replaced by host-injected data -- same binary
+    // for bench and flight, no reflashing. The battery task publishes its
+    // blocking seed sample before its first await, so this normally
+    // resolves on the first poll; the timeout only covers a wedged ADC and
+    // falls back to flight mode (real sensors -- safe in the air, merely
+    // useless on the bench, whereas HIL mode in the air would fly on a
+    // dead link).
+    let hil_mode = {
+        let start = embassy_time::Instant::now();
+        loop {
+            if let Some(mv) = micoairh743v2::battery::BATTERY_FILTERED_MV.try_get() {
+                break micoairh743v2::battery::is_usb_power_range(mv);
+            }
+            if start.elapsed().as_millis() >= 2_000 {
+                break false;
+            }
+            Timer::after_millis(10).await;
+        }
+    };
+    // Route USART1 to exactly one owner.
+    let (log_uart, hil_uart) = if hil_mode {
+        (None, Some(r.uart_log))
+    } else {
+        (Some(r.uart_log), None)
+    };
+
+    thread_spawner.spawn(uart_writer_task(log_uart, r.bt_log, r.sdmmc).unwrap());
 
     ulog::log("[free] board init ok");
     // Git provenance line: every flight log now starts with the short SHA
@@ -554,6 +601,11 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     // build time). Combined with the Makefile's `git-clean` pre-flash gate,
     // this gives end-to-end version tracing from log back to a commit.
     ulog::log(concat!("[free] git=", env!("GIT_SHA")));
+    ulog::log(if hil_mode {
+        "[free] USB power -- HIL mode: USART1=link, IMU=injected, GNSS off"
+    } else {
+        "[free] pack power -- flight mode: physical sensors"
+    });
 
     signals::CONTROL_FREQUENCY.store(1000, Ordering::Relaxed);
 
@@ -573,7 +625,12 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
     override_motor_params().await;
     override_pid_gains().await;
-    override_imu_rot().await;
+    if !hil_mode {
+        // HIL data arrives pre-rotated in drone body frame (the host builds
+        // it; there is no physical chip mounting to correct for), so the
+        // imu_reader rotation stays at its Identity default in HIL mode.
+        override_imu_rot().await;
+    }
 
     Timer::after_millis(10).await;
 
@@ -584,7 +641,11 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
     Timer::after_millis(1).await;
 
-    level_0_spawner.spawn(resources::imu_reader_task(r.imu).unwrap());
+    if !hil_mode {
+        // In HIL mode hil_imu_task (below) feeds imu_reader::main_6dof from
+        // the link instead of the BMI088 driver.
+        level_0_spawner.spawn(resources::imu_reader_task(r.imu).unwrap());
+    }
     level_0_spawner.spawn(resources::motor_governor_task(r.motors, DshotConfig::Dshot300).unwrap());
     level_0_spawner.spawn(controller_rate::main().unwrap());
 
@@ -604,7 +665,18 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     // Find-my-drone: beep the ESCs if RC is gone >30 s (crash / TX off / out of range).
     thread_spawner.spawn(micoairh743v2::resources::rc_loss_beacon_task().unwrap());
     thread_spawner.spawn(micoairh743v2::ceiling_mode::ceiling_mode_task().unwrap());
-    thread_spawner.spawn(micoairh743v2::gnss::gnss_reader_task(r.gps).unwrap());
+    match hil_uart {
+        // HIL: the binary link + injected-IMU feed replace the GNSS reader
+        // (nothing injects GNSS today; on the bench the auto-arm lateral
+        // reference comes from the lidar path).
+        Some(u) => {
+            thread_spawner.spawn(hil_link_task(u).unwrap());
+            thread_spawner.spawn(hil_imu_task().unwrap());
+        }
+        None => {
+            thread_spawner.spawn(micoairh743v2::gnss::gnss_reader_task(r.gps).unwrap());
+        }
+    }
     thread_spawner.spawn(micoairh743v2::odid::odid_tx_task(r.odid).unwrap());
     thread_spawner.spawn(micoairh743v2::phoenix_telem::phoenix_telem_task(r.telem).unwrap());
 
@@ -622,12 +694,6 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
     level_1_spawner.spawn(ahrs_to_eskf_bridge().unwrap());
     level_1_spawner.spawn(controller_angle::main().unwrap());
     level_1_spawner.spawn(angle_to_rate_bridge().unwrap());
-
-    // Battery monitor owns ADC1, samples at 10 Hz, publishes filtered mV via
-    // BATTERY_FILTERED_MV. alt_hold reads the live signal each tick for its
-    // voltage compensation; FSM/manual log can read it too. Replaces the
-    // previous one-shot boot read.
-    thread_spawner.spawn(micoairh743v2::battery::battery_monitor_task(r.battery).unwrap());
 
     thread_spawner.spawn(resources::alt_hold_task(r.baro).unwrap());
     thread_spawner.spawn(mtf01_reader_task(r.mtf01).unwrap());
@@ -832,23 +898,37 @@ async fn wait_for_ahrs_ready() {
     }
 }
 
+// USART1 interrupt bindings, shared by the two mutually exclusive owners of
+// the wire: uart_writer_task (flight mode, TX-only text log) and
+// hil_link_task (HIL mode, full-duplex binary link). bind_interrupts!
+// generates real #[interrupt] handlers, so this must appear exactly once in
+// the binary even though only one of the two tasks ever runs.
+bind_interrupts!(struct Usart1Irqs {
+    DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH0>;
+    DMA2_STREAM7 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH7>;
+    USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
+});
+
 #[embassy_executor::task]
-async fn uart_writer_task(r: UartLogResources, bt: BtLogResources, sd: SdmmcLogResources) -> ! {
+async fn uart_writer_task(
+    r: Option<UartLogResources>,
+    bt: BtLogResources,
+    sd: SdmmcLogResources,
+) -> ! {
     use block_device_adapters::BufStream;
     use core::fmt::Write as FmtWrite;
     use embedded_fatfs::{FileSystem, FsOptions};
     use embedded_io_async_061::Write as _;
 
-    bind_interrupts!(struct UartIrqs {
-        DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH0>;
-        USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
-    });
     bind_interrupts!(struct BtUartIrqs {
         DMA2_STREAM3 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH3>;
         UART8        => embassy_stm32::usart::InterruptHandler<peripherals::UART8>;
     });
 
-    let mut uart = UartTx::new(r.usart, r.tx, r.dma, UartIrqs, UartConfig::default()).ok();
+    // None in HIL mode: hil_link_task owns USART1 for the binary protocol
+    // and text logs go to BT + SD only.
+    let mut uart =
+        r.and_then(|r| UartTx::new(r.usart, r.tx, r.dma, Usart1Irqs, UartConfig::default()).ok());
     // Onboard BT module (115200 by default, matches USART1). If init fails
     // we silently continue -- USART1 + SD logs still work.
     let mut bt_uart = UartTx::new(bt.usart, bt.tx, bt.dma, BtUartIrqs, UartConfig::default()).ok();
@@ -3187,4 +3267,207 @@ async fn mtf01_reader_task(r: Mtf01Resources) -> ! {
             None => {}
         }
     }
+}
+
+// =============================================================================
+// HIL Phase 1 -- IMU injection over the link (see references/hil_implementation_plan.md).
+//
+// Active only in HIL mode (USB power at boot, see main). hil_link_task owns
+// USART1 (the same wire uart_writer_task mirrors text logs to in flight
+// mode; main routes the resource to exactly one of them) and speaks a small
+// fixed-size binary protocol: it decodes inbound SensorFrames into
+// Imu6DofData and pushes them into HIL_IMU_CHAN, and replies with the
+// latest AHRS_ATTITUDE_Q as an AttitudeFrame. hil_imu_task feeds that
+// channel into common::tasks::imu_reader::main_6dof via the HilImu adapter,
+// exactly as the real BMI088 reader would.
+// =============================================================================
+
+/// Link baud rate. NOTE: the "2,000,000 baud" Phase 0 result in
+/// tools/hil_link_test_result_h743v2.md is not trustworthy -- hil_echo.rs
+/// passed UartConfig::default() unmodified, and embassy-stm32's default
+/// baudrate is 115200 (see embassy-stm32/src/usart/mod.rs), so that run
+/// actually had the host at 2M talking to firmware pinned at 115200. The
+/// ~54% loss it measured was a baud mismatch artefact, not a real 2M
+/// link result -- and Phase 1 (which does set this field correctly) saw
+/// 100% loss at a genuine, matched 2M, so 2M is unproven on this
+/// adapter/cable. 115200 is the only rate with a real matched-baud
+/// measurement (n=49941/50000, ~99.9%) behind it, and lockstep doesn't
+/// need more than that -- use it until there's a reason to revisit.
+const HIL_LINK_BAUD: u32 = 115_200;
+
+/// Host -> FC sensor frame (Phase 1: IMU only). Fixed 32 bytes, all
+/// multi-byte fields little-endian:
+///   [0]       sync  = 0xA5
+///   [1]       type  = 0x01
+///   [2..6)    seq   : u32   -- host-side monotonic frame counter, echoed back
+///   [6..18)   acc   : f32x3 -- m/s^2, drone body frame
+///   [18..30)  gyr   : f32x3 -- rad/s, drone body frame
+///   [30..32)  crc16 : u16   -- CRC-16/CCITT-FALSE over bytes [0..30)
+const SENSOR_FRAME_LEN: usize = 32;
+const SENSOR_FRAME_SYNC: u8 = 0xA5;
+const SENSOR_FRAME_TYPE: u8 = 0x01;
+
+/// FC -> Host attitude debug frame. Fixed 25 bytes:
+///   [0]       sync  = 0x5A
+///   [1]       type  = 0x02
+///   [2..6)    seq   : u32   -- echoes the sensor frame that produced this estimate
+///   [6..22)   q     : f32x4 -- AHRS_ATTITUDE_Q, nalgebra coords order (i, j, k, w)
+///   [22]      flags : u8    -- bit0 = imu_cal::CAL_DONE. Before this is set,
+///                              q is just hil_link_task's identity fallback
+///                              (att_estimator isn't spawned yet), not a real
+///                              estimate -- a host waiting to inject a
+///                              non-level test profile should poll this
+///                              instead of guessing a fixed warm-up duration.
+///   [23..25)  crc16 : u16   -- CRC-16/CCITT-FALSE over bytes [0..23)
+const ATTITUDE_FRAME_LEN: usize = 25;
+const ATTITUDE_FRAME_SYNC: u8 = 0x5A;
+const ATTITUDE_FRAME_TYPE: u8 = 0x02;
+const ATTITUDE_FLAG_CAL_DONE: u8 = 1 << 0;
+
+/// CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF). Matches the Python host's
+/// crcmod/manual implementation -- see phase1_imu_inject.py.
+fn crc16_ccitt(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0xFFFF;
+    for &byte in data {
+        crc ^= (byte as u16) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
+
+struct SensorFrame {
+    seq: u32,
+    acc: [f32; 3],
+    gyr: [f32; 3],
+}
+
+fn decode_sensor_frame(buf: &[u8; SENSOR_FRAME_LEN]) -> Option<SensorFrame> {
+    if buf[0] != SENSOR_FRAME_SYNC || buf[1] != SENSOR_FRAME_TYPE {
+        return None;
+    }
+    let crc_rx = u16::from_le_bytes([buf[30], buf[31]]);
+    if crc16_ccitt(&buf[0..30]) != crc_rx {
+        return None;
+    }
+    let seq = u32::from_le_bytes(buf[2..6].try_into().unwrap());
+    let mut acc = [0.0_f32; 3];
+    let mut gyr = [0.0_f32; 3];
+    for i in 0..3 {
+        acc[i] = f32::from_le_bytes(buf[6 + i * 4..10 + i * 4].try_into().unwrap());
+        gyr[i] = f32::from_le_bytes(buf[18 + i * 4..22 + i * 4].try_into().unwrap());
+    }
+    Some(SensorFrame { seq, acc, gyr })
+}
+
+fn encode_attitude_frame(
+    seq: u32,
+    q: &UnitQuaternion<f32>,
+    cal_done: bool,
+) -> [u8; ATTITUDE_FRAME_LEN] {
+    let mut buf = [0u8; ATTITUDE_FRAME_LEN];
+    buf[0] = ATTITUDE_FRAME_SYNC;
+    buf[1] = ATTITUDE_FRAME_TYPE;
+    buf[2..6].copy_from_slice(&seq.to_le_bytes());
+    let c = q.coords; // nalgebra order: [i, j, k, w]
+    buf[6..10].copy_from_slice(&c[0].to_le_bytes());
+    buf[10..14].copy_from_slice(&c[1].to_le_bytes());
+    buf[14..18].copy_from_slice(&c[2].to_le_bytes());
+    buf[18..22].copy_from_slice(&c[3].to_le_bytes());
+    buf[22] = if cal_done { ATTITUDE_FLAG_CAL_DONE } else { 0 };
+    let crc = crc16_ccitt(&buf[0..23]);
+    buf[23..25].copy_from_slice(&crc.to_le_bytes());
+    buf
+}
+
+const HIL_CHAN_N: usize = 4;
+static HIL_IMU_CHAN: embassy_sync::channel::Channel<
+    CriticalSectionRawMutex,
+    Imu6DofData<f32>,
+    HIL_CHAN_N,
+> = embassy_sync::channel::Channel::new();
+
+struct HilImu {
+    rx: embassy_sync::channel::Receiver<
+        'static,
+        CriticalSectionRawMutex,
+        Imu6DofData<f32>,
+        HIL_CHAN_N,
+    >,
+}
+
+impl HilImu {
+    fn new(
+        rx: embassy_sync::channel::Receiver<
+            'static,
+            CriticalSectionRawMutex,
+            Imu6DofData<f32>,
+            HIL_CHAN_N,
+        >,
+    ) -> Self {
+        Self { rx }
+    }
+}
+
+impl Imu6Dof for HilImu {
+    async fn read_acc_gyr(&mut self) -> Result<Imu6DofData<f32>, DeviceError> {
+        Ok(self.rx.receive().await)
+    }
+    async fn read_acc(&mut self) -> Result<[f32; 3], DeviceError> {
+        Ok(self.read_acc_gyr().await?.acc)
+    }
+    async fn read_gyr(&mut self) -> Result<[f32; 3], DeviceError> {
+        Ok(self.read_acc_gyr().await?.gyr)
+    }
+}
+
+#[embassy_executor::task]
+async fn hil_link_task(r: UartLogResources) -> ! {
+    use embassy_stm32::usart::Uart;
+
+    let mut cfg = UartConfig::default();
+    cfg.baudrate = HIL_LINK_BAUD;
+
+    let (mut tx, mut rx) = Uart::new(r.usart, r.rx, r.tx, r.dma_rx, r.dma, Usart1Irqs, cfg)
+        .unwrap()
+        .split();
+
+    let snd_imu = HIL_IMU_CHAN.sender();
+    let mut att_rcv = signals::AHRS_ATTITUDE_Q.receiver();
+
+    let mut buf = [0u8; SENSOR_FRAME_LEN];
+    loop {
+        if rx.read(&mut buf).await.is_err() {
+            continue;
+        }
+        let Some(frame) = decode_sensor_frame(&buf) else {
+            continue;
+        };
+
+        // Blocks if imu_reader hasn't drained the previous sample yet --
+        // this backpressure is what makes the link lockstep: the host's
+        // send rate self-paces to the controller's consumption rate.
+        snd_imu
+            .send(Imu6DofData {
+                timestamp_us: embassy_time::Instant::now().as_micros(),
+                acc: frame.acc,
+                gyr: frame.gyr,
+            })
+            .await;
+
+        let q = att_rcv.try_get().unwrap_or(UnitQuaternion::identity());
+        let cal_done = micoairh743v2::imu_cal::CAL_DONE.load(core::sync::atomic::Ordering::Relaxed);
+        let out = encode_attitude_frame(frame.seq, &q, cal_done);
+        tx.write(&out).await.ok();
+    }
+}
+
+#[embassy_executor::task]
+async fn hil_imu_task() -> ! {
+    common::tasks::imu_reader::main_6dof(HilImu::new(HIL_IMU_CHAN.receiver())).await
 }

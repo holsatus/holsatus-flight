@@ -4,7 +4,9 @@ Phase 1 HIL host: inject a synthetic IMU stream over the USART1 link and
 read back the FC's AHRS_ATTITUDE_Q debug frame. Lockstep -- one SensorFrame
 in, one AttitudeFrame reply out, per references/hil_implementation_plan.md.
 
-Wire protocol (must match src/bin/hil.rs SENSOR_FRAME_*/ATTITUDE_FRAME_*):
+Wire protocol (must match src/bin/free_test.rs SENSOR_FRAME_*/ATTITUDE_FRAME_*;
+the former hil.rs binary is merged into free_test.rs, which enters HIL mode
+automatically when the FC boots on USB power):
 
   SensorFrame (host -> FC, 32 bytes, little-endian):
     u8  sync=0xA5, u8 type=0x01, u32 seq, f32 acc[3], f32 gyr[3], u16 crc16
@@ -15,7 +17,7 @@ Wire protocol (must match src/bin/hil.rs SENSOR_FRAME_*/ATTITUDE_FRAME_*):
     identity fallback (att_estimator isn't spawned yet), not a real estimate.
 
 CRC is CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over all preceding
-bytes in the frame -- matches hil.rs::crc16_ccitt exactly.
+bytes in the frame -- matches free_test.rs::crc16_ccitt exactly.
 
 Every mode waits for CAL_DONE (streaming level/stationary data) before
 switching to its actual profile -- see wait_for_calibration(). Guessing a
@@ -37,7 +39,7 @@ import time
 BAUD = 115_200  # only rate with a genuine matched-baud Phase 0 measurement;
 # the "2,000,000" Phase 0 result was a mismatch artefact -- hil_echo.rs never
 # set cfg.baudrate, so firmware stayed pinned at embassy's 115200 default
-# while the host thought it was running at 2M. See hil.rs HIL_LINK_BAUD.
+# while the host thought it was running at 2M. See free_test.rs HIL_LINK_BAUD.
 SENSOR_FRAME_LEN = 32
 ATTITUDE_FRAME_LEN = 25
 ATTITUDE_FRAME_SYNC = 0x5A
@@ -82,7 +84,7 @@ def parse_attitude_frame(buf: bytes):
 class AttitudeFrameReader:
     """Buffered, resyncing reader for AttitudeFrame replies.
 
-    hil.rs's reply path shares the executor with SD/FAT mount, loggers,
+    The FC's reply path shares the executor with SD/FAT mount, loggers,
     motor governor etc. at boot, so a reply can arrive late or truncated
     even though the matched-baud Phase 0 echo test (no such contention)
     measured a clean ~6ms RTT. A fixed-size ser.read(ATTITUDE_FRAME_LEN)

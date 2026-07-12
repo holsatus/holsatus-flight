@@ -2,6 +2,8 @@
 
 Grounded in the `micoairh743v2-dev` branch and the architecture diagram. Two binaries: a HIL firmware variant on the H743, and a host program on the Mac (Python first, native later).
 
+> **Update (2026-07-12):** the separate `bin/hil.rs` firmware variant has been merged into `free_test.rs`. The one binary selects HIL mode at boot when the battery sense reads USB power (< 6 V) and flight mode on pack power, so `make flash BIN=free_test` covers both; references to `BIN=hil` / `bin/hil.rs` below are historical.
+
 ## 0. The seam, in one line
 
 The firmware reads sensors through traits/signals and publishes to a signal bus; HIL swaps the bottom layer to come from a serial link and swaps the motor output to send over the link. Nothing between the estimator and the mixer changes.
