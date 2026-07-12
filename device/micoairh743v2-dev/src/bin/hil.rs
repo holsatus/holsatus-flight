@@ -8,8 +8,14 @@
 //! Modes (selected from the TX15 via rc_kill):
 //!   Manual:  pure ACRO/rate mode. Sticks command angular rates directly
 //!            (no self-levelling); throttle stick maps to collective thrust.
-//!            Arms on first non-idle throttle, disarms after the throttle +
-//!            mode have been idle for MANUAL_IDLE_DWELL_MS.
+//!            Pre-arms on Manual entry while the stick is at idle (the
+//!            governor's ~2.25 s arm window runs before the operator
+//!            reaches the throttle; wait for the solid-green LED). Disarms
+//!            after throttle + mode have been idle for
+//!            MANUAL_IDLE_DWELL_MS. The arm is aborted if the throttle
+//!            rises above ARM_GUARD_MAX_THR before the sequence completes
+//!            (throttle-high-on-arm guard, D000020) and re-fires once the
+//!            stick returns to idle.
 //!   Auto:    closed-loop altitude-hold mission, trigger-armed from
 //!            GroundIdle, running AutoTakeoff -> AutoHover -> AutoLand:
 //!     AutoTakeoff: 1 s open-loop thrust ramp to BASE_THRUST (pushes through
@@ -26,6 +32,14 @@
 //! Failsafes: RC link loss while armed takes the autonomous landing path in
 //! Auto and disarms immediately in Manual; low battery while armed latches a
 //! forced descent ramp. flip_kill and gyro_runaway_kill back everything up.
+//!
+//! Status LED (see src/led.rs for the renderer):
+//!   DARK        booting / calibrating -- not ready yet
+//!   BLUE        ready to arm (flip SA: Mid=Manual, High=Auto)
+//!   GREEN blink arm sequence running -- hands off the throttle
+//!   GREEN       armed, ready to fly -- push throttle up
+//!   RED solid   an RC input / gate is preventing arming (fixable now)
+//!   RED strobe  error: SD missing, boot abort, Fault, severe battery
 //!
 //! IMPORTANT: the drone WILL lift off in either mode. Be ready on the TX15
 //! SE kill switch at all times.
@@ -51,7 +65,6 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering};
 use common::errors::DeviceError;
 use common::hw_abstraction::Imu6Dof;
 use common::types::measurements::Imu6DofData;
-use cortex_m::interrupt::CriticalSection;
 use defmt_rtt as _;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 // NOTE: panic_probe is intentionally NOT used in this binary; we provide
@@ -497,6 +510,7 @@ use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_time::Timer;
 use micoairh743v2::alt_hold::ALTITUDE_SETPOINT;
+use micoairh743v2::led::{self, LedMode};
 use micoairh743v2::log as ulog;
 use micoairh743v2::mtf01;
 use micoairh743v2::resources::{
@@ -531,9 +545,10 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
     let r = resources::split(p);
 
-    let mut led_green = Output::new(r.leds.green, Level::High, Speed::Low);
-    let mut led_blue = Output::new(r.leds.blue, Level::Low, Speed::Low);
-    let mut led_red = Output::new(r.leds.red, Level::Low, Speed::Low);
+    // Status LED task owns the three LED pins; everything else publishes a
+    // mode via led::set. Boots dark (Init) through cal -- see led.rs for
+    // the full color legend.
+    thread_spawner.spawn(micoairh743v2::led::led_task(r.leds).unwrap());
 
     thread_spawner.spawn(uart_writer_task(r.bt_log, r.sdmmc).unwrap());
 
@@ -664,73 +679,26 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
         }
     }
     if ulog::SD_MOUNTED.load(Ordering::Relaxed) != 1 {
-        ulog::log("[free] SD ABORT -- motors will not arm (3x blue + 1x red forever)");
-        led_green.set_low();
+        ulog::log("[free] SD ABORT -- motors will not arm (red strobe)");
+        micoairh743v2::led::set(micoairh743v2::led::LedMode::Error);
         loop {
-            for _ in 0..3 {
-                led_blue.set_high();
-                Timer::after_millis(150).await;
-                led_blue.set_low();
-                Timer::after_millis(150).await;
-            }
-            led_red.set_high();
-            Timer::after_millis(400).await;
-            led_red.set_low();
-            Timer::after_millis(600).await;
+            Timer::after_secs(60).await;
         }
     }
 
-    // Visual executor-liveness + battery-tier indicator.
-    //
-    // Normal (HEALTHY / USB_POWER):
-    //   GREEN toggles every 500 ms (1 Hz blink). Red off.
-    //   Same liveness signal as before; decoupled from the log so that
-    //   if the writer task dies but the executor is alive, the LED keeps
-    //   blinking. If the LED freezes, the whole executor has panicked.
-    //
-    // Severe battery tier (LAND_NOW / CRITICAL / DAMAGE):
-    //   RED strobes at 5 Hz (toggles every 100 ms). Green off.
-    //   Visible from the drone without reading the BT log -- the only
-    //   in-flight cue that battery-driven forced descent is active or
-    //   that the pack is below the flight threshold.
-    //
-    // dshot-rate log line still fires every 2 s as before.
+    // dshot-rate log line every 2 s. All LED rendering (liveness flick,
+    // battery-severe red strobe, FSM state colors) lives in led::led_task.
     let mut prev_tx =
         micoairh743v2::dshot_driver::DSHOT_TX_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-    let mut bat_tier_rcv_hb = micoairh743v2::battery::BATTERY_TIER
-        .receiver()
-        .expect("BATTERY_TIER receiver slot (heartbeat)");
-    let mut led_tick: u8 = 0;
     loop {
-        Timer::after_millis(100).await;
-        led_tick = led_tick.wrapping_add(1);
-
-        let bat_tier = bat_tier_rcv_hb
-            .try_get()
-            .unwrap_or(micoairh743v2::battery::Tier::Healthy);
-
-        if bat_tier.is_severe() {
-            // 5 Hz red strobe; green held off so the alarm is unambiguous.
-            led_green.set_low();
-            led_red.toggle();
-        } else {
-            // Normal 1 Hz green heartbeat (toggle every 5 ticks = 500 ms).
-            led_red.set_low();
-            if led_tick % 5 == 0 {
-                led_green.toggle();
-            }
-        }
-
-        // Log dshot frame rate every 2 s (20 ticks).
-        if led_tick % 20 == 0 {
-            let cur_tx = micoairh743v2::dshot_driver::DSHOT_TX_COUNT
-                .load(core::sync::atomic::Ordering::Relaxed);
-            let rate = (cur_tx - prev_tx) / 2;
-            prev_tx = cur_tx;
-            let mut s: heapless::String<64> = heapless::String::new();
-            let _ = write!(s, "[free] hb dshot={}Hz", rate);
-            ulog::log(s.as_str());
-        }
+        Timer::after_secs(2).await;
+        let cur_tx = micoairh743v2::dshot_driver::DSHOT_TX_COUNT
+            .load(core::sync::atomic::Ordering::Relaxed);
+        let rate = (cur_tx - prev_tx) / 2;
+        prev_tx = cur_tx;
+        let mut s: heapless::String<64> = heapless::String::new();
+        let _ = write!(s, "[free] hb dshot={}Hz", rate);
+        ulog::log(s.as_str());
     }
 }
 
@@ -825,6 +793,7 @@ async fn wait_for_ahrs_ready() {
                         r_mean, p_mean, LEVEL_THRESHOLD_DEG
                     );
                     ulog::log(s.as_str());
+                    led::set(LedMode::Error);
                     loop {
                         Timer::after_secs(60).await;
                     }
@@ -874,10 +843,7 @@ async fn uart_writer_task(bt: BtLogResources, sd: SdmmcLogResources) -> ! {
 
     // Mirror one log line (+ CRLF) to UART8 (BT). May be a no-op if init
     // failed; the write is best-effort.
-    async fn write_line(
-        bt: &mut Option<UartTx<'static, embassy_stm32::mode::Async>>,
-        msg: &[u8],
-    ) {
+    async fn write_line(bt: &mut Option<UartTx<'static, embassy_stm32::mode::Async>>, msg: &[u8]) {
         if let Some(u) = bt.as_mut() {
             u.write(msg).await.ok();
             u.write(b"\r\n").await.ok();
@@ -1140,6 +1106,7 @@ async fn mission_fsm_task() -> ! {
 
     if ulog::SD_MOUNTED.load(Ordering::Relaxed) != 1 {
         ulog::log("[fsm] ABORT: no SD card, not arming");
+        led::set(LedMode::Error);
         loop {
             Timer::after_secs(60).await;
         }
@@ -1154,6 +1121,7 @@ async fn mission_fsm_task() -> ! {
         while !micoairh743v2::rc_kill::RC_LINK_READY.load(Ordering::Relaxed) {
             if start.elapsed().as_millis() >= RC_WAIT_MS {
                 ulog::log("[fsm] ABORT: no RC link after 30 s -- no arm");
+                led::set(LedMode::Error);
                 loop {
                     Timer::after_secs(60).await;
                 }
@@ -1219,9 +1187,13 @@ async fn mission_fsm_task() -> ! {
                 if warned {
                     ulog::log("[fsm] preflight OK -- proceeding");
                 }
+                led::set(LedMode::Ready);
                 break;
             }
             warned = true;
+            // Something the operator can fix (switch/stick position or
+            // battery) is holding preflight: solid red.
+            led::set(LedMode::Blocked);
             if last_log.elapsed().as_secs() >= 2 {
                 last_log = embassy_time::Instant::now();
                 // Two lines back-to-back; each fits in LOG_LEN=64. The
@@ -1337,6 +1309,15 @@ async fn mission_fsm_task() -> ! {
     // 1.4 -> 1.75 (step 1).
     const MANUAL_THRUST_GAIN: f32 = BASE_THRUST * 2.00;
     const MANUAL_IDLE_DWELL_MS: u64 = 500;
+    // Throttle-high-on-arm guard. The governor's ~2.25 s arming sequence
+    // ignores throttle, so a stick wound up during that window slams the
+    // motors to the live command the instant arming completes (D000020:
+    // stick at 72% at completion -> instant uncontrolled leap, gyro-runaway
+    // kill 0.6 s later). If throttle rises above this while the arm
+    // sequence is still running, the FSM aborts the arm (the governor
+    // honors a disarm sent mid-sequence before applying any motor speed);
+    // the throttle must then return to idle before a new arm is accepted.
+    const ARM_GUARD_MAX_THR: f32 = 0.10;
     // Motor-saturation marker threshold (DShot command). Motors pin at the
     // governor's out_max, which defaults to common's DSHOT_MAX (2047); we
     // flag at >=2040 to absorb the output lowpass settling just shy of the
@@ -1414,6 +1395,11 @@ async fn mission_fsm_task() -> ! {
     // One-shot flag so an arm refusal by low-battery is logged once per
     // Manual session, not every tick.
     let mut arm_refused_logged: bool = false;
+    // Set when the throttle-high-on-arm guard aborts an arm attempt.
+    // Blocks re-arming until the throttle stick returns to idle, so the
+    // abort does not immediately re-trigger a fresh arm from the still-
+    // raised stick. See ARM_GUARD_MAX_THR.
+    let mut arm_guard_wait_idle: bool = false;
     // Battery-triggered forced descent: set to Some(start_instant) when
     // the FSM detects a non-flight-allowing tier while armed. None when
     // normal flight is permitted.
@@ -1663,8 +1649,27 @@ async fn mission_fsm_task() -> ! {
                 drain_rc_events();
 
                 if !on_ground {
+                    // Defensive invariant: GroundIdle means disarmed. If the
+                    // motors are armed while we sit here (any path -- known
+                    // one was a pre-arm completing after Manual bounced back
+                    // on an SA=Auto flip inside the governor's arm window),
+                    // command disarm every tick until the governor confirms.
+                    // Without this, alt_hold owns the thrust setpoint while
+                    // no state reads the sticks -- the D000008 dead-stick
+                    // armed-idle + baro-drift liftoff.
+                    if armed {
+                        COMMAD_ARM_VEHICLE.send(false);
+                        zero_setpoints();
+                        if last_ground_idle_log.elapsed().as_millis() as u64
+                            >= GROUND_IDLE_LOG_PERIOD_MS
+                        {
+                            last_ground_idle_log = embassy_time::Instant::now();
+                            ulog::log("[fsm] GroundIdle but motors armed -- disarming (defensive)");
+                        }
+                    }
                     // Cannot leave Idle until physically grounded.
                     // (e.g. just-landed; lidar still settling.)
+                    led::set(LedMode::Blocked);
                     Timer::after_millis(50).await;
                     continue;
                 }
@@ -1687,8 +1692,14 @@ async fn mission_fsm_task() -> ! {
                         // fresh each Manual entry.
                         arm_command_sent = false;
                         arm_refused_logged = false;
+                        arm_guard_wait_idle = false;
                     }
                     Mode::Auto => {
+                        // LED: SA requests Auto; unless the auto-arm fires
+                        // below (which overrides with Arming), one of its
+                        // gates is blocking -- solid red tells the operator
+                        // to check throttle/level/battery/lateral-ref.
+                        led::set(LedMode::Blocked);
                         // Auto-arm straight into Auto (no trigger). Gated:
                         // edge-latch (one arm per SA->Auto), on-ground (already
                         // true here), throttle near bottom (so position-based
@@ -1716,8 +1727,10 @@ async fn mission_fsm_task() -> ! {
                             && level
                             && battery_allows_flight
                             && lateral_ref_ok
+                            && !micoairh743v2::dshot_driver::MOTOR_KILL.load(Ordering::Relaxed)
                         {
                             ulog::log("[fsm] Idle -> Auto (auto-arm)");
+                            led::set(LedMode::Arming);
                             auto_arm_latch = false;
                             state = State::AutoHover;
                             // Direct-thrust AutoHover; auto_alt_sp tracks the
@@ -1751,7 +1764,11 @@ async fn mission_fsm_task() -> ! {
                             ulog::log(s.as_str());
                         }
                     }
-                    Mode::Idle => { /* stay */ }
+                    Mode::Idle => {
+                        // Disarmed, on ground, preflight long since passed:
+                        // ready to arm.
+                        led::set(LedMode::Ready);
+                    }
                 }
 
                 Timer::after_millis(50).await;
@@ -1761,9 +1778,10 @@ async fn mission_fsm_task() -> ! {
                 drain_rc_events();
 
                 // Seamless mode switches out of Manual (read live SA level).
-                // SA=Auto: if armed (in flight) hand off to Auto with the
-                // graceful attitude slew; if not yet armed (on ground) bounce
-                // through Idle so the auto-arm gate runs. SA=Idle in the air
+                // SA=Auto: if armed, hand off to Auto with the graceful
+                // attitude slew; if the pre-arm is still completing, stay in
+                // Manual and hand off on the tick the governor goes live (an
+                // SA Mid->High flip is one fluid motion). SA=Idle in the air
                 // commits to Landing (self-levelling descent); on the ground it
                 // falls through to the existing throttle+mode-idle disarm.
                 if ch.mode == Mode::Auto {
@@ -1791,12 +1809,25 @@ async fn mission_fsm_task() -> ! {
                         ground_first_hit = None;
                         land_floor_since = None;
                         manual_idle_since = None;
+                        continue;
                     } else {
-                        state = State::GroundIdle;
-                        manual_idle_since = None;
-                        arm_command_sent = false;
+                        // SA=Auto while the pre-arm is still completing:
+                        // STAY in Manual and let the arm finish; the armed
+                        // branch above hands off to Auto on the tick the
+                        // governor goes live. This makes SA Mid->High one
+                        // fluid motion with no timing trap. The previous
+                        // designs both failed the operator here: bouncing
+                        // to GroundIdle without cancelling the pre-arm
+                        // orphaned an arm command (D000008 dead-stick armed
+                        // idle), and bouncing WITH a cancel just landed at
+                        // the auto-arm gate, which indoors (no GPS fix, no
+                        // flow lidar) refuses forever -- the operator kept
+                        // hitting blocked-red by flipping High inside the
+                        // 2.25 s window. Falling through keeps the Manual
+                        // guard active (throttle >10% still aborts) and
+                        // GroundIdle's defensive disarm remains the
+                        // backstop for any armed-while-idle state.
                     }
-                    continue;
                 }
                 if ch.mode == Mode::Idle && armed && lidar > ON_GROUND_LIDAR_M {
                     ulog::log("[fsm] Manual -> Landing (SA=Idle in air)");
@@ -1831,6 +1862,44 @@ async fn mission_fsm_task() -> ! {
                 let pitch_n = -micoairh743v2::rc_kill::stick_norm(ch.raw[1]);
                 let yaw_n = micoairh743v2::rc_kill::stick_norm(ch.raw[3]);
                 let thr_n = micoairh743v2::rc_kill::stick_throttle(ch.raw[2]);
+
+                // Throttle-high-on-arm guard: abort the arm if the stick
+                // rises past ARM_GUARD_MAX_THR while the governor's arming
+                // sequence is still running (armed=false). Skips the rest
+                // of the tick so no live thrust setpoint is published on
+                // the abort tick.
+                if arm_command_sent && !armed && thr_n > ARM_GUARD_MAX_THR {
+                    let mut s: heapless::String<96> = heapless::String::new();
+                    let _ = write!(
+                        s,
+                        "[fsm] ARM ABORT: thr={:.2} > {:.2} during arm sequence -- lower stick to idle",
+                        thr_n, ARM_GUARD_MAX_THR,
+                    );
+                    ulog::log_critical(s.as_str()).await;
+                    COMMAD_ARM_VEHICLE.send(false);
+                    zero_setpoints();
+                    arm_command_sent = false;
+                    arm_guard_wait_idle = true;
+                    continue;
+                }
+                if arm_guard_wait_idle && thr_n == 0.0 {
+                    arm_guard_wait_idle = false;
+                    ulog::log("[fsm] arm guard cleared -- throttle at idle, arming re-enabled");
+                }
+
+                // LED: armed = green solid (fly), arm sequence running =
+                // green blink (hands off the throttle), guard tripped or
+                // stick too high to start the arm = solid red (lower the
+                // stick), otherwise blue (arm fires on the next tick).
+                led::set(if armed {
+                    LedMode::Armed
+                } else if arm_guard_wait_idle || thr_n > ARM_GUARD_MAX_THR {
+                    LedMode::Blocked
+                } else if arm_command_sent {
+                    LedMode::Arming
+                } else {
+                    LedMode::Ready
+                });
 
                 fn expo(n: f32, k: f32) -> f32 {
                     (1.0 - k) * n + k * n * n * n
@@ -1917,15 +1986,38 @@ async fn mission_fsm_task() -> ! {
                     ulog::log(s.as_str());
                 }
 
-                // Arm on first non-idle throttle. One-shot per Manual entry:
-                // motor governor takes ~4.5 s to flip `armed` to true, and
-                // the per-tick re-fire would otherwise log + re-send ~450
-                // times during that window. Battery must also permit
-                // flight: tiers below HEALTHY block arming until the
-                // pack is charged + the FC rebooted.
-                if !armed && !arm_command_sent && thr_n > 0.0 {
+                // Keep the governor armed whenever Manual is active and the
+                // guard is not holding. Entering Manual pre-arms immediately
+                // (the stick is at idle then), so the ~2.25 s arm window
+                // runs BEFORE the operator reaches for the throttle. The
+                // previous arm-on-first-throttle trigger made every normal
+                // smooth throttle raise abort (D000001/D000004: 17 ARM
+                // ABORTs, zero completed arms -- a thumb crosses the 10%
+                // guard line ~20 ms after leaving zero). After a guard
+                // abort this re-fires automatically once the stick is back
+                // at idle. One-shot per attempt via arm_command_sent.
+                // Battery must permit flight: tiers below HEALTHY block
+                // arming until the pack is charged + the FC rebooted.
+                // Never arm while the MOTOR_KILL latch is set: the keepalive
+                // would stream DShot 0 regardless, producing a solid-green
+                // "armed" drone whose motors can never spin (D000003 -- an
+                // SE edge at boot latched the kill for the whole session).
+                // The LED task renders the latch as a red strobe; SF reboots.
+                if micoairh743v2::dshot_driver::MOTOR_KILL.load(Ordering::Relaxed) {
+                    if !arm_refused_logged {
+                        arm_refused_logged = true;
+                        ulog::log_critical(
+                            "[fsm] arming blocked: KILL latched -- SF (reboot) to clear",
+                        )
+                        .await;
+                    }
+                } else if !armed
+                    && !arm_command_sent
+                    && !arm_guard_wait_idle
+                    && thr_n <= ARM_GUARD_MAX_THR
+                {
                     if battery_allows_flight {
-                        ulog::log("[fsm] Manual: throttle raised -- arming");
+                        ulog::log("[fsm] Manual: arming -- throttle up when LED is solid green");
                         COMMAD_ARM_VEHICLE.send(true);
                         arm_command_sent = true;
                     } else if !arm_refused_logged {
@@ -1974,6 +2066,9 @@ async fn mission_fsm_task() -> ! {
                 // throttle, body velocity on the right stick, yaw rate on the
                 // left stick. The lateral controller produces the tilt; this
                 // state slews the attitude setpoint toward (level + tilt).
+                // LED: green blink while the governor is still arming
+                // (auto-arm path), solid green once live.
+                led::set(if armed { LedMode::Armed } else { LedMode::Arming });
                 let cur_q = signals::AHRS_ATTITUDE_Q
                     .try_get()
                     .unwrap_or_else(UnitQuaternion::identity);
@@ -1994,6 +2089,7 @@ async fn mission_fsm_task() -> ! {
                     // Already armed; do not re-arm on first throttle in Manual.
                     arm_command_sent = true;
                     arm_refused_logged = false;
+                    arm_guard_wait_idle = false;
                     continue;
                 }
                 if ch.mode == Mode::Idle {
@@ -2085,6 +2181,7 @@ async fn mission_fsm_task() -> ! {
                 // Manual (acro) too, so seed + slew the attitude setpoint here
                 // exactly like Auto. AUTO_VEL_SP is held at zero (top of loop),
                 // so the lateral controller damps toward zero velocity = hold.
+                led::set(if armed { LedMode::Armed } else { LedMode::Arming });
                 let cur_q = signals::AHRS_ATTITUDE_Q
                     .try_get()
                     .unwrap_or_else(UnitQuaternion::identity);
@@ -2177,6 +2274,7 @@ async fn mission_fsm_task() -> ! {
             }
 
             State::Fault => {
+                led::set(LedMode::Error);
                 // Terminal landing pad after a hard failsafe. Hold motors
                 // disarmed and setpoints zero. Exit only when:
                 //   * RC link is back AND on-ground gate clears AND mode
@@ -2415,6 +2513,8 @@ async fn flip_kill() -> ! {
         if d.acc[2] > AZ_INVERTED_THRESHOLD {
             inverted_count += 1;
             if inverted_count >= FLIP_COUNT_THRESHOLD {
+                // Latch first (unblockable), then the normal disarm path.
+                micoairh743v2::dshot_driver::MOTOR_KILL.store(true, Ordering::Relaxed);
                 COMMAD_ARM_VEHICLE.send(false);
                 ulog::log("[kill] FLIP DETECTED -- motors disarmed");
 
@@ -2451,6 +2551,8 @@ async fn gyro_runaway_kill() -> ! {
         if gmax > GYRO_RUNAWAY_THRESHOLD {
             count += 1;
             if count >= GYRO_RUNAWAY_COUNT {
+                // Latch first (unblockable), then the normal disarm path.
+                micoairh743v2::dshot_driver::MOTOR_KILL.store(true, Ordering::Relaxed);
                 COMMAD_ARM_VEHICLE.send(false);
                 let mut s: heapless::String<96> = heapless::String::new();
                 let _ = write!(
@@ -3197,7 +3299,12 @@ static HIL_IMU_CHAN: embassy_sync::channel::Channel<
 > = embassy_sync::channel::Channel::new();
 
 struct HilImu {
-    rx: embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, Imu6DofData<f32>, HIL_CHAN_N>,
+    rx: embassy_sync::channel::Receiver<
+        'static,
+        CriticalSectionRawMutex,
+        Imu6DofData<f32>,
+        HIL_CHAN_N,
+    >,
 }
 
 impl HilImu {
