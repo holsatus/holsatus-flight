@@ -140,7 +140,7 @@ features = ["embedded-io-async-070"]
 
 [dependencies.mavio]
 git = "https://gitlab.com/peterkrull/mavio/"
-branch = "holsatus-branch"
+rev = "6844d3ec45b82686a44ac37b4e7df56d2673fef9"
 optional = true
 default-features = false
 features = ["dlct-common", "embedded-io-async"]
