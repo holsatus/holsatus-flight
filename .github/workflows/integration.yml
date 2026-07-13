@@ -2,7 +2,7 @@ name: Simulated integration flights
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "micoairh743v2-dev" ]
   pull_request:
     branches: [ "main" ]
 
