@@ -1,5 +1,5 @@
 use embassy_futures::select::{select, Either};
-use embassy_time::{Duration, Instant, Ticker, Timer};
+use embassy_time::{Duration, Instant, Ticker};
 use nalgebra::{SMatrix, SVector, SVectorView, SVectorViewMut, UnitQuaternion, matrix, vector};
 use tinympc_rs::{AntiSphere, ProjectMulti, ProjectMultiExt as _, ProjectSingleExt as _, Solver, Sphere, policy::FixedPolicy};
 
@@ -204,7 +204,12 @@ pub async fn main() -> ! {
     let mut control_sig = SVector::zeros();
     let mut x_now = SVector::zeros();
 
-    Timer::after_millis(3500).await;
+    // Wait for the first real ESKF estimate rather than a fixed delay: the
+    // previous `Timer::after_millis(3500)` here was an unexplained magic-
+    // number sleep that outlasted motor_governor's 100ms arm-timeout window,
+    // so the very first arm attempt always disarmed before this task (and
+    // the angle/rate loops downstream of it) ever produced a motor command.
+    rcv_eskf_estimate.get().await;
 
     info!("[mpc] Entering main loop");
 

@@ -69,6 +69,7 @@ pub fn test_entry(
     #[allow(unused)]
     test_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = env_logger::try_init();
     let _enter = RUNTIME.enter();
 
     let args = Args::parse();
