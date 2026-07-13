@@ -234,16 +234,6 @@ async fn sample_baseline(baro: &mut Dps310I2c<impl I2c>) -> f32 {
     sum / BASELINE_SAMPLES as f32
 }
 
-fn format_baro_log(alt_m: f32, setpoint_m: f32, thrust: f32) -> heapless::String<64> {
-    let mut s: heapless::String<64> = heapless::String::new();
-    let _ = write!(
-        s,
-        "[baro] alt={:.3}m sp={:.1}m thr={:.3}",
-        alt_m, setpoint_m, thrust
-    );
-    s
-}
-
 pub async fn main(i2c: impl I2c, addr: u8) -> ! {
     defmt::info!("[alt_hold] task started");
 

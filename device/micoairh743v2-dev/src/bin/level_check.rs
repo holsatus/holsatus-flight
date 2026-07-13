@@ -176,9 +176,6 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
 #[embassy_executor::task]
 async fn uart_only_writer(r: UartLogResources) -> ! {
-    use embedded_io_async_061::Write as _;
-
-
     let mut uart = UartTx::new(r.usart, r.tx, r.dma, UartLogIrqs, UartConfig::default()).ok();
 
     loop {

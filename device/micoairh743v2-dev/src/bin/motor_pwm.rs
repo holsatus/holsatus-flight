@@ -15,12 +15,10 @@
 #![no_std]
 #![no_main]
 
-use core::fmt::Write;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_time::Timer;
-use heapless::String;
 use {defmt_rtt as _, panic_probe as _};
 
 use micoairh743v2::resources::UartLogIrqs;

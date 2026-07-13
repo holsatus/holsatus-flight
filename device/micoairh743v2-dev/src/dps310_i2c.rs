@@ -11,7 +11,6 @@ use embedded_hal_async::i2c::I2c;
 // ── Register addresses ────────────────────────────────────────────────────────
 
 const REG_PSR_B2:     u8 = 0x00;
-const REG_TMP_B2:     u8 = 0x03;
 const REG_PRS_CFG:    u8 = 0x06;
 const REG_TMP_CFG:    u8 = 0x07;
 const REG_MEAS_CFG:   u8 = 0x08;
