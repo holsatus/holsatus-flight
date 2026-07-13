@@ -43,7 +43,7 @@ jobs:
     - name: Build every micoairh743v2-dev binary
       run: |
         cd device/micoairh743v2-dev
-        for bin in $(cargo metadata --no-deps --format-version1 | jq -r '.packages[0].targets[] | select(.kind[]=="bin") | .name'); do
+        for bin in $(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].targets[] | select(.kind[]=="bin") | .name'); do
           echo "::group::$bin"
           cargo build --bin "$bin"
           echo "::endgroup::"
