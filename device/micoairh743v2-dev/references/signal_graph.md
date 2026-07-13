@@ -1,13 +1,13 @@
-# `free_test.rs` signal graph
+# `flight.rs` signal graph
 
-Inter-task data flow for the `free_test` binary on the MicoAir H743v2.
+Inter-task data flow for the `flight` binary on the MicoAir H743v2.
 
 There is no central blackboard object: each labelled edge is a `pub static`
 of `Watch<T>`, `Signal<T>`, `Channel<T>`, `Broadcast<T>` or `Atomic*`. The
 sender side calls `.sender()` / `.signal()` / `.send()` / `.store()`;
 the receiver side calls `.receiver()` / `.wait()` / `.recv()` / `.load()`.
 
-Audited from `device/micoairh743v2-dev/src/bin/free_test.rs` (tasks spawned
+Audited from `device/micoairh743v2-dev/src/bin/flight.rs` (tasks spawned
 at lines 506-548) plus dependencies in `common/src/tasks/*` and
 `device/micoairh743v2-dev/src/{alt_hold,rc_kill,battery,mtf01,resources}.rs`.
 
@@ -176,13 +176,12 @@ Edge style legend:
   would terminate at it.
 - `bmi270_logger_task` runs its own SPI3 driver and does not publish to the
   shared IMU slots -- it is a passive A/B comparison sensor.
-- `mag_yaw_logger` subscribes to `CAL_MULTI_MAG_DATA[0]` but no task in
-  `free_test.rs` publishes it (the compass reader is spawned only in
-  `flight.rs`). The slot stays empty for the lifetime of this binary.
+- `mag_yaw_logger` subscribes to `CAL_MULTI_MAG_DATA[0]`, which is published
+  by `compass_reader`, spawned here via `resources::alt_hold_task`.
 - `param_storage_task` is spawned but is currently a stub with no signal
   traffic.
 - The following `common/src/tasks/*` exist but are **not spawned** by
-  `free_test.rs`, so their associated signals have no producer here:
+  `flight.rs`, so their associated signals have no producer here:
   `signal_router`, `calibrator`, `arm_blocker`, `commander`,
   `usb_manager`, `imu_manager`, `gnss_reader`, `eskf::main`,
   `controller_mpc`, `in_flight_estimator`, `rc_reader`, `rc_binder`.

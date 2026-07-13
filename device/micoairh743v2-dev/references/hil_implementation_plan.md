@@ -2,7 +2,7 @@
 
 Grounded in the `micoairh743v2-dev` branch and the architecture diagram. Two binaries: a HIL firmware variant on the H743, and a host program on the Mac (Python first, native later).
 
-> **Update (2026-07-12):** the separate `bin/hil.rs` firmware variant has been merged into `free_test.rs`. The one binary selects HIL mode at boot when the battery sense reads USB power (< 6 V) and flight mode on pack power, so `make flash BIN=free_test` covers both; references to `BIN=hil` / `bin/hil.rs` below are historical.
+> **Update (2026-07-12):** the separate `bin/hil.rs` firmware variant has been merged into `flight.rs`. The one binary selects HIL mode at boot when the battery sense reads USB power (< 6 V) and flight mode on pack power, so `make flash BIN=flight` covers both; references to `BIN=hil` / `bin/hil.rs` below are historical.
 
 ## 0. The seam, in one line
 
@@ -115,7 +115,7 @@ print(f"n={len(rtts)} median={statistics.median(rtts):.1f}us "
 
 **Goal:** prove injected sensors propagate through calibration and the estimator on real silicon.
 
-**Firmware:** `bin/hil.rs` (sibling of `free_test.rs`):
+**Firmware:** `bin/flight.rs`
 
 - Do not spawn the physical IMU reader. Spawn `imu_reader::main_6dof(HilImu::new(rx))`.
 - Spawn `hil_link_task` owning the UART: decode inbound frames, push IMU samples to `HilImu`'s channel.
@@ -257,4 +257,3 @@ FC -> Host  MotorFrame:
   u16 crc
 Handshake (lockstep): SensorFrame N -> FC runs one cycle -> MotorFrame N -> host steps physics -> SensorFrame N+1.
 ```
-

@@ -4,8 +4,8 @@ Phase 1 HIL host: inject a synthetic IMU stream over the USART1 link and
 read back the FC's AHRS_ATTITUDE_Q debug frame. Lockstep -- one SensorFrame
 in, one AttitudeFrame reply out, per references/hil_implementation_plan.md.
 
-Wire protocol (must match src/bin/free_test.rs SENSOR_FRAME_*/ATTITUDE_FRAME_*;
-the former hil.rs binary is merged into free_test.rs, which enters HIL mode
+Wire protocol (must match src/bin/flight.rs SENSOR_FRAME_*/ATTITUDE_FRAME_*;
+the former hil.rs binary is merged into flight.rs, which enters HIL mode
 automatically when the FC boots on USB power):
 
   SensorFrame (host -> FC, 32 bytes, little-endian):
@@ -17,7 +17,7 @@ automatically when the FC boots on USB power):
     identity fallback (att_estimator isn't spawned yet), not a real estimate.
 
 CRC is CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over all preceding
-bytes in the frame -- matches free_test.rs::crc16_ccitt exactly.
+bytes in the frame -- matches flight.rs::crc16_ccitt exactly.
 
 Every mode waits for CAL_DONE (streaming level/stationary data) before
 switching to its actual profile -- see wait_for_calibration(). Guessing a
@@ -39,7 +39,7 @@ import time
 BAUD = 115_200  # only rate with a genuine matched-baud Phase 0 measurement;
 # the "2,000,000" Phase 0 result was a mismatch artefact -- hil_echo.rs never
 # set cfg.baudrate, so firmware stayed pinned at embassy's 115200 default
-# while the host thought it was running at 2M. See free_test.rs HIL_LINK_BAUD.
+# while the host thought it was running at 2M. See flight.rs HIL_LINK_BAUD.
 SENSOR_FRAME_LEN = 32
 ATTITUDE_FRAME_LEN = 25
 ATTITUDE_FRAME_SYNC = 0x5A

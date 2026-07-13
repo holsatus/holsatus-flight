@@ -22,7 +22,7 @@ pub static ALTITUDE_SETPOINT: Signal<CriticalSectionRawMutex, f32> = Signal::new
 /// When true, alt_hold's PID skips its `TRUE_Z_THRUST_SP` write so the
 /// FSM's Manual (ACRO) state can own thrust from the throttle stick
 /// without racing this task. The `angle_to_rate_bridge` in
-/// `free_test.rs` checks the same flag for `TRUE_RATE_SP` so all
+/// `flight.rs` checks the same flag for `TRUE_RATE_SP` so all
 /// auto-control writes are silenced together. Updated per-tick by
 /// `mission_fsm_task` to `matches!(state, State::Manual)`.
 pub static MANUAL_BYPASS: AtomicBool = AtomicBool::new(false);
@@ -393,8 +393,10 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
                 if baro_ewma > ceiling() {
                     let mut s: heapless::String<64> = heapless::String::new();
                     let _ = write!(
-                        s, "[alt] CEILING BREACH baro={:.2}m cap={:.1}m -- forced descent",
-                        baro_ewma, ceiling()
+                        s,
+                        "[alt] CEILING BREACH baro={:.2}m cap={:.1}m -- forced descent",
+                        baro_ewma,
+                        ceiling()
                     );
                     crate::log::log(s.as_str());
                     if !MANUAL_BYPASS.load(Ordering::Relaxed)
@@ -511,7 +513,8 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
             landing_state = Some((Instant::now(), anchor));
             let mut s: heapless::String<64> = heapless::String::new();
             let _ = write!(
-                s, "[alt] LANDING RAMP start h={:.2}m anchor={:.3}",
+                s,
+                "[alt] LANDING RAMP start h={:.2}m anchor={:.3}",
                 alt_filtered, anchor,
             );
             crate::log::log(s.as_str());
@@ -547,9 +550,7 @@ pub async fn main(i2c: impl I2c, addr: u8) -> ! {
         // software cap from an era before the closed-loop was trusted. 10.0
         // is 2.2x BASE_THRUST, plenty for normal climb while still bounded
         // well below full motor authority.
-        if !MANUAL_BYPASS.load(Ordering::Relaxed)
-            && !AUTO_DIRECT_THRUST.load(Ordering::Relaxed)
-        {
+        if !MANUAL_BYPASS.load(Ordering::Relaxed) && !AUTO_DIRECT_THRUST.load(Ordering::Relaxed) {
             snd_thrust.send(thrust.clamp(0.0, 10.0));
         }
 

@@ -35,7 +35,7 @@ use crate::dshot_driver::{DshotDriver, UpDmaWaveform};
 // ================================================================================
 // QMC5883L magnetometer calibration (single source of truth).
 //
-// Every binary that uses the compass (flight, free_test, sub_hover_test, ...)
+// Every binary that uses the compass (flight, sub_hover_test, ...)
 // goes through `compass_reader` below, which applies these constants. To
 // re-calibrate after a hardware change (battery/cable re-route, new FC mount):
 //   1. Flash `mag_cal` binary, capture 120 s of rotation per run
@@ -600,7 +600,7 @@ pub async fn alt_hold_task(r: BaroResources) -> ! {
 
 /// Set up I2C2 and run ONLY the compass reader.
 ///
-/// Used by test binaries (free_test, sub_hover_test, pid_sweep_test) that
+/// Used by test binaries (flight, sub_hover_test, pid_sweep_test) that
 /// want magnetometer yaw fusion in att_estimator but deliberately skip
 /// altitude-hold (because the mission owns TRUE_Z_THRUST_SP directly and
 /// running alt_hold concurrently creates a setpoint race).

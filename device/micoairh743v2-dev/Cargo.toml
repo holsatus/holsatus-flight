@@ -179,13 +179,6 @@ doctest = false
 bench = false
 
 [[bin]]
-name = "free_test"
-path = "src/bin/free_test.rs"
-test = false
-doctest = false
-bench = false
-
-[[bin]]
 name = "mag_cal"
 path = "src/bin/mag_cal.rs"
 test = false

@@ -2,7 +2,7 @@
 //!
 //! Captures a zero-motion bias estimate and writes it into
 //! `imu_reader::params::TABLE`. Used by every flight-capable binary
-//! (flight, free_test, sub_hover_test, pid_sweep_test).
+//! (flight, sub_hover_test, pid_sweep_test).
 //!
 //! Gate sequence before the capture window:
 //!   1. Wait until the drone is both STATIONARY (|gyro| small) and
@@ -116,7 +116,13 @@ pub async fn apply() {
 
         if last_heartbeat.elapsed() >= Duration::from_millis(HEARTBEAT_MS) {
             last_heartbeat = Instant::now();
-            let status = if still && level { "OK" } else if !still { "moving" } else { "tilted" };
+            let status = if still && level {
+                "OK"
+            } else if !still {
+                "moving"
+            } else {
+                "tilted"
+            };
             let mut s: heapless::String<64> = heapless::String::new();
             let _ = write!(
                 s,
@@ -180,14 +186,16 @@ pub async fn apply() {
 
     let mut s: heapless::String<64> = heapless::String::new();
     let _ = write!(
-        s, "[cal] acc=[{:.3},{:.3},{:.3}]",
+        s,
+        "[cal] acc=[{:.3},{:.3},{:.3}]",
         acc_bias[0], acc_bias[1], acc_bias[2]
     );
     ulog::log(s.as_str());
 
     let mut s: heapless::String<64> = heapless::String::new();
     let _ = write!(
-        s, "[cal] gyr=[{:.4},{:.4},{:.4}]",
+        s,
+        "[cal] gyr=[{:.4},{:.4},{:.4}]",
         gyr_bias[0], gyr_bias[1], gyr_bias[2]
     );
     ulog::log(s.as_str());

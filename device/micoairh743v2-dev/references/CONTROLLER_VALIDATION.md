@@ -10,7 +10,7 @@ before committing to free flight. Each test adds one new variable.
 |---|---|---|---|---|---|
 | `sub_hover_test`  | configurable (30 / 50 / 80%) | 25 s | rigid | 5 rad/s | Progressive thrust ramp, verify stability under load |
 | `pid_sweep_test`  | 50% hover | 5 × 3 s | rigid | 5 rad/s | Walk `rate_{roll,pitch}.kp` through [0.02, 0.03, 0.05, 0.07, 0.10] live |
-| `free_test`       | 10% hover | 15 s | **none** (soft surface) | 2 rad/s | Probe for mechanical resonance / unexpected yaw drift when ground-friction-limited |
+| `flight`       | 10% hover | 15 s | **none** (soft surface) | 2 rad/s | Probe for mechanical resonance / unexpected yaw drift when ground-friction-limited |
 
 All three share the same init path, SD-card gate (3-blue + 1-red LED abort
 pattern if card missing), `flip_kill`, `gyro_runaway_kill`, and the
@@ -34,6 +34,7 @@ Sim-hardened mid-band passing D-gain is ~0.08; tumble edge ~0.60.
 ## D000016 — `sub_hover_test` at 80% hover (restrained)
 
 ### Setup
+
 - Drone zip-tied to a cutting board clamped under a weighted object
 - Props on
 - `TEST_THRUST = HOVER_THRUST × 0.80 = 3.6 mixer units`
@@ -74,6 +75,7 @@ addressed by the PID sweep and future unrestrained / tethered runs.
 ## D000018 — `pid_sweep_test` (restrained)
 
 ### Setup
+
 - Same zip-tie + cutting-board restraint as D000016
 - Props on
 - `TEST_THRUST = HOVER_THRUST × 0.50 = 2.25 mixer units` held constant
@@ -122,11 +124,11 @@ being close on this axis at the current gains.
 | Restrained, near-hover | sub_hover_test 80% (D000016) | Clean, tightest spread | Controller healthy at flight thrust |
 | Live gain change | pid_sweep_test (D000018) | Linear, no oscillation | Stability margin present at `kp ≤ 0.10` |
 
-**What these tests cannot answer**: whether the rate loop is stable when the drone actually rotates, and whether Madgwick behaves correctly under real body rotation + accel coupling. That's the purpose of `free_test` (low-thrust ground dynamics) and eventually a tethered free-flight attempt.
+**What these tests cannot answer**: whether the rate loop is stable when the drone actually rotates, and whether Madgwick behaves correctly under real body rotation + accel coupling. That's the purpose of `flight` (low-thrust ground dynamics) and eventually a tethered free-flight attempt.
 
 ## Next planned test
 
-`free_test` at 10% hover on a soft surface. Tightened gyro autoabort
+`flight` at 10% hover on a soft surface. Tightened gyro autoabort
 (2 rad/s) since the drone physically cannot spin that fast from motor
 torque alone at 10% hover. Purpose: probe for mechanical resonance or
 slow yaw drift that restrained tests artificially damp.

@@ -10,7 +10,7 @@
 //!   3. Put drone on its landing gear, hands off.
 //!   4. Watch the `pitch=...  roll=...` line update every 250 ms.
 //!   5. Adjust zip ties / leg heights until both are within +/- 1 deg.
-//!   6. Flash free_test.rs for the actual flight test.
+//!   6. Flash flight.rs for the actual flight test.
 //!
 //! No motors, no SD card, no mission. Safe to run with props on / battery
 //! connected -- nothing spins. Pitch/roll computed from raw accel only
@@ -171,7 +171,7 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
 // ------------------------------------------------------------------
 // Minimal UART-only log writer (no SD card, no logging to disk).
-// Same DMA bindings as free_test.rs / flight.rs but without the FS init.
+// Same DMA bindings as flight.rs but without the FS init.
 // ------------------------------------------------------------------
 
 #[embassy_executor::task]
@@ -195,7 +195,7 @@ async fn uart_only_writer(r: UartLogResources) -> ! {
 }
 
 // ------------------------------------------------------------------
-// Param storage (dummy flash, same as free_test.rs -- imu_reader reads
+// Param storage (dummy flash, same as flight.rs -- imu_reader reads
 // its cal params from this table on first startup).
 // ------------------------------------------------------------------
 

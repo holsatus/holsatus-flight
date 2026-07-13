@@ -1,7 +1,7 @@
-# Mission FSM and RC SOP - free_test.rs
+# Mission FSM and RC SOP - flight.rs
 
 This document describes the mission state machine that replaces the linear
-`staircase_mission` in `src/bin/free_test.rs`, the TX15 channel map driving
+`staircase_mission` in `src/bin/flight.rs`, the TX15 channel map driving
 it, and the standard operating procedure for ground-test flights.
 
 ## 1. TX15 channel map
@@ -284,9 +284,11 @@ While in Manual the FSM sets `MANUAL_BYPASS=true` and
    - Yaw   (CH4):  +/- 2.0 rad/s
    - Thrust (CH3): 0 -> `BASE_THRUST * 1.4` (max ~11.2)
 4. **Bench-debug log** at 5 Hz while in Manual:
+
    ```
    [manual] r=+0.05 p=+0.00 y=-0.00 thr=0.00 | rate r=+0.04 p=+0.00 y=-0.00 thrust=0.0 armed=0
    ```
+
    `r/p/y/thr` are normalised stick values [-1, 1] / [0, 1].
    `rate r/p/y` are the rad/s rate setpoints sent to `controller_rate`.
    `thrust` is the thrust setpoint. `armed` is 0 or 1.
@@ -296,6 +298,7 @@ While in Manual the FSM sets `MANUAL_BYPASS=true` and
    - State returns to `GroundIdle`.
 
 **Bench verification (props OFF) recommended before any flight:**
+
 - Boot, get to GroundIdle.
 - Flip SA to MID, raise throttle slightly to arm motors (they'll
   spin -- props OFF).
@@ -380,7 +383,7 @@ contention between USART6 RX DMA and the I2C2 / SPI3 sensor inits
 that otherwise wedges the inits on a quiet boot. See the
 `project_h743_uart_i2c_contention` memory entry for the diagnosis.
 
-### 4.2 Mission FSM (`src/bin/free_test.rs`)
+### 4.2 Mission FSM (`src/bin/flight.rs`)
 
 Replaces the linear `staircase_mission` task. Single `enum FsmState`,
 single outer loop:
