@@ -21,25 +21,16 @@
 use core::fmt::Write;
 
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler as DmaInterruptHandler;
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::peripherals::{DMA1_CH0, DMA1_CH3, UART4, USART1};
 use embassy_stm32::usart::{Config as UartConfig, UartRx, UartTx};
 use heapless::String;
 use {defmt_rtt as _, panic_probe as _};
 
 use micoairh743v2::mtf01::{self, Frame, MAX_PAYLOAD};
+use micoairh743v2::resources::{SensorIrqs, UartLogIrqs};
 
 #[path = "../config.rs"]
 mod config;
-
-bind_interrupts!(struct Irqs {
-    DMA1_STREAM0 => DmaInterruptHandler<DMA1_CH0>;
-    DMA1_STREAM3 => DmaInterruptHandler<DMA1_CH3>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-    UART4        => embassy_stm32::usart::InterruptHandler<UART4>;
-});
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -49,11 +40,11 @@ async fn main(_spawner: Spawner) {
     let mut led_blue  = Output::new(p.PE4, Level::Low, Speed::Low);
 
     let mut uart_tx =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, Irqs, UartConfig::default()).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
 
     let mut mtf_cfg = UartConfig::default();
     mtf_cfg.baudrate = 115_200;
-    let mut uart_mtf = UartRx::new(p.UART4, p.PA1, p.DMA1_CH3, Irqs, mtf_cfg).unwrap();
+    let mut uart_mtf = UartRx::new(p.UART4, p.PA1, p.DMA1_CH3, SensorIrqs, mtf_cfg).unwrap();
 
     let _ = uart_tx.write(b"flow_test: MTF-01 diagnostic\r\n").await;
     let _ = uart_tx.write(b"Move drone over textured surface at various heights\r\n").await;

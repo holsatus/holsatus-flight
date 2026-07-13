@@ -55,12 +55,10 @@ use common::types::actuators::MotorsState;
 use common::types::config::DshotConfig;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
-use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_time::Timer;
 use micoairh743v2::log as ulog;
-use micoairh743v2::resources::{
-    self, BatteryResources, SdmmcLogResources, UartLogResources,
-};
+use micoairh743v2::resources::UartLogIrqs;
+use micoairh743v2::resources::{self, BatteryResources, SdmmcLogResources, UartLogResources};
 use micoairh743v2::sdlog::SdmmcResources;
 
 /// Helper macro to create an interrupt executor at the given priority.
@@ -284,7 +282,11 @@ async fn override_motor_params() {
     drop(p);
 
     let mut s: heapless::String<64> = heapless::String::new();
-    let _ = write!(s, "[sub] rev=0x{:04X} timeout=500ms", MOTOR_REVERSE_FLAGS.bits());
+    let _ = write!(
+        s,
+        "[sub] rev=0x{:04X} timeout=500ms",
+        MOTOR_REVERSE_FLAGS.bits()
+    );
     ulog::log(s.as_str());
 }
 
@@ -354,7 +356,7 @@ async fn override_pid_gains() {
 async fn wait_for_ahrs_ready() {
     use signals::AHRS_ATTITUDE_Q;
 
-    const WINDOW_N: usize = 50;      // 500ms at 100 Hz sample rate
+    const WINDOW_N: usize = 50; // 500ms at 100 Hz sample rate
     const STABLE_THRESHOLD_DEG: f32 = 0.3; // peak-to-peak roll/pitch range
     const MAX_WAIT_MS: u64 = 10_000;
 
@@ -376,7 +378,9 @@ async fn wait_for_ahrs_ready() {
         roll_buf[idx] = r.to_degrees();
         pitch_buf[idx] = p.to_degrees();
         idx = (idx + 1) % WINDOW_N;
-        if filled < WINDOW_N { filled += 1; }
+        if filled < WINDOW_N {
+            filled += 1;
+        }
 
         if filled == WINDOW_N {
             let r_min = roll_buf.iter().cloned().fold(f32::INFINITY, f32::min);
@@ -403,7 +407,9 @@ async fn wait_for_ahrs_ready() {
         if start.elapsed().as_millis() >= MAX_WAIT_MS {
             let mut s: heapless::String<96> = heapless::String::new();
             let _ = write!(
-                s, "[ahrs] WARNING: not settled after {}ms, continuing anyway", MAX_WAIT_MS
+                s,
+                "[ahrs] WARNING: not settled after {}ms, continuing anyway",
+                MAX_WAIT_MS
             );
             ulog::log(s.as_str());
             return;
@@ -464,14 +470,16 @@ async fn apply_imu_calibration() {
 
     let mut s: heapless::String<64> = heapless::String::new();
     let _ = write!(
-        s, "[cal] acc=[{:.3},{:.3},{:.3}]",
+        s,
+        "[cal] acc=[{:.3},{:.3},{:.3}]",
         acc_bias[0], acc_bias[1], acc_bias[2]
     );
     ulog::log(s.as_str());
 
     let mut s: heapless::String<64> = heapless::String::new();
     let _ = write!(
-        s, "[cal] gyr=[{:.4},{:.4},{:.4}]",
+        s,
+        "[cal] gyr=[{:.4},{:.4},{:.4}]",
         gyr_bias[0], gyr_bias[1], gyr_bias[2]
     );
     ulog::log(s.as_str());
@@ -490,12 +498,7 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
     use embedded_fatfs::{FileSystem, FsOptions};
     use embedded_io_async_061::Write as _;
 
-    bind_interrupts!(struct UartIrqs {
-        DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH0>;
-        USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
-    });
-
-    let mut uart = UartTx::new(r.usart, r.tx, r.dma, UartIrqs, UartConfig::default()).ok();
+    let mut uart = UartTx::new(r.usart, r.tx, r.dma, UartLogIrqs, UartConfig::default()).ok();
 
     // ── SD card setup (best-effort -- logging continues on UART if SD fails) ──
     let mut device = SdmmcResources {
@@ -610,7 +613,10 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
     // SD card fully mounted and log file open. Motors may now arm.
     ulog::SD_MOUNTED.store(1, Ordering::Relaxed);
     let mut s: heapless::String<32> = heapless::String::new();
-    let _ = FmtWrite::write_fmt(&mut s, format_args!("[sd] mounted -> {}/000001.LOG", dir_name.as_str()));
+    let _ = FmtWrite::write_fmt(
+        &mut s,
+        format_args!("[sd] mounted -> {}/000001.LOG", dir_name.as_str()),
+    );
     ulog::log(s.as_str());
 
     let mut flush_counter: u16 = 0;
@@ -626,12 +632,7 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
         }
 
         use embassy_futures::select::{select, Either};
-        let msg = match select(
-            ulog::CRITICAL_CHANNEL.receive(),
-            ulog::CHANNEL.receive(),
-        )
-        .await
-        {
+        let msg = match select(ulog::CRITICAL_CHANNEL.receive(), ulog::CHANNEL.receive()).await {
             Either::First(m) => {
                 if let Some(ref mut u) = uart {
                     u.write(m.as_bytes()).await.ok();
@@ -725,7 +726,9 @@ async fn sub_hover_mission() -> ! {
     // SD card must be mounted before arming -- no telemetry, no spin-up.
     if ulog::SD_MOUNTED.load(Ordering::Relaxed) != 1 {
         ulog::log("[sub] ABORT: no SD card, not arming");
-        loop { Timer::after_secs(60).await; }
+        loop {
+            Timer::after_secs(60).await;
+        }
     }
 
     wait_for_ahrs_ready().await;
@@ -737,12 +740,12 @@ async fn sub_hover_mission() -> ! {
         ulog::log("[sub] waiting for RC link (30 s timeout)...");
         let start = embassy_time::Instant::now();
         const RC_WAIT_MS: u64 = 30_000;
-        while !micoairh743v2::rc_kill::RC_LINK_READY
-            .load(core::sync::atomic::Ordering::Relaxed)
-        {
+        while !micoairh743v2::rc_kill::RC_LINK_READY.load(core::sync::atomic::Ordering::Relaxed) {
             if start.elapsed().as_millis() >= RC_WAIT_MS {
                 ulog::log("[sub] ABORT: no RC link after 30 s -- motors will NOT arm");
-                loop { Timer::after_secs(60).await; }
+                loop {
+                    Timer::after_secs(60).await;
+                }
             }
             Timer::after_millis(100).await;
         }
@@ -767,7 +770,9 @@ async fn sub_hover_mission() -> ! {
     let start = embassy_time::Instant::now();
     loop {
         let elapsed = start.elapsed().as_millis();
-        if elapsed >= RAMP_UP_S * 1000 { break; }
+        if elapsed >= RAMP_UP_S * 1000 {
+            break;
+        }
         let frac = elapsed as f32 / (RAMP_UP_S * 1000) as f32;
         signals::TRUE_Z_THRUST_SP.send(TEST_THRUST * frac);
         Timer::after_millis(20).await;
@@ -781,7 +786,9 @@ async fn sub_hover_mission() -> ! {
     let dstart = embassy_time::Instant::now();
     loop {
         let elapsed = dstart.elapsed().as_millis();
-        if elapsed >= RAMP_DN_S * 1000 { break; }
+        if elapsed >= RAMP_DN_S * 1000 {
+            break;
+        }
         let frac = 1.0 - elapsed as f32 / (RAMP_DN_S * 1000) as f32;
         signals::TRUE_Z_THRUST_SP.send(TEST_THRUST * frac);
         Timer::after_millis(20).await;
@@ -1068,7 +1075,9 @@ async fn gyro_runaway_kill() -> ! {
                     Timer::after_millis(200).await;
                     ulog::log("[kill] motors off (gyro-runaway)");
                 }
-                loop { Timer::after_secs(60).await; }
+                loop {
+                    Timer::after_secs(60).await;
+                }
             }
         } else {
             count = 0;

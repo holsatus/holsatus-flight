@@ -12,10 +12,7 @@
 use core::fmt::Write;
 
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler as DmaInterruptHandler;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
-use embassy_stm32::peripherals::{DMA1_CH0, USART1};
 use embassy_stm32::spi::{self, mode::Master as SpiMaster, Config as SpiConfig, Spi};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
@@ -28,15 +25,12 @@ use heapless::String;
 use static_cell::StaticCell;
 use micoairh743v2::bmi088::Bmi088;
 use micoairh743v2::resources::Spi2Irqs;
+use micoairh743v2::resources::UartLogIrqs;
 use {defmt_rtt as _, panic_probe as _};
 
 #[path = "../config.rs"]
 mod config;
 
-bind_interrupts!(struct Irqs {
-    DMA1_STREAM0 => DmaInterruptHandler<DMA1_CH0>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-});
 
 // ── Same constants as flight.rs flip_kill ──
 const AZ_INVERTED_THRESHOLD: f32 = -3.0;
@@ -50,7 +44,7 @@ async fn main(_spawner: Spawner) {
     let mut led_red   = Output::new(p.PE3, Level::Low, Speed::Low);
 
     let mut uart =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, Irqs, UartConfig::default()).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
 
     let cs_acc = Output::new(p.PD4, Level::High, Speed::High);
     let cs_gyr = Output::new(p.PD5, Level::High, Speed::High);

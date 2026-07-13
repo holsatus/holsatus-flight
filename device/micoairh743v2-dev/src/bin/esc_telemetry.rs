@@ -21,23 +21,14 @@
 
 use core::fmt::Write as FmtWrite;
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler as DmaInterruptHandler;
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::peripherals::{DMA1_CH0, DMA1_CH2, UART7, USART1};
 use embassy_stm32::usart::{Config as UartConfig, UartRx, UartTx};
 use heapless::String;
+use micoairh743v2::resources::{SensorIrqs, UartLogIrqs};
 use {defmt_rtt as _, panic_probe as _};
 
 #[path = "../config.rs"]
 mod config;
-
-bind_interrupts!(struct Irqs {
-    DMA1_STREAM0 => DmaInterruptHandler<DMA1_CH0>;
-    DMA1_STREAM2 => DmaInterruptHandler<DMA1_CH2>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-    UART7        => embassy_stm32::usart::InterruptHandler<UART7>;
-});
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -47,11 +38,11 @@ async fn main(_spawner: Spawner) {
     let mut led_blue  = Output::new(p.PE4, Level::Low, Speed::Low);
 
     let mut uart1 =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, Irqs, UartConfig::default()).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
 
     let mut cfg7 = UartConfig::default();
     cfg7.baudrate = 115_200;
-    let mut uart7 = UartRx::new(p.UART7, p.PE7, p.DMA1_CH2, Irqs, cfg7).unwrap();
+    let mut uart7 = UartRx::new(p.UART7, p.PE7, p.DMA1_CH2, SensorIrqs, cfg7).unwrap();
 
     led_green.set_high();
     let _ = uart1.write(b"esc_telemetry: listening on UART7/PE7 at 115200\r\n").await;

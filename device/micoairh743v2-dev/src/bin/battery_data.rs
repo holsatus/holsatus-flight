@@ -36,10 +36,7 @@ use core::fmt::Write;
 use block_device_adapters::BufStream;
 use embassy_executor::Spawner;
 use embassy_stm32::adc::{Adc, SampleTime};
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler;
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::peripherals::{DMA1_CH0, USART1};
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_time::{Duration, Instant, Timer};
 use embedded_fatfs::{FileSystem, FsOptions};
@@ -49,6 +46,7 @@ use postcard::to_slice_cobs;
 use serde::Serialize;
 use {defmt_rtt as _, panic_probe as _};
 
+use micoairh743v2::resources::UartLogIrqs;
 use micoairh743v2::sdlog::SdmmcResources;
 
 // ── Log record ───────────────────────────────────────────────────────────────
@@ -56,17 +54,11 @@ use micoairh743v2::sdlog::SdmmcResources;
 #[derive(Serialize)]
 struct BatSample {
     timestamp_us: u64,
-    voltage_mv:   u32,
-    current_mv:   u32,
+    voltage_mv: u32,
+    current_mv: u32,
 }
 
 // ── Interrupt bindings ───────────────────────────────────────────────────────
-
-// DMA1_STREAM1 (TIM1 UP DMA) is bound at lib level (resources::MotorIrqs).
-bind_interrupts!(struct UartIrqs {
-    DMA1_STREAM0 => InterruptHandler<DMA1_CH0>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-});
 
 // Voltage divider ratio.
 const V_DIV: u32 = 21;
@@ -80,8 +72,8 @@ async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(micoairh743v2::config::embassy_config());
 
     let mut led_green = Output::new(p.PE2, Level::Low, Speed::Low);
-    let mut led_blue  = Output::new(p.PE4, Level::Low, Speed::Low);
-    let mut led_red   = Output::new(p.PE3, Level::Low, Speed::Low);
+    let mut led_blue = Output::new(p.PE4, Level::Low, Speed::Low);
+    let mut led_red = Output::new(p.PE3, Level::Low, Speed::Low);
 
     for _ in 0..3 {
         led_green.set_high();
@@ -91,13 +83,14 @@ async fn main(spawner: Spawner) {
     }
 
     let mut uart =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartIrqs, UartConfig::default()).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
     uart.write(b"battery_data: UART ok\r\n").await.ok();
 
     // ── ESC silence ──────────────────────────────────────────────────────────
-    spawner.spawn(micoairh743v2::esc_silence::task(
-        p.TIM1, p.PE9, p.PE11, p.PE13, p.PE14, p.DMA1_CH1,
-    ).unwrap());
+    spawner.spawn(
+        micoairh743v2::esc_silence::task(p.TIM1, p.PE9, p.PE11, p.PE13, p.PE14, p.DMA1_CH1)
+            .unwrap(),
+    );
 
     // ── ADC1 (blocking reads, no DMA needed at 10 Hz) ────────────────────────
     let mut adc = Adc::new(p.ADC1);
@@ -120,27 +113,39 @@ async fn main(spawner: Spawner) {
     let mut sd_ok = false;
     for attempt in 1u8..=5 {
         match device.try_reset().await {
-            Ok(()) => { sd_ok = true; break; }
+            Ok(()) => {
+                sd_ok = true;
+                break;
+            }
             Err(e) => {
                 let reason = match e {
-                    embassy_stm32::sdmmc::Error::NoCard          => "no card inserted",
-                    embassy_stm32::sdmmc::Error::Timeout         => "card not responding",
+                    embassy_stm32::sdmmc::Error::NoCard => "no card inserted",
+                    embassy_stm32::sdmmc::Error::Timeout => "card not responding",
                     embassy_stm32::sdmmc::Error::SoftwareTimeout => "software timeout",
-                    embassy_stm32::sdmmc::Error::Crc             => "CRC error",
-                    _                                             => "hardware error",
+                    embassy_stm32::sdmmc::Error::Crc => "CRC error",
+                    _ => "hardware error",
                 };
                 let mut s: String<64> = String::new();
-                write!(s, "battery_data: SD attempt {} FAIL: {}\r\n", attempt, reason).ok();
+                write!(
+                    s,
+                    "battery_data: SD attempt {} FAIL: {}\r\n",
+                    attempt, reason
+                )
+                .ok();
                 uart.write(s.as_bytes()).await.ok();
                 Timer::after_millis(500).await;
             }
         }
     }
     if !sd_ok {
-        uart.write(b"battery_data: SD FAIL (continuing without SD)\r\n").await.ok();
+        uart.write(b"battery_data: SD FAIL (continuing without SD)\r\n")
+            .await
+            .ok();
         // Run without SD -- fall through to sampling loop, no file writes.
         led_green.set_high();
-        uart.write(b"battery_data: sampling at 10 Hz (UART only)\r\n").await.ok();
+        uart.write(b"battery_data: sampling at 10 Hz (UART only)\r\n")
+            .await
+            .ok();
         loop {
             let raw_v = adc.blocking_read(&mut pin_v, SampleTime::CYCLES64_5);
             let raw_i = adc.blocking_read(&mut pin_i, SampleTime::CYCLES64_5);
@@ -149,7 +154,11 @@ async fn main(spawner: Spawner) {
             let mut s: String<64> = String::new();
             write!(s, "V_bat={} mV  I_raw={} mV\r\n", v_bat_mv, i_raw_mv).ok();
             uart.write(s.as_bytes()).await.ok();
-            if v_bat_mv > 5000 { led_red.set_high(); } else { led_red.set_low(); }
+            if v_bat_mv > 5000 {
+                led_red.set_high();
+            } else {
+                led_red.set_low();
+            }
             Timer::after_millis(100).await;
         }
     }
@@ -161,7 +170,9 @@ async fn main(spawner: Spawner) {
         Ok(fs) => fs,
         Err(_) => {
             uart.write(b"battery_data: FAT mount FAIL\r\n").await.ok();
-            loop { Timer::after_secs(1).await; }
+            loop {
+                Timer::after_secs(1).await;
+            }
         }
     };
     uart.write(b"battery_data: FAT ok\r\n").await.ok();
@@ -189,12 +200,16 @@ async fn main(spawner: Spawner) {
 
     let session_dir = match fs.root_dir().create_dir(dir_name.as_str()).await {
         Ok(d) => d,
-        Err(embedded_fatfs::Error::AlreadyExists) => {
-            fs.root_dir().open_dir(dir_name.as_str()).await.unwrap_or_else(|_| loop {})
-        }
+        Err(embedded_fatfs::Error::AlreadyExists) => fs
+            .root_dir()
+            .open_dir(dir_name.as_str())
+            .await
+            .unwrap_or_else(|_| loop {}),
         Err(_) => {
             uart.write(b"battery_data: session dir FAIL\r\n").await.ok();
-            loop { Timer::after_secs(1).await; }
+            loop {
+                Timer::after_secs(1).await;
+            }
         }
     };
 
@@ -205,24 +220,34 @@ async fn main(spawner: Spawner) {
     let mut file = match session_dir.create_file(fname.as_str()).await {
         Ok(f) => {
             let mut m: String<48> = String::new();
-            write!(m, "battery_data: {}/{} open ok\r\n", dir_name.as_str(), fname.as_str()).ok();
+            write!(
+                m,
+                "battery_data: {}/{} open ok\r\n",
+                dir_name.as_str(),
+                fname.as_str()
+            )
+            .ok();
             uart.write(m.as_bytes()).await.ok();
             f
         }
         Err(_) => {
             uart.write(b"battery_data: file create FAIL\r\n").await.ok();
-            loop { Timer::after_secs(1).await; }
+            loop {
+                Timer::after_secs(1).await;
+            }
         }
     };
 
     uart.write(b"battery_data: logging at 10 Hz\r\n").await.ok();
-    uart.write(b"battery_data: V_bat[mV]  I_raw[mV]  (0A: ~0 shunt, ~1650 Hall)\r\n").await.ok();
+    uart.write(b"battery_data: V_bat[mV]  I_raw[mV]  (0A: ~0 shunt, ~1650 Hall)\r\n")
+        .await
+        .ok();
     led_green.set_high();
 
     // ── Logging loop ─────────────────────────────────────────────────────────
     let mut serde_buf = [0u8; 24];
     let mut write_buf: Vec<u8, 512> = Vec::new();
-    let mut last_flush  = Instant::now();
+    let mut last_flush = Instant::now();
     let mut last_rotate = Instant::now();
     let mut bat_bytes_total: u32 = 0;
 
@@ -239,12 +264,16 @@ async fn main(spawner: Spawner) {
         write!(s, "V_bat={} mV  I_raw={} mV\r\n", v_bat_mv, i_raw_mv).ok();
         uart.write(s.as_bytes()).await.ok();
 
-        if v_bat_mv > 5000 { led_red.set_high(); } else { led_red.set_low(); }
+        if v_bat_mv > 5000 {
+            led_red.set_high();
+        } else {
+            led_red.set_low();
+        }
 
         let sample = BatSample {
             timestamp_us: Instant::now().as_micros(),
-            voltage_mv:   v_bat_mv,
-            current_mv:   i_raw_mv,
+            voltage_mv: v_bat_mv,
+            current_mv: i_raw_mv,
         };
 
         if let Ok(encoded) = to_slice_cobs(&sample, &mut serde_buf) {
@@ -283,7 +312,13 @@ async fn main(spawner: Spawner) {
             drop(file);
 
             let mut m: String<48> = String::new();
-            write!(m, "battery_data: closed {} ({} B)\r\n", fname.as_str(), bat_bytes_total).ok();
+            write!(
+                m,
+                "battery_data: closed {} ({} B)\r\n",
+                fname.as_str(),
+                bat_bytes_total
+            )
+            .ok();
             uart.write(m.as_bytes()).await.ok();
             bat_bytes_total = 0;
 
@@ -295,7 +330,9 @@ async fn main(spawner: Spawner) {
                 Ok(f) => f,
                 Err(_) => {
                     uart.write(b"battery_data: rotate FAIL\r\n").await.ok();
-                    loop { Timer::after_secs(1).await; }
+                    loop {
+                        Timer::after_secs(1).await;
+                    }
                 }
             };
             led_blue.set_low();
@@ -305,7 +342,7 @@ async fn main(spawner: Spawner) {
             uart.write(msg2.as_bytes()).await.ok();
 
             last_rotate = Instant::now();
-            last_flush  = Instant::now();
+            last_flush = Instant::now();
         }
 
         Timer::after_millis(100).await;
@@ -319,7 +356,9 @@ fn parse_session_dir_idx(name: &[u8]) -> Option<u32> {
     }
     let mut idx: u32 = 0;
     for &b in &name[1..] {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         idx = idx * 10 + (b - b'0') as u32;
     }
     Some(idx)

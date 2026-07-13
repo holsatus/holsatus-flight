@@ -17,19 +17,13 @@
 
 use core::fmt::Write;
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler as DmaInterruptHandler;
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::peripherals::{DMA1_CH0, USART1};
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_time::Timer;
 use heapless::String;
 use {defmt_rtt as _, panic_probe as _};
 
-bind_interrupts!(struct Irqs {
-    DMA1_STREAM0 => DmaInterruptHandler<DMA1_CH0>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-});
+use micoairh743v2::resources::UartLogIrqs;
 
 /// Send one 50 Hz PWM pulse to all four motors.
 /// pulse_us: HIGH time in microseconds (1000 = min, 2000 = max).
@@ -54,7 +48,7 @@ async fn main(_spawner: Spawner) {
     let mut led_green = Output::new(p.PE2, Level::Low, Speed::Low);
 
     let mut uart_tx =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, Irqs, UartConfig::default()).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
 
     let mut m1 = Output::new(p.PE14, Level::Low, Speed::VeryHigh);
     let mut m2 = Output::new(p.PE13, Level::Low, Speed::VeryHigh);

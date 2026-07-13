@@ -38,11 +38,9 @@ use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDeviceWithConfig;
 use embassy_executor::Spawner;
 use embassy_stm32::adc::{Adc, SampleTime};
-use embassy_stm32::bind_interrupts;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::i2c::{Config as I2cConfig, I2c, Master};
 use embassy_stm32::mode::Async;
-use embassy_stm32::peripherals::{DMA1_CH0, USART1};
 use embassy_stm32::spi::{self, mode::Master as SpiMaster, Config as SpiConfig, Spi};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
@@ -63,6 +61,7 @@ use micoairh743v2::dps310_i2c::{self, Dps310I2c};
 use micoairh743v2::qmc5883l::Qmc5883l;
 use micoairh743v2::resources::{I2c2Irqs, Spi2Irqs, Spi3Irqs};
 use micoairh743v2::sdlog::SdmmcResources;
+use micoairh743v2::resources::UartLogIrqs;
 
 // ── Log records ──────────────────────────────────────────────────────────────
 
@@ -84,10 +83,6 @@ struct BatSample { timestamp_us: u64, voltage_mv: u32, current_mv: u32 }
 // ── Interrupt bindings ───────────────────────────────────────────────────────
 
 // I2c2Irqs, Spi2Irqs, Spi3Irqs, MotorIrqs all bound at lib level.
-bind_interrupts!(struct UartIrqs {
-    DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<DMA1_CH0>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-});
 
 // ── Shared bus statics ───────────────────────────────────────────────────────
 
@@ -122,7 +117,7 @@ async fn main(spawner: Spawner) {
     }
 
     let mut uart =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartIrqs, UartConfig::default()).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
     uart.write(b"sensors: UART ok\r\n").await.ok();
 
     // ── ESC silence ──────────────────────────────────────────────────────────

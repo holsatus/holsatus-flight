@@ -15,12 +15,13 @@ use assign_resources::assign_resources;
 
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDeviceWithConfig;
+use embassy_stm32::bind_interrupts;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::i2c::Config as I2cConfig;
 use embassy_stm32::spi;
 use embassy_stm32::spi::{mode::Master as SpiMaster, Config as SpiConfig, Spi};
 use embassy_stm32::time::Hertz;
-use embassy_stm32::{bind_interrupts, mode::Async, peripherals, Peri, Peripherals};
+use embassy_stm32::{mode::Async, peripherals, Peri, Peripherals};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
 use static_cell::StaticCell;
@@ -188,10 +189,64 @@ pub fn split(p: Peripherals) -> AssignedResources {
     split_resources!(p)
 }
 
-// Module-level interrupt bindings for SPI2 (DMA1_CH6 TX, DMA1_CH7 RX).
-// Defined here rather than inside imu_reader_task so that standalone binaries
-// (e.g. imu_data.rs) that import this crate can reuse the binding without
-// introducing a duplicate #[no_mangle] interrupt handler symbol.
+// Module-level interrupt bindings, one struct per peripheral instance (bus).
+// Defined here rather than inside individual tasks so that every binary
+// touching a given peripheral -- whether via a lib task or directly --
+// shares the same bind_interrupts! struct.
+//
+// `bind_interrupts!` expands to `#[unsafe(no_mangle)] extern "C" fn <VECTOR>()`,
+// a flat linker symbol with no per-crate/per-module namespacing (required so
+// the hardware vector table can find it by exact name). Two DIFFERENT
+// bind_interrupts! structs binding the SAME vector name is therefore a hard
+// error the moment both are compiled into the same crate -- and since this
+// whole file is unconditionally part of the shared `micoairh743v2` lib (which
+// every single binary in this crate links against), that check happens for
+// EVERY vector bound here, for EVERY binary, regardless of which one actually
+// uses it. So: any vector genuinely shared across binaries belongs here,
+// bound exactly once.
+//
+// This constraint turned out to be stronger than "shared vectors go here,
+// one-off vectors stay local": once a binary references ANYTHING in this
+// lib crate (which is effectively every binary, via `config::embassy_config()`),
+// EVERY `#[no_mangle]` interrupt handler declared anywhere in the lib becomes
+// part of that binary's final link -- whether or not that binary's own code
+// path ever reaches it. A binary can therefore never declare its OWN local
+// binding for a vector already bound here, even for a peripheral that has
+// nothing to do with the vector's "owning" struct. That's why SensorIrqs
+// below bundles GPS + MTF-01 + esc_telemetry's UART7 even though they're
+// functionally unrelated: DMA1_STREAM2 and DMA1_STREAM3 are each claimed
+// exactly once, crate-wide, and every binary touching any of these
+// peripherals has to share the one struct that owns them.
+
+// USART1: debug log, TX on nearly every binary (DMA1_CH0), full-duplex RX
+// (DMA2_CH7) only for hil_echo's loopback. One struct covers both so any
+// binary can request either mode with the same value.
+bind_interrupts!(pub struct UartLogIrqs {
+    USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
+    DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH0>;
+    DMA2_STREAM7 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH7>;
+});
+
+// GPS (USART3, MicoAir MG-A01 ublox module, DMA1_CH2) + MTF-01 optical flow
+// (UART4, DMA1_CH3) + esc_telemetry.rs's bench listener (UART7, reusing
+// GPS's DMA1_CH2 since it's never run alongside GPS) + flow_data.rs's bench
+// wiring (MTF-01 physically wired to the USART3 header, read via DMA1_CH3).
+// See the comment above this section for why these unrelated peripherals
+// share one struct instead of each getting their own.
+bind_interrupts!(pub struct SensorIrqs {
+    USART3       => embassy_stm32::usart::InterruptHandler<peripherals::USART3>;
+    DMA1_STREAM2 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH2>;
+    UART4        => embassy_stm32::usart::InterruptHandler<peripherals::UART4>;
+    DMA1_STREAM3 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH3>;
+    UART7        => embassy_stm32::usart::InterruptHandler<peripherals::UART7>;
+});
+
+// Onboard Bluetooth telemetry bridge (UART8, TX only) -- DMA2_CH3.
+bind_interrupts!(pub struct BtLogIrqs {
+    UART8        => embassy_stm32::usart::InterruptHandler<peripherals::UART8>;
+    DMA2_STREAM3 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH3>;
+});
+
 bind_interrupts!(pub struct I2c2Irqs {
     I2C2_EV      => embassy_stm32::i2c::EventInterruptHandler<peripherals::I2C2>;
     I2C2_ER      => embassy_stm32::i2c::ErrorInterruptHandler<peripherals::I2C2>;
@@ -212,6 +267,32 @@ bind_interrupts!(pub struct MotorIrqs {
 bind_interrupts!(pub struct Spi3Irqs {
     DMA2_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH0>;
     DMA2_STREAM1 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH1>;
+});
+
+// Open Drone ID transmitter (UART5, TX only) -- DMA2_CH4. See odid.rs.
+bind_interrupts!(pub struct OdidIrqs {
+    UART5        => embassy_stm32::usart::InterruptHandler<peripherals::UART5>;
+    DMA2_STREAM4 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH4>;
+});
+
+// SDMMC1 (SD card logging). No DMA vector -- H743 SDMMC uses internal IDMA,
+// not a DMA1/DMA2 channel. See sdlog.rs.
+bind_interrupts!(pub struct SdmmcIrq {
+    SDMMC1 => embassy_stm32::sdmmc::InterruptHandler<peripherals::SDMMC1>;
+});
+
+// RC receiver (USART6, RX only, 420 kbps CRSF) -- DMA2_CH2. See rc_kill.rs.
+bind_interrupts!(pub struct RcIrqs {
+    USART6       => embassy_stm32::usart::InterruptHandler<peripherals::USART6>;
+    DMA2_STREAM2 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH2>;
+});
+
+// Phoenix Pi-companion MAVLink telemetry link (USART2, full duplex) --
+// DMA2_CH5 (TX), DMA2_CH6 (RX). See phoenix_telem.rs.
+bind_interrupts!(pub struct TelemIrqs {
+    USART2       => embassy_stm32::usart::InterruptHandler<peripherals::USART2>;
+    DMA2_STREAM5 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH5>;
+    DMA2_STREAM6 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH6>;
 });
 
 // ----------------------------------------------------------

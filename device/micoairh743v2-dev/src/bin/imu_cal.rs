@@ -20,11 +20,8 @@ use core::fmt::Write;
 
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDeviceWithConfig;
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::mode::Async;
-use embassy_stm32::peripherals::{DMA1_CH0, USART1};
 use embassy_stm32::spi::{self, mode::Master, Config as SpiConfig, Spi};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
@@ -34,13 +31,10 @@ use embassy_time::Timer;
 use heapless::String;
 use micoairh743v2::bmi088::Bmi088;
 use micoairh743v2::resources::Spi2Irqs;
+use micoairh743v2::resources::UartLogIrqs;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-bind_interrupts!(struct UartIrqs {
-    DMA1_STREAM0 => InterruptHandler<DMA1_CH0>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-});
 
 type Spi2Bus = Mutex<NoopRawMutex, Spi<'static, Async, Master>>;
 static SPI2_BUS: StaticCell<Spi2Bus> = StaticCell::new();
@@ -57,7 +51,7 @@ async fn main(_spawner: Spawner) {
     let mut led = Output::new(p.PE2, Level::High, Speed::Low);
 
     let mut uart = UartTx::new(
-        p.USART1, p.PA9, p.DMA1_CH0, UartIrqs, UartConfig::default(),
+        p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default(),
     ).unwrap();
 
     uart.write(b"\r\nimu_cal: place drone LEVEL and hold still\r\n").await.ok();

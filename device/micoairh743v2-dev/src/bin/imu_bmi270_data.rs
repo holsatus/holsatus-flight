@@ -31,11 +31,8 @@ use core::fmt::Write;
 use block_device_adapters::BufStream;
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDeviceWithConfig;
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::mode::Async;
-use embassy_stm32::peripherals::{DMA1_CH0, USART1};
 use embassy_stm32::spi::{self, mode::Master, Config as SpiConfig, Spi};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
@@ -53,6 +50,7 @@ use {defmt_rtt as _, panic_probe as _};
 use micoairh743v2::bmi270::{Bmi270, BMI270_CONFIG_FILE};
 use micoairh743v2::resources::Spi3Irqs;
 use micoairh743v2::sdlog::SdmmcResources;
+use micoairh743v2::resources::UartLogIrqs;
 
 // ── Log record ───────────────────────────────────────────────────────────────
 
@@ -67,10 +65,6 @@ struct ImuSample {
 
 // SPI3 DMA (DMA2_CH0 RX, DMA2_CH1 TX) is bound at lib level (resources::Spi3Irqs).
 // DMA1_STREAM1 (TIM1 UP DMA) is bound at lib level (resources::MotorIrqs).
-bind_interrupts!(struct UartIrqs {
-    DMA1_STREAM0 => InterruptHandler<DMA1_CH0>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-});
 
 type Spi3Bus = Mutex<NoopRawMutex, Spi<'static, Async, Master>>;
 static SPI3_BUS: StaticCell<Spi3Bus> = StaticCell::new();
@@ -94,7 +88,7 @@ async fn main(spawner: Spawner) {
 
     // ── UART ────────────────────────────────────────────────────────────────
     let mut uart =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartIrqs, UartConfig::default()).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
     uart.write(b"bmi270_log: UART ok\r\n").await.ok();
 
     // ── ESC silence ──────────────────────────────────────────────────────────

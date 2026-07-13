@@ -26,12 +26,12 @@ use common::tasks::motor_governor::params;
 use common::types::config::DshotConfig;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
-use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_time::Timer;
 use micoairh743v2::alt_hold::ALTITUDE_SETPOINT;
 use micoairh743v2::config::MOTOR_REVERSE_FLAGS;
 use micoairh743v2::log as ulog;
 use micoairh743v2::resources::{self, UartLogResources};
+use micoairh743v2::resources::UartLogIrqs;
 
 macro_rules! interrupt_executor {
     ($interrupt:ident, $prio:ident) => {{
@@ -174,12 +174,8 @@ async fn main(thread_spawner: embassy_executor::Spawner) {
 
 #[embassy_executor::task]
 async fn uart_writer_task(r: UartLogResources) -> ! {
-    bind_interrupts!(struct UartIrqs {
-        DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH0>;
-        USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
-    });
 
-    match UartTx::new(r.usart, r.tx, r.dma, UartIrqs, UartConfig::default()) {
+    match UartTx::new(r.usart, r.tx, r.dma, UartLogIrqs, UartConfig::default()) {
         Ok(mut uart) => loop {
             let msg = ulog::CHANNEL.receive().await;
             uart.write(msg.as_bytes()).await.ok();

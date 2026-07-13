@@ -54,11 +54,8 @@ use core::fmt::Write;
 use block_device_adapters::BufStream;
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDeviceWithConfig;
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler;
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::mode::Async;
-use embassy_stm32::peripherals::{DMA1_CH0, USART1};
 use embassy_stm32::spi::{self, mode::Master, Config as SpiConfig, Spi};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
@@ -77,6 +74,7 @@ use common::tasks::blackbox_fat::Reset;
 use micoairh743v2::bmi088::Bmi088;
 use micoairh743v2::resources::Spi2Irqs;
 use micoairh743v2::sdlog::SdmmcResources;
+use micoairh743v2::resources::UartLogIrqs;
 
 // ── Log record ───────────────────────────────────────────────────────────────
 
@@ -96,10 +94,6 @@ struct ImuSample {
 
 // DMA1_STREAM6 and DMA1_STREAM7 are bound at lib level (resources::Spi2Irqs).
 // DMA1_STREAM1 (TIM1 UP DMA for ESC silence) is bound at lib level (resources::MotorIrqs).
-bind_interrupts!(struct UartIrqs {
-    DMA1_STREAM0 => InterruptHandler<DMA1_CH0>;   // UART1 TX DMA
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-});
 
 type Spi2Bus = Mutex<NoopRawMutex, Spi<'static, Async, Master>>;
 static SPI2_BUS: StaticCell<Spi2Bus> = StaticCell::new();
@@ -124,7 +118,7 @@ async fn main(spawner: Spawner) {
 
     // ── UART ────────────────────────────────────────────────────────────────
     let mut uart =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartIrqs, UartConfig::default()).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
     uart.write(b"imu_log: UART ok\r\n").await.ok();
 
     // ── ESC silence ──────────────────────────────────────────────────────────

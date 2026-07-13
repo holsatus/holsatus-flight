@@ -2,24 +2,18 @@
 #![no_main]
 
 use embassy_stm32::usart::{Config as UartConfig, Uart};
-use embassy_stm32::{bind_interrupts, peripherals};
-use micoairh743v2::resources::{self, UartLogResources};
+use micoairh743v2::resources::{self, UartLogIrqs, UartLogResources};
 use {defmt_rtt as _, panic_probe as _};
 
 #[embassy_executor::task]
 async fn uart_echo_task(r: UartLogResources) {
-    bind_interrupts!(struct UartIrqs {
-        DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH0>;
-        DMA2_STREAM7 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH7>;
-        USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
-    });
     let (mut tx, mut rx) = Uart::new(
         r.usart,
         r.rx,
         r.tx,
         r.dma_rx,
         r.dma,
-        UartIrqs,
+        UartLogIrqs,
         UartConfig::default(),
     )
     .unwrap()

@@ -47,7 +47,6 @@ use common::types::measurements::GnssFix;
 use embassy_futures::join::join;
 use embassy_stm32::mode::Async;
 use embassy_stm32::usart::{Config as UartConfig, Uart, UartRx, UartTx};
-use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use mavio::dialects::common::enums::MavSeverity;
 use mavio::dialects::common::messages::{
@@ -61,7 +60,7 @@ use mavio::protocol::FrameParser;
 use crate::alt_hold::LIDAR_ALT_M;
 use crate::battery::BATTERY_FILTERED_MV;
 use crate::log as ulog;
-use crate::resources::TelemResources;
+use crate::resources::{TelemIrqs, TelemResources};
 
 pub const BAUD: u32 = 921_600;
 
@@ -93,12 +92,6 @@ const COMPANION_TIMEOUT_MS: u64 = 2_000;
 
 /// Standard gravity used for accel m/s^2 -> milli-g conversion in SCALED_IMU.
 const G: f32 = 9.806_65;
-
-bind_interrupts!(struct TelemIrqs {
-    USART2       => embassy_stm32::usart::InterruptHandler<peripherals::USART2>;
-    DMA2_STREAM5 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH5>;
-    DMA2_STREAM6 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH6>;
-});
 
 #[embassy_executor::task]
 pub async fn phoenix_telem_task(r: TelemResources) -> ! {

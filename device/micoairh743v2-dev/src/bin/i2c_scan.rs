@@ -12,24 +12,14 @@
 
 use core::fmt::Write;
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::i2c::{Config as I2cConfig, I2c};
-use embassy_stm32::peripherals::{DMA1_CH0, DMA1_CH4, DMA1_CH5, I2C2, USART1};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_time::Timer;
 use heapless::String;
+use micoairh743v2::resources::{I2c2Irqs, UartLogIrqs};
 use {defmt_rtt as _, panic_probe as _};
-
-bind_interrupts!(struct Irqs {
-    DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<DMA1_CH0>;
-    DMA1_STREAM4 => embassy_stm32::dma::InterruptHandler<DMA1_CH4>;
-    DMA1_STREAM5 => embassy_stm32::dma::InterruptHandler<DMA1_CH5>;
-    I2C2_EV      => embassy_stm32::i2c::EventInterruptHandler<I2C2>;
-    I2C2_ER      => embassy_stm32::i2c::ErrorInterruptHandler<I2C2>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-});
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -38,14 +28,14 @@ async fn main(_spawner: Spawner) {
     let mut led_green = Output::new(p.PE2, Level::Low, Speed::Low);
 
     let mut uart_tx =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, Irqs, UartConfig::default()).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
 
     let mut i2c_cfg = I2cConfig::default();
     i2c_cfg.frequency = Hertz(100_000); // slow scan for reliability
     i2c_cfg.scl_pullup = true;
     i2c_cfg.sda_pullup = true;
 
-    let mut i2c = I2c::new(p.I2C2, p.PB10, p.PB11, p.DMA1_CH4, p.DMA1_CH5, Irqs, i2c_cfg);
+    let mut i2c = I2c::new(p.I2C2, p.PB10, p.PB11, p.DMA1_CH4, p.DMA1_CH5, I2c2Irqs, i2c_cfg);
 
     let _ = uart_tx.write(b"I2C2 scan start\r\n").await;
 

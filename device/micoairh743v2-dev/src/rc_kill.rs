@@ -34,8 +34,6 @@ use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use common::tasks::commander::COMMAD_ARM_VEHICLE;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::peripherals;
 use embassy_stm32::usart::{Config as UartConfig, UartRx};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -44,12 +42,7 @@ use embassy_time::Timer;
 use heapless::String;
 
 use crate::log as ulog;
-use crate::resources::RcResources;
-
-bind_interrupts!(pub struct RcIrqs {
-    USART6       => embassy_stm32::usart::InterruptHandler<peripherals::USART6>;
-    DMA2_STREAM2 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH2>;
-});
+use crate::resources::{RcIrqs, RcResources};
 
 /// True after the first valid CRSF frame establishes the SE/SF baseline.
 /// Mission sequencers must wait for this before arming, so the kill

@@ -53,11 +53,8 @@ use core::fmt::Write;
 
 use block_device_adapters::BufStream;
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::i2c::{Config as I2cConfig, I2c};
-use embassy_stm32::peripherals::{DMA1_CH0, USART1};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_time::{Duration, Instant, Timer};
@@ -69,7 +66,7 @@ use serde::Serialize;
 use {defmt_rtt as _, panic_probe as _};
 
 use micoairh743v2::qmc5883l::{Qmc5883l, ADDR as QMC_ADDR};
-use micoairh743v2::resources::I2c2Irqs;
+use micoairh743v2::resources::{I2c2Irqs, UartLogIrqs};
 use micoairh743v2::sdlog::SdmmcResources;
 
 // ── Log record ───────────────────────────────────────────────────────────────
@@ -82,22 +79,14 @@ struct MagSample {
     z: i16,
 }
 
-// ── Interrupt bindings ───────────────────────────────────────────────────────
-
-// DMA1_STREAM1 (TIM1 UP DMA for ESC silence) is bound at lib level (resources::MotorIrqs).
-bind_interrupts!(struct UartIrqs {
-    DMA1_STREAM0 => InterruptHandler<DMA1_CH0>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-});
-
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(micoairh743v2::config::embassy_config());
 
-    let mut led_red   = Output::new(p.PE3, Level::Low, Speed::Low);
-    let mut led_blue  = Output::new(p.PE4, Level::Low, Speed::Low);
+    let mut led_red = Output::new(p.PE3, Level::Low, Speed::Low);
+    let mut led_blue = Output::new(p.PE4, Level::Low, Speed::Low);
     let mut led_green = Output::new(p.PE2, Level::Low, Speed::Low);
 
     for _ in 0..3 {
@@ -109,16 +98,19 @@ async fn main(spawner: Spawner) {
 
     // ── UART ────────────────────────────────────────────────────────────────
     let mut uart =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartIrqs, UartConfig::default()).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
     uart.write(b"mag_log: UART ok\r\n").await.ok();
 
     // ── ESC silence ──────────────────────────────────────────────────────────
     // Spawn a task that sends DShot disarm frames continuously so ESCs stay
     // quiet for the lifetime of this binary.
-    spawner.spawn(micoairh743v2::esc_silence::task(
-        p.TIM1, p.PE9, p.PE11, p.PE13, p.PE14, p.DMA1_CH1,
-    ).unwrap());
-    uart.write(b"mag_log: ESC silence task started\r\n").await.ok();
+    spawner.spawn(
+        micoairh743v2::esc_silence::task(p.TIM1, p.PE9, p.PE11, p.PE13, p.PE14, p.DMA1_CH1)
+            .unwrap(),
+    );
+    uart.write(b"mag_log: ESC silence task started\r\n")
+        .await
+        .ok();
 
     // ── I2C2 / IST8310 ──────────────────────────────────────────────────────
     let mut i2c_cfg = I2cConfig::default();
@@ -126,14 +118,20 @@ async fn main(spawner: Spawner) {
     i2c_cfg.scl_pullup = true;
     i2c_cfg.sda_pullup = true;
 
-    let mut i2c = I2c::new(p.I2C2, p.PB10, p.PB11, p.DMA1_CH4, p.DMA1_CH5, I2c2Irqs, i2c_cfg);
+    let mut i2c = I2c::new(
+        p.I2C2, p.PB10, p.PB11, p.DMA1_CH4, p.DMA1_CH5, I2c2Irqs, i2c_cfg,
+    );
 
     // Probe address before driver init to distinguish "device absent" from
     // "device present but init failed".
     if i2c.write(QMC_ADDR, &[]).await.is_ok() {
-        uart.write(b"mag_log: QMC5883L found at 0x0D\r\n").await.ok();
+        uart.write(b"mag_log: QMC5883L found at 0x0D\r\n")
+            .await
+            .ok();
     } else {
-        uart.write(b"mag_log: NOTHING at 0x0D -- check wiring\r\n").await.ok();
+        uart.write(b"mag_log: NOTHING at 0x0D -- check wiring\r\n")
+            .await
+            .ok();
     }
 
     let mut mag = Qmc5883l::new(i2c);
@@ -168,17 +166,22 @@ async fn main(spawner: Spawner) {
     let mut sd_ok = false;
     for attempt in 1u8..=5 {
         match device.try_reset().await {
-            Ok(()) => { sd_ok = true; break; }
+            Ok(()) => {
+                sd_ok = true;
+                break;
+            }
             Err(e) => {
                 let reason = match e {
-                    embassy_stm32::sdmmc::Error::NoCard              => "no card inserted",
-                    embassy_stm32::sdmmc::Error::Timeout             => "card not responding (inserted?)",
-                    embassy_stm32::sdmmc::Error::SoftwareTimeout     => "software timeout",
-                    embassy_stm32::sdmmc::Error::Crc                 => "CRC error (loose connection?)",
-                    embassy_stm32::sdmmc::Error::UnsupportedCardVersion => "unsupported card version",
+                    embassy_stm32::sdmmc::Error::NoCard => "no card inserted",
+                    embassy_stm32::sdmmc::Error::Timeout => "card not responding (inserted?)",
+                    embassy_stm32::sdmmc::Error::SoftwareTimeout => "software timeout",
+                    embassy_stm32::sdmmc::Error::Crc => "CRC error (loose connection?)",
+                    embassy_stm32::sdmmc::Error::UnsupportedCardVersion => {
+                        "unsupported card version"
+                    }
                     embassy_stm32::sdmmc::Error::UnsupportedCardType => "unsupported card type",
-                    embassy_stm32::sdmmc::Error::UnsupportedVoltage  => "unsupported voltage",
-                    _                                                 => "hardware error",
+                    embassy_stm32::sdmmc::Error::UnsupportedVoltage => "unsupported voltage",
+                    _ => "hardware error",
                 };
                 let mut s: String<64> = String::new();
                 write!(s, "mag_log: SD attempt {} FAIL: {}\r\n", attempt, reason).ok();
@@ -208,13 +211,15 @@ async fn main(spawner: Spawner) {
         Err(e) => {
             let reason = match e {
                 embedded_fatfs::Error::CorruptedFileSystem => "corrupted filesystem (reformat?)",
-                embedded_fatfs::Error::Io(_)              => "I/O error reading FAT structures",
-                _                                         => "unexpected FAT error",
+                embedded_fatfs::Error::Io(_) => "I/O error reading FAT structures",
+                _ => "unexpected FAT error",
             };
             let mut s: String<64> = String::new();
             write!(s, "mag_log: FAT mount FAIL: {}\r\n", reason).ok();
             uart.write(s.as_bytes()).await.ok();
-            loop { Timer::after_secs(1).await; }
+            loop {
+                Timer::after_secs(1).await;
+            }
         }
     };
     uart.write(b"mag_log: FAT ok\r\n").await.ok();
@@ -244,17 +249,23 @@ async fn main(spawner: Spawner) {
 
     let session_dir = match fs.root_dir().create_dir(dir_name.as_str()).await {
         Ok(d) => d,
-        Err(embedded_fatfs::Error::AlreadyExists) => fs.root_dir().open_dir(dir_name.as_str()).await.unwrap_or_else(|_| loop {}),
+        Err(embedded_fatfs::Error::AlreadyExists) => fs
+            .root_dir()
+            .open_dir(dir_name.as_str())
+            .await
+            .unwrap_or_else(|_| loop {}),
         Err(e) => {
             let reason = match e {
-                embedded_fatfs::Error::NotEnoughSpace      => "disk full",
+                embedded_fatfs::Error::NotEnoughSpace => "disk full",
                 embedded_fatfs::Error::CorruptedFileSystem => "corrupted filesystem",
-                _                                          => "unexpected error",
+                _ => "unexpected error",
             };
             let mut s: String<64> = String::new();
             write!(s, "mag_log: session dir FAIL: {}\r\n", reason).ok();
             uart.write(s.as_bytes()).await.ok();
-            loop { Timer::after_secs(1).await; }
+            loop {
+                Timer::after_secs(1).await;
+            }
         }
     };
 
@@ -265,21 +276,29 @@ async fn main(spawner: Spawner) {
     let mut file = match session_dir.create_file(fname.as_str()).await {
         Ok(f) => {
             let mut m: String<48> = String::new();
-            write!(m, "mag_log: {}/{} open ok\r\n", dir_name.as_str(), fname.as_str()).ok();
+            write!(
+                m,
+                "mag_log: {}/{} open ok\r\n",
+                dir_name.as_str(),
+                fname.as_str()
+            )
+            .ok();
             uart.write(m.as_bytes()).await.ok();
             f
         }
         Err(e) => {
             let reason = match e {
-                embedded_fatfs::Error::NotEnoughSpace      => "disk full",
-                embedded_fatfs::Error::AlreadyExists       => "file already exists",
+                embedded_fatfs::Error::NotEnoughSpace => "disk full",
+                embedded_fatfs::Error::AlreadyExists => "file already exists",
                 embedded_fatfs::Error::CorruptedFileSystem => "corrupted filesystem",
-                _                                          => "unexpected error",
+                _ => "unexpected error",
             };
             let mut s: String<64> = String::new();
             write!(s, "mag_log: file create FAIL: {}\r\n", reason).ok();
             uart.write(s.as_bytes()).await.ok();
-            loop { Timer::after_secs(1).await; }
+            loop {
+                Timer::after_secs(1).await;
+            }
         }
     };
 
@@ -291,7 +310,7 @@ async fn main(spawner: Spawner) {
     // COBS overhead: 1 B. Sentinel: 1 B. Total <= 21 B. Use 24 bytes.
     let mut serde_buf = [0u8; 24];
     let mut write_buf: Vec<u8, 512> = Vec::new();
-    let mut last_flush  = Instant::now();
+    let mut last_flush = Instant::now();
     let mut last_rotate = Instant::now();
     let mut mag_bytes_total: u32 = 0;
 
@@ -361,7 +380,13 @@ async fn main(spawner: Spawner) {
             drop(file);
 
             let mut m: String<48> = String::new();
-            write!(m, "mag_log: closed {} ({} B)\r\n", fname.as_str(), mag_bytes_total).ok();
+            write!(
+                m,
+                "mag_log: closed {} ({} B)\r\n",
+                fname.as_str(),
+                mag_bytes_total
+            )
+            .ok();
             uart.write(m.as_bytes()).await.ok();
 
             file_idx = file_idx.wrapping_add(1);
@@ -373,12 +398,14 @@ async fn main(spawner: Spawner) {
                 Err(e) => {
                     let reason = match e {
                         embedded_fatfs::Error::NotEnoughSpace => "disk full",
-                        _                                     => "unexpected error",
+                        _ => "unexpected error",
                     };
                     let mut s: String<64> = String::new();
                     write!(s, "mag_log: rotate FAIL: {}\r\n", reason).ok();
                     uart.write(s.as_bytes()).await.ok();
-                    loop { Timer::after_secs(1).await; }
+                    loop {
+                        Timer::after_secs(1).await;
+                    }
                 }
             };
             led_blue.set_low();
@@ -388,7 +415,7 @@ async fn main(spawner: Spawner) {
             uart.write(msg2.as_bytes()).await.ok();
 
             last_rotate = Instant::now();
-            last_flush  = Instant::now();
+            last_flush = Instant::now();
         }
 
         Timer::after_millis(100).await;

@@ -515,7 +515,6 @@ use common::types::config::DshotConfig;
 use common::types::measurements::Imu6DofData;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
-use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Timer;
 use micoairh743v2::alt_hold::ALTITUDE_SETPOINT;
@@ -523,7 +522,8 @@ use micoairh743v2::led::{self, LedMode};
 use micoairh743v2::log as ulog;
 use micoairh743v2::mtf01;
 use micoairh743v2::resources::{
-    self, Bmi270Resources, BtLogResources, Mtf01Resources, SdmmcLogResources, UartLogResources,
+    self, Bmi270Resources, BtLogIrqs, BtLogResources, SensorIrqs, Mtf01Resources, SdmmcLogResources,
+    UartLogIrqs, UartLogResources,
 };
 use micoairh743v2::sdlog::SdmmcResources;
 
@@ -898,17 +898,6 @@ async fn wait_for_ahrs_ready() {
     }
 }
 
-// USART1 interrupt bindings, shared by the two mutually exclusive owners of
-// the wire: uart_writer_task (flight mode, TX-only text log) and
-// hil_link_task (HIL mode, full-duplex binary link). bind_interrupts!
-// generates real #[interrupt] handlers, so this must appear exactly once in
-// the binary even though only one of the two tasks ever runs.
-bind_interrupts!(struct Usart1Irqs {
-    DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH0>;
-    DMA2_STREAM7 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH7>;
-    USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
-});
-
 #[embassy_executor::task]
 async fn uart_writer_task(
     r: Option<UartLogResources>,
@@ -920,18 +909,13 @@ async fn uart_writer_task(
     use embedded_fatfs::{FileSystem, FsOptions};
     use embedded_io_async_061::Write as _;
 
-    bind_interrupts!(struct BtUartIrqs {
-        DMA2_STREAM3 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH3>;
-        UART8        => embassy_stm32::usart::InterruptHandler<peripherals::UART8>;
-    });
-
     // None in HIL mode: hil_link_task owns USART1 for the binary protocol
     // and text logs go to BT + SD only.
     let mut uart =
-        r.and_then(|r| UartTx::new(r.usart, r.tx, r.dma, Usart1Irqs, UartConfig::default()).ok());
+        r.and_then(|r| UartTx::new(r.usart, r.tx, r.dma, UartLogIrqs, UartConfig::default()).ok());
     // Onboard BT module (115200 by default, matches USART1). If init fails
     // we silently continue -- USART1 + SD logs still work.
-    let mut bt_uart = UartTx::new(bt.usart, bt.tx, bt.dma, BtUartIrqs, UartConfig::default()).ok();
+    let mut bt_uart = UartTx::new(bt.usart, bt.tx, bt.dma, BtLogIrqs, UartConfig::default()).ok();
 
     // Mirror one log line (+ CRLF) to USART1 (wired FTDI) and UART8 (BT).
     // Either may be None if init failed; both writes are best-effort.
@@ -3180,14 +3164,9 @@ async fn bmi270_logger_task(r: Bmi270Resources) -> ! {
 async fn mtf01_reader_task(r: Mtf01Resources) -> ! {
     use embassy_stm32::usart::{Config as UartConfig, UartRx};
 
-    bind_interrupts!(struct Mtf01Irqs {
-        DMA1_STREAM3 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH3>;
-        UART4        => embassy_stm32::usart::InterruptHandler<peripherals::UART4>;
-    });
-
     let mut cfg = UartConfig::default();
     cfg.baudrate = 115_200;
-    let mut uart = UartRx::new(r.usart, r.rx, r.dma, Mtf01Irqs, cfg).unwrap();
+    let mut uart = UartRx::new(r.usart, r.rx, r.dma, SensorIrqs, cfg).unwrap();
 
     ulog::log("[mtf01] UART4 RX started");
 
@@ -3448,7 +3427,7 @@ async fn hil_link_task(r: UartLogResources) -> ! {
     let mut cfg = UartConfig::default();
     cfg.baudrate = HIL_LINK_BAUD;
 
-    let (mut tx, mut rx) = Uart::new(r.usart, r.rx, r.tx, r.dma_rx, r.dma, Usart1Irqs, cfg)
+    let (mut tx, mut rx) = Uart::new(r.usart, r.rx, r.tx, r.dma_rx, r.dma, UartLogIrqs, cfg)
         .unwrap()
         .split();
 

@@ -24,10 +24,7 @@ use core::fmt::Write;
 
 use block_device_adapters::BufStream;
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler as DmaInterruptHandler;
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::peripherals::{DMA1_CH0, DMA1_CH2, USART1, USART3};
 use embassy_stm32::usart::{Config as UartConfig, UartRx, UartTx};
 use embassy_time::{Duration, Instant, Timer};
 use embedded_fatfs::{FileSystem, FsOptions};
@@ -37,6 +34,7 @@ use postcard::to_slice_cobs;
 use serde::Serialize;
 use {defmt_rtt as _, panic_probe as _};
 
+use micoairh743v2::resources::{SensorIrqs, UartLogIrqs};
 use micoairh743v2::sdlog::SdmmcResources;
 
 const GPS_BAUD: u32 = 115_200;
@@ -69,23 +67,14 @@ struct GpsRecord {
     v_acc_mm: u32,
 }
 
-// ── Interrupt bindings ──────────────────────────────────────────────────────
-
-bind_interrupts!(struct Irqs {
-    DMA1_STREAM0 => DmaInterruptHandler<DMA1_CH0>;
-    DMA1_STREAM2 => DmaInterruptHandler<DMA1_CH2>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-    USART3       => embassy_stm32::usart::InterruptHandler<USART3>;
-});
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn le_i32(buf: &[u8], off: usize) -> i32 {
-    i32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])
+    i32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
 }
 
 fn le_u32(buf: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])
+    u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
 }
 
 fn fix_type_str(ft: u8) -> &'static str {
@@ -107,39 +96,46 @@ async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(micoairh743v2::config::embassy_config());
 
     let mut led_green = Output::new(p.PE2, Level::Low, Speed::Low);
-    let mut led_blue  = Output::new(p.PE4, Level::Low, Speed::Low);
-    let mut led_red   = Output::new(p.PE3, Level::Low, Speed::Low);
+    let mut led_blue = Output::new(p.PE4, Level::Low, Speed::Low);
+    let mut led_red = Output::new(p.PE3, Level::Low, Speed::Low);
 
     // ── Debug UART ───────────────────────────────────────────────────────────
     let mut uart =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, Irqs, UartConfig::default()).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
     uart.write(b"gps_data: UART1 TX ok\r\n").await.ok();
 
     // ── GPS UART (USART3 RX only) ────────────────────────────────────────────
     let mut gps_cfg = UartConfig::default();
     gps_cfg.baudrate = GPS_BAUD;
-    let mut gps_rx =
-        UartRx::new(p.USART3, p.PD9, p.DMA1_CH2, Irqs, gps_cfg).unwrap();
+    let mut gps_rx = UartRx::new(p.USART3, p.PD9, p.DMA1_CH2, SensorIrqs, gps_cfg).unwrap();
     uart.write(b"gps_data: USART3 RX ok\r\n").await.ok();
 
     // ── SDMMC1 ───────────────────────────────────────────────────────────────
     let mut device = SdmmcResources {
         periph: p.SDMMC1,
-        clk: p.PC12, cmd: p.PD2,
-        d0: p.PC8, d1: p.PC9, d2: p.PC10, d3: p.PC11,
-    }.setup();
+        clk: p.PC12,
+        cmd: p.PD2,
+        d0: p.PC8,
+        d1: p.PC9,
+        d2: p.PC10,
+        d3: p.PC11,
+    }
+    .setup();
 
     let mut sd_ok = false;
     for attempt in 1u8..=5 {
         match device.try_reset().await {
-            Ok(()) => { sd_ok = true; break; }
+            Ok(()) => {
+                sd_ok = true;
+                break;
+            }
             Err(e) => {
                 let reason = match e {
-                    embassy_stm32::sdmmc::Error::NoCard          => "no card",
-                    embassy_stm32::sdmmc::Error::Timeout         => "timeout",
+                    embassy_stm32::sdmmc::Error::NoCard => "no card",
+                    embassy_stm32::sdmmc::Error::Timeout => "timeout",
                     embassy_stm32::sdmmc::Error::SoftwareTimeout => "sw timeout",
-                    embassy_stm32::sdmmc::Error::Crc             => "CRC",
-                    _                                             => "hw error",
+                    embassy_stm32::sdmmc::Error::Crc => "CRC",
+                    _ => "hw error",
                 };
                 let mut s: String<64> = String::new();
                 write!(s, "gps_data: SD attempt {} FAIL: {}\r\n", attempt, reason).ok();
@@ -152,8 +148,10 @@ async fn main(_spawner: Spawner) {
         uart.write(b"gps_data: SD FAIL\r\n").await.ok();
         loop {
             for _ in 0..4u8 {
-                led_red.set_high(); Timer::after_millis(150).await;
-                led_red.set_low();  Timer::after_millis(150).await;
+                led_red.set_high();
+                Timer::after_millis(150).await;
+                led_red.set_low();
+                Timer::after_millis(150).await;
             }
             Timer::after_millis(800).await;
         }
@@ -164,7 +162,9 @@ async fn main(_spawner: Spawner) {
         Ok(fs) => fs,
         Err(_) => {
             uart.write(b"gps_data: FAT mount FAIL\r\n").await.ok();
-            loop { Timer::after_secs(1).await; }
+            loop {
+                Timer::after_secs(1).await;
+            }
         }
     };
     uart.write(b"gps_data: SD ok\r\n").await.ok();
@@ -187,10 +187,15 @@ async fn main(_spawner: Spawner) {
         write!(dir_name, "D{:06}", session_idx).ok();
         match fs.root_dir().create_dir(dir_name.as_str()).await {
             Ok(d) => break d,
-            Err(embedded_fatfs::Error::AlreadyExists) => { session_idx += 1; continue; }
+            Err(embedded_fatfs::Error::AlreadyExists) => {
+                session_idx += 1;
+                continue;
+            }
             Err(_) => {
                 uart.write(b"gps_data: session dir FAIL\r\n").await.ok();
-                loop { Timer::after_secs(1).await; }
+                loop {
+                    Timer::after_secs(1).await;
+                }
             }
         }
     };
@@ -203,7 +208,9 @@ async fn main(_spawner: Spawner) {
         Ok(f) => f,
         Err(_) => {
             uart.write(b"gps_data: file create FAIL\r\n").await.ok();
-            loop { Timer::after_secs(1).await; }
+            loop {
+                Timer::after_secs(1).await;
+            }
         }
     };
     uart.write(b"gps_data: logging started\r\n").await.ok();
@@ -215,8 +222,8 @@ async fn main(_spawner: Spawner) {
     let mut last_flush = Instant::now();
 
     // ── UBX read buffers ─────────────────────────────────────────────────────
-    let mut b    = [0u8; 1];
-    let mut hdr  = [0u8; 4];
+    let mut b = [0u8; 1];
+    let mut hdr = [0u8; 4];
     let mut pbuf = [0u8; MAX_PAYLOAD + 2];
 
     // ── Main loop ────────────────────────────────────────────────────────────
@@ -224,18 +231,24 @@ async fn main(_spawner: Spawner) {
         // Sync to UBX preamble: 0xB5 0x62
         loop {
             gps_rx.read(&mut b).await.ok();
-            if b[0] != UBX_SYNC_1 { continue; }
+            if b[0] != UBX_SYNC_1 {
+                continue;
+            }
             gps_rx.read(&mut b).await.ok();
-            if b[0] == UBX_SYNC_2 { break; }
+            if b[0] == UBX_SYNC_2 {
+                break;
+            }
         }
 
         // Read class + ID + length
         gps_rx.read(&mut hdr).await.ok();
         let class = hdr[0];
-        let id    = hdr[1];
-        let len   = u16::from_le_bytes([hdr[2], hdr[3]]) as usize;
+        let id = hdr[1];
+        let len = u16::from_le_bytes([hdr[2], hdr[3]]) as usize;
 
-        if class != NAV_CLASS || len > MAX_PAYLOAD { continue; }
+        if class != NAV_CLASS || len > MAX_PAYLOAD {
+            continue;
+        }
 
         // Read payload + 2 checksum bytes
         gps_rx.read(&mut pbuf[..len + 2]).await.ok();
@@ -246,15 +259,15 @@ async fn main(_spawner: Spawner) {
             NAV_PVT_ID if len == NAV_PVT_LEN => {
                 let rec = GpsRecord {
                     timestamp_us: now.as_micros(),
-                    fix_type:     pbuf[20],
-                    num_sv:       pbuf[23],
-                    lon_1e7:      le_i32(&pbuf, 24),
-                    lat_1e7:      le_i32(&pbuf, 28),
-                    h_msl_mm:     le_i32(&pbuf, 36),
+                    fix_type: pbuf[20],
+                    num_sv: pbuf[23],
+                    lon_1e7: le_i32(&pbuf, 24),
+                    lat_1e7: le_i32(&pbuf, 28),
+                    h_msl_mm: le_i32(&pbuf, 36),
                     g_speed_mm_s: le_i32(&pbuf, 60),
                     head_mot_1e5: le_i32(&pbuf, 64),
-                    h_acc_mm:     le_u32(&pbuf, 40),
-                    v_acc_mm:     le_u32(&pbuf, 44),
+                    h_acc_mm: le_u32(&pbuf, 40),
+                    v_acc_mm: le_u32(&pbuf, 44),
                 };
 
                 // Write to SD
@@ -294,29 +307,38 @@ async fn main(_spawner: Spawner) {
 // ── UBX printers ────────────────────────────────────────────────────────────
 
 async fn print_nav_pvt(p: &[u8], uart: &mut UartTx<'_, embassy_stm32::mode::Async>) {
-    let fix   = p[20];
-    let sats  = p[23];
-    let lon   = le_i32(p, 24);
-    let lat   = le_i32(p, 28);
-    let alt   = le_i32(p, 36);
+    let fix = p[20];
+    let sats = p[23];
+    let lon = le_i32(p, 24);
+    let lat = le_i32(p, 28);
+    let alt = le_i32(p, 36);
     let speed = le_i32(p, 60);
 
-    let lat_deg  = lat / 10_000_000;
+    let lat_deg = lat / 10_000_000;
     let lat_frac = (lat % 10_000_000).unsigned_abs();
-    let lon_deg  = lon / 10_000_000;
+    let lon_deg = lon / 10_000_000;
     let lon_frac = (lon % 10_000_000).unsigned_abs();
-    let alt_m    = alt / 1000;
-    let alt_dm   = ((alt % 1000).unsigned_abs()) / 100;
-    let spd_ms   = speed / 1000;
-    let spd_cm   = ((speed % 1000).unsigned_abs()) / 10;
+    let alt_m = alt / 1000;
+    let alt_dm = ((alt % 1000).unsigned_abs()) / 100;
+    let spd_ms = speed / 1000;
+    let spd_cm = ((speed % 1000).unsigned_abs()) / 10;
 
     let mut msg: String<128> = String::new();
-    write!(msg,
+    write!(
+        msg,
         "fix={} sat={:2} lat={}.{:07} lon={}.{:07} alt={}.{}m spd={}.{:02}m/s\r\n",
-        fix_type_str(fix), sats,
-        lat_deg, lat_frac, lon_deg, lon_frac,
-        alt_m, alt_dm, spd_ms, spd_cm,
-    ).ok();
+        fix_type_str(fix),
+        sats,
+        lat_deg,
+        lat_frac,
+        lon_deg,
+        lon_frac,
+        alt_m,
+        alt_dm,
+        spd_ms,
+        spd_cm,
+    )
+    .ok();
     uart.write(msg.as_bytes()).await.ok();
 }
 
@@ -326,14 +348,16 @@ async fn print_nav_sat(p: &[u8], uart: &mut UartTx<'_, embassy_stm32::mode::Asyn
     // Count tracked and used satellites per constellation.
     // Indices: 0=GPS 1=SBAS 2=GAL 3=BDS 4=QZSS 5=GLO 6=other
     let mut tracked = [0u8; 7];
-    let mut used    = [0u8; 7];
+    let mut used = [0u8; 7];
 
     for i in 0..num_svs {
         let off = 8 + i * 12;
-        if off + 12 > p.len() { break; }
+        if off + 12 > p.len() {
+            break;
+        }
 
         let gnss_id = p[off];
-        let flags   = u32::from_le_bytes([p[off+8], p[off+9], p[off+10], p[off+11]]);
+        let flags = u32::from_le_bytes([p[off + 8], p[off + 9], p[off + 10], p[off + 11]]);
         let sv_used = (flags >> 3) & 1 == 1;
 
         let idx = match gnss_id {
@@ -346,11 +370,18 @@ async fn print_nav_sat(p: &[u8], uart: &mut UartTx<'_, embassy_stm32::mode::Asyn
             _ => 6,
         };
         tracked[idx] += 1;
-        if sv_used { used[idx] += 1; }
+        if sv_used {
+            used[idx] += 1;
+        }
     }
 
     let ids: [(usize, &str); 6] = [
-        (0, "GPS"), (5, "GLO"), (2, "GAL"), (3, "BDS"), (1, "SBAS"), (4, "QZSS"),
+        (0, "GPS"),
+        (5, "GLO"),
+        (2, "GAL"),
+        (3, "BDS"),
+        (1, "SBAS"),
+        (4, "QZSS"),
     ];
 
     let mut msg: String<128> = String::new();
@@ -372,7 +403,9 @@ fn parse_session_dir_idx(name: &[u8]) -> Option<u32> {
     }
     let mut idx: u32 = 0;
     for &b in &name[1..] {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         idx = idx * 10 + (b - b'0') as u32;
     }
     Some(idx)

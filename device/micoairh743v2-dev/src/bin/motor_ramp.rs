@@ -20,12 +20,10 @@ use core::fmt::Write;
 
 use block_device_adapters::BufStream;
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler as DmaInterruptHandler;
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::mode::Async;
-use embassy_stm32::peripherals::{DMA1_CH0, DMA1_CH1, TIM1, USART1};
+use embassy_stm32::peripherals::{DMA1_CH1, TIM1};
 use embassy_stm32::spi::{self, mode::Master as SpiMaster, Config as SpiConfig, Spi};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::timer::low_level::CountingMode;
@@ -45,15 +43,12 @@ use static_cell::StaticCell;
 use micoairh743v2::bmi088::Bmi088;
 use micoairh743v2::resources::{MotorIrqs, Spi2Irqs};
 use micoairh743v2::sdlog::SdmmcResources;
+use micoairh743v2::resources::UartLogIrqs;
 use {defmt_rtt as _, panic_probe as _};
 
 #[path = "../config.rs"]
 mod config;
 
-bind_interrupts!(struct Irqs {
-    DMA1_STREAM0 => DmaInterruptHandler<DMA1_CH0>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-});
 
 /// Maximum throttle. Hover for this frame is ~450 DShot.
 const RAMP_MAX: u16 = 150;
@@ -96,7 +91,7 @@ async fn main(_spawner: Spawner) {
     let _led_red      = Output::new(p.PE3, Level::Low, Speed::Low);
 
     let mut uart =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, Irqs, UartConfig::default()).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
 
     // ── BMI088 IMU setup (SPI2) ──────────────────────────────────────────────
     let cs_acc = Output::new(p.PD4, Level::High, Speed::High);

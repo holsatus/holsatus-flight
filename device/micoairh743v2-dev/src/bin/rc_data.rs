@@ -55,10 +55,7 @@
 use core::fmt::Write;
 
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler as DmaInterruptHandler;
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::peripherals::{DMA1_CH0, USART1};
 use embassy_futures::select::{select, Either};
 use embassy_stm32::usart::{Config as UartConfig, UartRx, UartTx};
 use embassy_time::{Duration, Instant, Timer};
@@ -124,12 +121,8 @@ const CRSF_LOW: i32 = 172;    // -100%
 const CRSF_MID: i32 = 992;    //    0%
 const CRSF_HIGH: i32 = 1811;  // +100%
 
-bind_interrupts!(struct Irqs {
-    DMA1_STREAM0 => DmaInterruptHandler<DMA1_CH0>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-});
-// USART6 + DMA2_STREAM2 are bound at lib level in micoairh743v2::rc_kill::RcIrqs.
-use micoairh743v2::rc_kill::RcIrqs;
+// USART6 + DMA2_STREAM2 are bound at lib level in micoairh743v2::resources::RcIrqs.
+use micoairh743v2::resources::{RcIrqs, UartLogIrqs};
 
 /// Decode a 3-position switch from a raw CRSF channel value.
 fn switch_pos(raw: u16) -> &'static str {
@@ -188,7 +181,7 @@ async fn main(_spawner: Spawner) {
     let mut dbg_cfg = UartConfig::default();
     dbg_cfg.baudrate = DEBUG_BAUD;
     let mut uart =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, Irqs, dbg_cfg).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, dbg_cfg).unwrap();
     uart.write(b"rc_data: USART1 TX ok\r\n").await.ok();
 
     // CRSF input (USART6 RX only). Uses lib-level RcIrqs so USART6 +

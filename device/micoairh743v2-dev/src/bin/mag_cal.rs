@@ -56,11 +56,8 @@ use core::fmt::Write;
 
 use block_device_adapters::BufStream;
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::i2c::{Config as I2cConfig, I2c};
-use embassy_stm32::peripherals::{DMA1_CH0, USART1};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_time::{Duration, Instant, Timer};
@@ -72,6 +69,7 @@ use {defmt_rtt as _, panic_probe as _};
 use micoairh743v2::qmc5883l::{Qmc5883l, ADDR as QMC_ADDR};
 use micoairh743v2::resources::I2c2Irqs;
 use micoairh743v2::sdlog::SdmmcResources;
+use micoairh743v2::resources::UartLogIrqs;
 
 /// QMC5883L sensitivity at 2 Gauss range.
 const SENSITIVITY_UT_PER_LSB: f32 = 0.244;
@@ -88,10 +86,6 @@ const COLLECT_S: u64 = 180;
 /// Sample period in milliseconds.
 const SAMPLE_PERIOD_MS: u64 = 20;
 
-bind_interrupts!(struct UartIrqs {
-    DMA1_STREAM0 => InterruptHandler<DMA1_CH0>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-});
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -110,7 +104,7 @@ async fn main(spawner: Spawner) {
     }
 
     let mut uart = UartTx::new(
-        p.USART1, p.PA9, p.DMA1_CH0, UartIrqs, UartConfig::default(),
+        p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default(),
     )
     .unwrap();
     uart.write(b"mag_cal: UART ok\r\n").await.ok();

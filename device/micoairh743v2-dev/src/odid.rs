@@ -14,8 +14,6 @@
 
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::peripherals;
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_time::{Instant, Timer};
 use mavio::dialects::common::enums::{
@@ -32,7 +30,7 @@ use mavio::dialects::minimal::enums::{MavAutopilot, MavState, MavType};
 use mavio::prelude::{V2, Versioned};
 
 use crate::log as ulog;
-use crate::resources::OdidResources;
+use crate::resources::{OdidIrqs, OdidResources};
 
 // Operator identity. Values are read at build time from the gitignored
 // `tools/odid_emit/secrets.toml` (see build.rs `emit_odid_secrets`). If the
@@ -65,11 +63,6 @@ pub const COMPONENT_ID: u8 = 1;
 // Unix seconds at 2019-01-01 00:00:00 UTC. OPEN_DRONE_ID_SYSTEM.timestamp is
 // measured from this epoch.
 const ODID_EPOCH_UNIX: u32 = 1_546_300_800;
-
-bind_interrupts!(struct OdidIrqs {
-    UART5        => embassy_stm32::usart::InterruptHandler<peripherals::UART5>;
-    DMA2_STREAM4 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH4>;
-});
 
 #[embassy_executor::task]
 pub async fn odid_tx_task(r: OdidResources) -> ! {

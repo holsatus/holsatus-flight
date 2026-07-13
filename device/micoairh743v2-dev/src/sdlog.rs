@@ -34,10 +34,8 @@ use common::{
     tasks::blackbox_fat::{BlockDevice, Reset},
 };
 use embassy_stm32::{
-    bind_interrupts,
     peripherals,
     sdmmc::{
-        self,
         sd::{Card, CmdBlock, DataBlock, StorageDevice},
         Error, Sdmmc,
     },
@@ -46,6 +44,8 @@ use embassy_stm32::{
 };
 // Peri is re-exported from embassy_hal_internal via embassy_stm32.
 use static_cell::StaticCell;
+
+use crate::resources::SdmmcIrq;
 
 // ── SdmmcDevice ──────────────────────────────────────────────────────────────
 
@@ -144,10 +144,6 @@ impl SdmmcResources {
     /// Call `Reset::reset()` on the returned device before any I/O to
     /// initialise the SD card.
     pub fn setup(self) -> SdmmcDevice {
-        bind_interrupts!(struct SdmmcIrq {
-            SDMMC1 => sdmmc::InterruptHandler<peripherals::SDMMC1>;
-        });
-
         static SDMMC: StaticCell<Sdmmc<'static>> = StaticCell::new();
 
         let sdmmc = SDMMC.init(Sdmmc::new_4bit(

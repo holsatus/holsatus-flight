@@ -12,10 +12,9 @@
 //! deliberately do not validate the checksum: bad bytes either fail the
 //! magic-sync re-sync or land in fields that get sanity-checked downstream.
 
+use crate::resources::SensorIrqs;
 use common::signals::RAW_GNSS_DATA;
 use common::types::measurements::{GnssData, GnssFix, GnssTime};
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::peripherals;
 use embassy_stm32::usart::{Config as UartConfig, UartRx};
 use embassy_time::Instant;
 
@@ -26,15 +25,10 @@ pub const BAUD: u32 = 115_200;
 
 const UBX_SYNC_1: u8 = 0xB5;
 const UBX_SYNC_2: u8 = 0x62;
-const NAV_CLASS:  u8 = 0x01;
+const NAV_CLASS: u8 = 0x01;
 const NAV_PVT_ID: u8 = 0x07;
 const NAV_PVT_LEN: usize = 92;
 const MAX_PAYLOAD: usize = 512;
-
-bind_interrupts!(struct GnssIrqs {
-    USART3       => embassy_stm32::usart::InterruptHandler<peripherals::USART3>;
-    DMA1_STREAM2 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH2>;
-});
 
 #[embassy_executor::task]
 pub async fn gnss_reader_task(r: GpsResources) -> ! {
@@ -44,18 +38,20 @@ pub async fn gnss_reader_task(r: GpsResources) -> ! {
     let mut cfg = UartConfig::default();
     cfg.baudrate = BAUD;
 
-    let mut rx = match UartRx::new(r.usart, r.rx, r.dma, GnssIrqs, cfg) {
+    let mut rx = match UartRx::new(r.usart, r.rx, r.dma, SensorIrqs, cfg) {
         Ok(rx) => rx,
         Err(_) => {
             ulog::log("[gnss] USART3 init FAIL -- halting");
-            loop { embassy_time::Timer::after_secs(60).await; }
+            loop {
+                embassy_time::Timer::after_secs(60).await;
+            }
         }
     };
     ulog::log("[gnss] USART3 up at 115200, parsing UBX NAV-PVT");
 
     let mut snd = RAW_GNSS_DATA.sender();
     let mut sync = [0u8; 1];
-    let mut hdr  = [0u8; 4];
+    let mut hdr = [0u8; 4];
     let mut pbuf = [0u8; MAX_PAYLOAD + 2];
 
     // GPS status logging: every LOG_PERIOD_MS, plus immediately on any fix-type
@@ -68,23 +64,36 @@ pub async fn gnss_reader_task(r: GpsResources) -> ! {
     loop {
         // Sync to UBX preamble.
         loop {
-            if rx.read(&mut sync).await.is_err() { continue; }
-            if sync[0] != UBX_SYNC_1 { continue; }
-            if rx.read(&mut sync).await.is_err() { continue; }
-            if sync[0] == UBX_SYNC_2 { break; }
+            if rx.read(&mut sync).await.is_err() {
+                continue;
+            }
+            if sync[0] != UBX_SYNC_1 {
+                continue;
+            }
+            if rx.read(&mut sync).await.is_err() {
+                continue;
+            }
+            if sync[0] == UBX_SYNC_2 {
+                break;
+            }
         }
 
-        if rx.read(&mut hdr).await.is_err() { continue; }
+        if rx.read(&mut hdr).await.is_err() {
+            continue;
+        }
         let class = hdr[0];
-        let id    = hdr[1];
-        let len   = u16::from_le_bytes([hdr[2], hdr[3]]) as usize;
-        if class != NAV_CLASS || len > MAX_PAYLOAD { continue; }
-        if rx.read(&mut pbuf[..len + 2]).await.is_err() { continue; }
+        let id = hdr[1];
+        let len = u16::from_le_bytes([hdr[2], hdr[3]]) as usize;
+        if class != NAV_CLASS || len > MAX_PAYLOAD {
+            continue;
+        }
+        if rx.read(&mut pbuf[..len + 2]).await.is_err() {
+            continue;
+        }
 
         if id == NAV_PVT_ID && len == NAV_PVT_LEN {
             let data = parse_nav_pvt(&pbuf);
-            let (fix, sats, hacc) =
-                (data.fix, data.num_satellites, data.horizontal_accuracy);
+            let (fix, sats, hacc) = (data.fix, data.num_satellites, data.horizontal_accuracy);
             let (lat_raw, lon_raw, alt) =
                 (data.latitude_raw, data.longitude_raw, data.height_above_msl);
             snd.send(data);
@@ -121,46 +130,46 @@ pub async fn gnss_reader_task(r: GpsResources) -> ! {
 
 fn fix_label(fix: GnssFix) -> &'static str {
     match fix {
-        GnssFix::NoFix    => "NoFix",
+        GnssFix::NoFix => "NoFix",
         GnssFix::TimeOnly => "TimeOnly",
-        GnssFix::Fix2D    => "2D",
-        GnssFix::Fix3D    => "3D",
+        GnssFix::Fix2D => "2D",
+        GnssFix::Fix3D => "3D",
     }
 }
 
 fn parse_nav_pvt(p: &[u8]) -> GnssData {
     let fix = match p[20] {
-        2     => GnssFix::Fix2D,
+        2 => GnssFix::Fix2D,
         3 | 4 => GnssFix::Fix3D,
-        5     => GnssFix::TimeOnly,
-        _     => GnssFix::NoFix,
+        5 => GnssFix::TimeOnly,
+        _ => GnssFix::NoFix,
     };
 
     GnssData {
         timestamp_us: Instant::now().as_micros(),
         time: GnssTime {
-            year:  u16::from_le_bytes([p[4], p[5]]),
+            year: u16::from_le_bytes([p[4], p[5]]),
             month: p[6],
-            day:   p[7],
-            hour:  p[8],
-            min:   p[9],
-            sec:   p[10],
+            day: p[7],
+            hour: p[8],
+            min: p[9],
+            sec: p[10],
         },
         fix,
         num_satellites: p[23],
         longitude_raw: le_i32(p, 24),
-        latitude_raw:  le_i32(p, 28),
+        latitude_raw: le_i32(p, 28),
         // NAV-PVT.hMSL is in millimetres; GnssData.height_above_msl is metres.
-        height_above_msl:    le_i32(p, 36) as f32 * 1e-3,
+        height_above_msl: le_i32(p, 36) as f32 * 1e-3,
         horizontal_accuracy: le_u32(p, 40) as f32 * 1e-3,
-        vertical_accuracy:   le_u32(p, 44) as f32 * 1e-3,
-        velocity_north:      le_i32(p, 48) as f32 * 1e-3,
-        velocity_east:       le_i32(p, 52) as f32 * 1e-3,
-        velocity_down:       le_i32(p, 56) as f32 * 1e-3,
-        ground_speed:        le_i32(p, 60) as f32 * 1e-3,
+        vertical_accuracy: le_u32(p, 44) as f32 * 1e-3,
+        velocity_north: le_i32(p, 48) as f32 * 1e-3,
+        velocity_east: le_i32(p, 52) as f32 * 1e-3,
+        velocity_down: le_i32(p, 56) as f32 * 1e-3,
+        ground_speed: le_i32(p, 60) as f32 * 1e-3,
         // NAV-PVT.headMot is degrees * 1e5; GnssData.heading_motion is radians.
-        heading_motion:        (le_i32(p, 64) as f32 * 1e-5).to_radians(),
-        heading_accuracy:      (le_u32(p, 72) as f32 * 1e-5).to_radians(),
+        heading_motion: (le_i32(p, 64) as f32 * 1e-5).to_radians(),
+        heading_accuracy: (le_u32(p, 72) as f32 * 1e-5).to_radians(),
         ground_speed_accuracy: le_u32(p, 68) as f32 * 1e-3,
         mag_declination: 0.0,
     }

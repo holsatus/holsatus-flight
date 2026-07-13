@@ -57,13 +57,13 @@ use common::types::actuators::MotorsState;
 use common::types::config::DshotConfig;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
-use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_time::Timer;
 use micoairh743v2::log as ulog;
 use micoairh743v2::resources::{
     self, BatteryResources, SdmmcLogResources, UartLogResources,
 };
 use micoairh743v2::sdlog::SdmmcResources;
+use micoairh743v2::resources::UartLogIrqs;
 
 /// Helper macro to create an interrupt executor at the given priority.
 macro_rules! interrupt_executor {
@@ -491,12 +491,8 @@ async fn uart_writer_task(r: UartLogResources, sd: SdmmcLogResources) -> ! {
     use embedded_fatfs::{FileSystem, FsOptions};
     use embedded_io_async_061::Write as _;
 
-    bind_interrupts!(struct UartIrqs {
-        DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH0>;
-        USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
-    });
 
-    let mut uart = UartTx::new(r.usart, r.tx, r.dma, UartIrqs, UartConfig::default()).ok();
+    let mut uart = UartTx::new(r.usart, r.tx, r.dma, UartLogIrqs, UartConfig::default()).ok();
 
     // ── SD card setup (best-effort -- logging continues on UART if SD fails) ──
     let mut device = SdmmcResources {

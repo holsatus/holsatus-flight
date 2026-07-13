@@ -23,11 +23,9 @@
 #![no_main]
 
 use embassy_executor::Spawner;
-use embassy_stm32::bind_interrupts;
-use embassy_stm32::dma::InterruptHandler as DmaInterruptHandler;
 use embassy_stm32::gpio::OutputType;
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::peripherals::{DMA1_CH0, DMA1_CH1, TIM1, USART1};
+use embassy_stm32::peripherals::{DMA1_CH1, TIM1};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::{PwmPin, SimplePwm};
@@ -37,16 +35,13 @@ use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_stm32::Peri;
 use embassy_time::Timer;
 use micoairh743v2::resources::MotorIrqs;
+use micoairh743v2::resources::UartLogIrqs;
 use {defmt_rtt as _, panic_probe as _};
 
 #[path = "../config.rs"]
 mod config;
 
 // DMA1_STREAM1 (TIM1 UP DMA) is bound at lib level (resources::MotorIrqs).
-bind_interrupts!(struct Irqs {
-    DMA1_STREAM0 => DmaInterruptHandler<DMA1_CH0>;
-    USART1       => embassy_stm32::usart::InterruptHandler<USART1>;
-});
 
 const SLOTS: usize = 24;
 
@@ -95,7 +90,7 @@ async fn main(_spawner: Spawner) {
     let mut led_green = Output::new(p.PE2, Level::Low, Speed::Low);
 
     let mut uart_tx =
-        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, Irqs, UartConfig::default()).unwrap();
+        UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
 
     led_green.set_high();
     Timer::after_millis(300).await;

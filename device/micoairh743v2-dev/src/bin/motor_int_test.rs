@@ -22,8 +22,7 @@
 #![no_main]
 
 use embassy_executor::{InterruptExecutor, Spawner};
-use embassy_stm32::{bind_interrupts, interrupt, interrupt::{InterruptExt, Priority}, peripherals, Peri};
-use embassy_stm32::dma::InterruptHandler as DmaInterruptHandler;
+use embassy_stm32::{interrupt, interrupt::{InterruptExt, Priority}, peripherals, Peri};
 use embassy_stm32::gpio::{Level, Output, OutputType, Speed};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::timer::Channel;
@@ -33,6 +32,7 @@ use embassy_stm32::timer::{Ch1, Ch2, Ch3, Ch4};
 use embassy_stm32::usart::{Config as UartConfig, UartTx};
 use embassy_time::Timer;
 use micoairh743v2::resources::MotorIrqs;
+use micoairh743v2::resources::UartLogIrqs;
 use {defmt_rtt as _, panic_probe as _};
 
 // Pull in config without linking the full micoairh743 lib (avoids duplicate ISR).
@@ -41,10 +41,6 @@ mod config;
 use config::{Reverse, MOTOR_REVERSE_FLAGS};
 
 // DMA1_STREAM1 (TIM1 UP DMA) is bound at lib level (resources::MotorIrqs).
-bind_interrupts!(struct Irqs {
-    DMA1_STREAM0 => DmaInterruptHandler<peripherals::DMA1_CH0>;
-    USART1       => embassy_stm32::usart::InterruptHandler<peripherals::USART1>;
-});
 
 const FRAME_SLOTS: usize = 24;
 const N_CHAN: usize = 4;
@@ -173,7 +169,7 @@ async fn main(_spawner: Spawner) {
     let mut led_green = Output::new(p.PE2, Level::Low, Speed::Low);
     let mut led_red   = Output::new(p.PE3, Level::Low, Speed::Low);
 
-    let mut uart = UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, Irqs, UartConfig::default()).unwrap();
+    let mut uart = UartTx::new(p.USART1, p.PA9, p.DMA1_CH0, UartLogIrqs, UartConfig::default()).unwrap();
     let _ = uart.write(b"motor_int_test: embassy_config + P10 executor\r\n").await;
 
     interrupt::FDCAN1_IT0.set_priority(Priority::P10);
