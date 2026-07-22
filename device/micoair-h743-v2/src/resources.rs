@@ -221,7 +221,7 @@ pub mod usb {
 
     stm32_support::impl_usb_setup!(Usb, OTG_FS => USB_OTG_FS, 128);
 
-    #[stm32_support::exec::task]
+    #[embassy_executor::task]
     pub(crate) async fn runner(usb: Usb, info: HardwareInfo) -> ! {
         let usb = usb.setup();
         common::tasks::usb_manager::main(usb, info).await
