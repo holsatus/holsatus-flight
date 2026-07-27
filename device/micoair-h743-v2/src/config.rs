@@ -1,10 +1,4 @@
-use common::{
-    drivers::imu::{
-        icm20948_async::{AccDlp, AccRange, AccUnit, Config, GyrDlp, GyrRange, GyrUnit},
-        ImuConfig,
-    },
-    types::config::{DshotConfig, I2cConfig, UartConfig},
-};
+use common::types::config::{DshotConfig, UartConfig};
 
 #[cfg(feature = "usb")]
 pub(crate) fn hwinfo() -> common::types::device::HardwareInfo {
@@ -15,27 +9,6 @@ pub(crate) fn hwinfo() -> common::types::device::HardwareInfo {
         make: String::from_str("Micoair").ok(),
         model: String::from_str("H743 V2").ok(),
         serial_nr: None,
-    }
-}
-
-pub(crate) fn imu() -> ImuConfig {
-    ImuConfig::Icm20948(Config {
-        acc_range: AccRange::Gs8,
-        gyr_range: GyrRange::Dps2000,
-        acc_unit: AccUnit::Mpss,
-        gyr_unit: GyrUnit::Rps,
-        acc_dlp: AccDlp::Hz111,
-        gyr_dlp: GyrDlp::Hz361,
-        acc_odr: 0,
-        gyr_odr: 0,
-    })
-}
-
-pub(crate) fn i2c1() -> I2cConfig {
-    I2cConfig {
-        frequency: 1_000_000,
-        sda_pullup: true,
-        scl_pullup: true,
     }
 }
 

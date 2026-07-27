@@ -212,17 +212,20 @@ macro_rules! impl_exti_setup {
 #[macro_export]
 macro_rules! impl_spi_setup {
     (
-        $Spi:ty,
+        $Spi:ty: $spi_mode:ident,
         $tx_irq:ident => $tx_periph:ident,
         $rx_irq:ident => $rx_periph:ident
         $(,)?
     ) => {
         impl $Spi {
-            pub fn setup(self) -> impl common::embedded_hal_async::spi::SpiBus {
+            pub fn setup(self) -> embassy_stm32::spi::Spi<'static, embassy_stm32::mode::Async, embassy_stm32::spi::mode::Master> {
                 embassy_stm32::bind_interrupts!(struct Irqs {
                     $tx_irq => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::$tx_periph>;
                     $rx_irq => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::$rx_periph>;
                 });
+
+                let mut config = embassy_stm32::spi::Config::default();
+                config.mode = embassy_stm32::spi::$spi_mode;
 
                 embassy_stm32::spi::Spi::new(
                     self.periph,
@@ -232,7 +235,7 @@ macro_rules! impl_spi_setup {
                     self.tx_dma,
                     self.rx_dma,
                     Irqs,
-                    Default::default(),
+                    config,
                 )
             }
         }

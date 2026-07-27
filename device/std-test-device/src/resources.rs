@@ -1,50 +1,73 @@
-
-
-use common::hw_abstraction::Imu6Dof;
 use common::hw_abstraction::OutputGroup;
-use common::types::measurements::Imu6DofData;
+use common::nalgebra::SMatrix;
+use common::nalgebra::SVector;
 use common::types::measurements::ViconData;
 use embassy_time::Duration;
 use embassy_time::Ticker;
 use holsatus_sim::Sim as _;
 use holsatus_sim::SimHandle;
 use holsatus_sim::SimulatedFlash;
-use holsatus_sim::SimulatedImu;
 use holsatus_sim::SimulatedMotors;
 use rand_distr::Distribution as _;
 use rand_distr::Normal;
-use common::nalgebra::SMatrix;
-use common::nalgebra::SVector;
 
-#[embassy_executor::task]
-pub async fn imu_reader(imu: SimulatedImu) {
-    struct Imu(SimulatedImu);
+pub mod imu_reader {
+    use common::{
+        drivers::imu::{ImuInitialize, ImuSensor},
+        errors::ImuError,
+        types::measurements::Imu6DofData,
+    };
+    use embassy_time::{Duration, Instant, Ticker};
+    use holsatus_sim::SimulatedImu;
 
-    impl Imu6Dof for Imu {
-        async fn read_acc(&mut self) -> Result<[f32; 3], common::errors::DeviceError> {
-            Ok(self.0.read_acc())
+    #[embassy_executor::task]
+    pub async fn main(imu: SimulatedImu) {
+        struct Imu<'a>(&'a mut SimulatedImu);
+
+        impl ImuInitialize for Imu<'_> {
+            type Config = ();
+            type Interface = SimulatedImu;
+            type Sensor<'a>
+                = Imu<'a>
+            where
+                Self: 'a;
+
+            async fn initialize<'a>(
+                interface: &'a mut Self::Interface,
+                _config: &Self::Config,
+            ) -> Result<Self::Sensor<'a>, ImuError>
+            where
+                Self: 'a,
+            {
+                Ok(Imu(interface))
+            }
         }
 
-        async fn read_gyr(&mut self) -> Result<[f32; 3], common::errors::DeviceError> {
-            Ok(self.0.read_gyr())
+        impl ImuSensor for Imu<'_> {
+            fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+                async { Ok(self.0.read_sim_acc()) }
+            }
+            fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+                async { Ok(self.0.read_sim_gyr()) }
+            }
+            fn read_acc_gyr(&mut self) -> impl Future<Output = Result<Imu6DofData<f32>, ImuError>> {
+                async {
+                    Ok(Imu6DofData {
+                        timestamp_us: Instant::now().as_micros(),
+                        gyr: self.0.read_sim_gyr(),
+                        acc: self.0.read_sim_acc(),
+                    })
+                }
+            }
         }
 
-        async fn read_acc_gyr(
-            &mut self,
-        ) -> Result<common::types::measurements::Imu6DofData<f32>, common::errors::DeviceError>
-        {
-            let (acc, gyr) = self.0.read_acc_gyr();
-            Ok(Imu6DofData {
-                timestamp_us: self.0.sim.timestamp_us(),
-                gyr,
-                acc,
-            })
-        }
+        common::tasks::imu_reader::ImuReader::entry::<Imu<'_>>(
+            imu,
+            (),
+            Ticker::every(Duration::from_hz(1000)),
+        )
+        .await
     }
-
-    let imu = Imu(imu);
-
-    common::tasks::imu_reader::main_6dof(imu).await
 }
 
 #[embassy_executor::task]

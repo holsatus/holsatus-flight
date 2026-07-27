@@ -17,10 +17,13 @@ assign_resources! {
         mosi: PC3,
         rx_dma: DMA1_CH4,
         tx_dma: DMA1_CH5,
+    },
+    spi_2_extra: Spi2Extra {
         gyr_cs: PD5,
         acc_cs: PD4,
         gyr_dr: PC15,
         acc_dr: PC14,
+        gyr_exti: EXTI15,
     },
     spi_3: Spi3 {
         periph: SPI3,
@@ -29,8 +32,11 @@ assign_resources! {
         mosi: PD6,
         rx_dma: DMA1_CH6,
         tx_dma: DMA1_CH7,
+    },
+    spi_3_extra: Spi3Extra {
         cs: PA15,
         dr: PB7,
+        exti: EXTI7,
     },
     usart_1: Usart1 {
         periph: USART1,
@@ -100,35 +106,70 @@ pub mod i2c {
         DMA2_STREAM4 => DMA2_CH4,
         DMA2_STREAM5 => DMA2_CH5,
     );
-
-    #[embassy_executor::task]
-    pub(crate) async fn imu_reader(
-        i2c: super::I2c2,
-        i2c_cfg: common::types::config::I2cConfig,
-        imu_cfg: common::drivers::imu::ImuConfig,
-    ) -> ! {
-        let i2c = i2c.setup(i2c_cfg);
-        common::tasks::imu_reader::main_6dof_i2c(i2c, imu_cfg, Some(0x69)).await
-    }
 }
 
 pub mod spi {
-    stm32_support::impl_spi_setup!(super::Spi2, DMA1_STREAM4 => DMA1_CH4, DMA1_STREAM5 => DMA1_CH5);
+    use common::{
+        drivers::{
+            imu::{trigger::OnRising, Bmi088Config, Bmi088Spi, Bmi270Config, Bmi270Spi},
+            wrapped::WrappedSpi,
+        },
+        embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex},
+        embedded_hal_bus::spi::ExclusiveDevice,
+        tasks::imu_reader::ImuRunner,
+    };
+    use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
+    use embassy_stm32::exti::InterruptHandler;
+    use embassy_stm32::interrupt::typelevel;
+    use embassy_stm32::{
+        bind_interrupts,
+        exti::ExtiInput,
+        gpio::{Level, Output, Pull, Speed},
+    };
+
+    stm32_support::impl_spi_setup!(super::Spi2: MODE_3, DMA1_STREAM4 => DMA1_CH4, DMA1_STREAM5 => DMA1_CH5);
 
     #[embassy_executor::task]
-    pub(crate) async fn spi_2_imu_reader(spi: super::Spi2) -> ! {
-        let _spi = spi.setup();
-        // common::tasks::imu_reader::main_6dof_spi(_spi, imu_cfg).await
-        todo!("Not implemented yet")
+    pub(crate) async fn bmi088_reader(spi: super::Spi2, extra: super::Spi2Extra) -> ! {
+        // The BMI088 is a strange beast; the acc and gyr as interfaced separately, so we need a shared SPI bus
+        let spi = Mutex::<NoopRawMutex, _>::new(spi.setup());
+        let acc_cs = Output::new(extra.acc_cs, Level::High, Speed::High);
+        let acc_spi = SpiDevice::new(&spi, acc_cs);
+        let gyr_cs = Output::new(extra.gyr_cs, Level::High, Speed::High);
+        let gyr_spi = SpiDevice::new(&spi, gyr_cs);
+
+        // Set up trigger to read IMU via the gyroscope data ready interrupt pin
+        bind_interrupts!(struct Irqs { EXTI15_10 => InterruptHandler<typelevel::EXTI15_10>; });
+        let int_pin = ExtiInput::new(extra.gyr_dr, extra.gyr_exti, Pull::Down, Irqs);
+
+        let mut config = Bmi088Config::default();
+        config.pin_3_int_data_ready = true;
+
+        ImuRunner::entry::<(Bmi088Spi, _, _)>(
+            (WrappedSpi(acc_spi), WrappedSpi(gyr_spi)),
+            config,
+            OnRising(int_pin),
+        )
+        .await
     }
 
-    stm32_support::impl_spi_setup!(super::Spi3, DMA1_STREAM6 => DMA1_CH6, DMA1_STREAM7 => DMA1_CH7);
+    stm32_support::impl_spi_setup!(super::Spi3: MODE_3, DMA1_STREAM6 => DMA1_CH6, DMA1_STREAM7 => DMA1_CH7);
 
     #[embassy_executor::task]
-    pub(crate) async fn spi_3_imu_reader(spi: super::Spi3) -> ! {
-        let _spi = spi.setup();
-        // common::tasks::imu_reader::main_6dof_spi(_spi, imu_cfg).await
-        todo!("Not implemented yet")
+    pub(crate) async fn bmi270_reader(spi: super::Spi3, extra: super::Spi3Extra) -> ! {
+        let spi = spi.setup();
+
+        let cs = Output::new(extra.cs, Level::High, Speed::High);
+        let spi_device = ExclusiveDevice::new_no_delay(spi, cs).unwrap();
+
+        // Set up trigger to read IMU via the data ready interrupt pin
+        bind_interrupts!(struct Irqs { EXTI9_5 => InterruptHandler<typelevel::EXTI9_5>; });
+        let int_pin = ExtiInput::new(extra.dr, extra.exti, Pull::Down, Irqs);
+
+        let mut config = Bmi270Config::default();
+        config.pin_1_int_data_ready = true;
+
+        ImuRunner::entry::<(Bmi270Spi, _)>(WrappedSpi(spi_device), config, OnRising(int_pin)).await
     }
 }
 

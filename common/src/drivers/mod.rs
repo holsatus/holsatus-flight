@@ -1,72 +1,47 @@
 pub mod imu;
 
-/// Represents a device which operates on reading and writing a series of bytes
-/// from registers. Typically this would include I2C and SPI devices.
-#[allow(async_fn_in_trait)]
-pub trait RegisterTransfer {
-    type Error;
-    async fn read_registers(
-        &mut self,
-        reg_addr: u8,
-        read: &mut [u8],
-    ) -> Result<(), Self::Error>;
-    async fn write_registers(
-        &mut self,
-        reg_addr: u8,
-        write: &[u8],
-    ) -> Result<(), Self::Error>;
-}
+pub mod wrapped {
+    use embedded_hal::{i2c::Error as _, spi::Error as _};
+    use futures::TryFutureExt;
 
-pub struct TdkSpiTransfer<SPI> {
-    pub spi: SPI,
-}
+    /// Newtype wrapper for I2c busses, using the non-generic ErrorKind
+    pub struct WrappedI2c<I2c>(pub I2c);
 
-// Implementation of register device trait for Spi
-impl<Spi: embedded_hal_async::spi::SpiDevice> RegisterTransfer for TdkSpiTransfer<Spi> {
-    type Error = Spi::Error;
-    async fn read_registers(&mut self, reg_addr: u8, read: &mut [u8]) -> Result<(), Self::Error> {
-        self.spi.transaction(&mut [
-            embedded_hal_async::spi::Operation::Write(&[reg_addr | 0x80]),
-            embedded_hal_async::spi::Operation::Read(read),
-        ])
-        .await
+    impl<I2c> embedded_hal_async::i2c::ErrorType for WrappedI2c<I2c> {
+        type Error = embedded_hal_async::i2c::ErrorKind;
     }
 
-    async fn write_registers(&mut self, reg_addr: u8, write: &[u8]) -> Result<(), Self::Error> {
-        self.spi.transaction(&mut [
-            embedded_hal_async::spi::Operation::Write(&[reg_addr]),
-            embedded_hal_async::spi::Operation::Write(write),
-        ])
-        .await
-    }
-}
-
-pub struct TdkI2cTransfer<I2C> {
-    pub i2c: I2C,
-    pub addr: u8,
-}
-
-impl<I2c: embedded_hal_async::i2c::I2c> RegisterTransfer for TdkI2cTransfer<I2c> {
-    type Error = I2c::Error;
-
-    async fn read_registers(&mut self, reg_addr: u8, read: &mut [u8]) -> Result<(), Self::Error> {
-        self.i2c.transaction(
-            self.addr,
-            &mut [
-            embedded_hal_async::i2c::Operation::Write(&[reg_addr | 0x80]),
-            embedded_hal_async::i2c::Operation::Read(read),
-        ])
-        .await
+    impl<I2c> embedded_hal_async::i2c::I2c for WrappedI2c<I2c>
+    where
+        I2c: embedded_hal_async::i2c::I2c,
+    {
+        fn transaction(
+            &mut self,
+            address: u8,
+            operations: &mut [embedded_hal_async::i2c::Operation<'_>],
+        ) -> impl Future<Output = Result<(), Self::Error>> {
+            self.0
+                .transaction(address, operations)
+                .map_err(|error| error.kind())
+        }
     }
 
-    async fn write_registers(&mut self, reg_addr: u8, write: &[u8]) -> Result<(), Self::Error> {
-        self.i2c.transaction(
-            self.addr,
-            &mut [
-            embedded_hal_async::i2c::Operation::Write(&[reg_addr]),
-            embedded_hal_async::i2c::Operation::Write(write),
-        ])
-        .await
+    /// Newtype wrapper for Spi devices, using the non-generic ErrorKind
+    pub struct WrappedSpi<Spi>(pub Spi);
+
+    impl<Spi> embedded_hal_async::spi::ErrorType for WrappedSpi<Spi> {
+        type Error = embedded_hal_async::spi::ErrorKind;
+    }
+
+    impl<Spi> embedded_hal_async::spi::SpiDevice for WrappedSpi<Spi>
+    where
+        Spi: embedded_hal_async::spi::SpiDevice,
+    {
+        fn transaction(
+            &mut self,
+            operations: &mut [embedded_hal::spi::Operation<'_, u8>],
+        ) -> impl Future<Output = Result<(), Self::Error>> {
+            self.0.transaction(operations).map_err(|error| error.kind())
+        }
     }
 }
-

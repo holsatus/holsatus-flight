@@ -1,131 +1,151 @@
-use embassy_time::Instant;
-use icm20948_async::{self, I2cDevice, SpiDevice, Icm20948, MagEnabled, SetupError};
-
-use crate::{
-    errors::DeviceError,
-    hw_abstraction::{Imu6Dof, Imu9Dof},
-    types::measurements::{Imu6DofData, Imu9DofData},
+use core::future::Future;
+use embassy_time::{Delay, Instant};
+use embedded_hal_async::{i2c, spi};
+use futures::TryFutureExt as _;
+use icm20948_async::{
+    I2cDevice, Icm20948, IcmBuilder, MagDisabled, SetupError, SpiDevice, Transport,
 };
 
-impl<BUS, MAG> Imu6Dof for Icm20948<I2cDevice<BUS>, MAG>
+pub use icm20948_async::{AccDlp, AccRange, AccUnit, Config, GyrDlp, GyrRange, GyrUnit};
+
+use crate::{
+    drivers::imu::{ImuInitialize, ImuSensor},
+    errors::ImuError,
+    types::measurements::Imu6DofData,
+};
+
+pub struct Icm20948Sensor<TRANSPORT> {
+    sensor: Icm20948<TRANSPORT, MagDisabled>,
+}
+
+impl<TRANSPORT> Icm20948Sensor<TRANSPORT> {
+    pub fn new(inner: Icm20948<TRANSPORT, MagDisabled>) -> Self {
+        Self { sensor: inner }
+    }
+}
+
+impl<BUS: Transport> ImuSensor for Icm20948Sensor<BUS>
 where
-    BUS: embedded_hal_async::i2c::I2c,
+    ImuError: From<BUS::Error>,
 {
-    async fn read_acc(&mut self) -> Result<[f32; 3], DeviceError> {
-        self.read_acc()
-            .await
-            .map_err(|e| DeviceError::I2c(e.into()))
+    fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+        self.sensor.read_acc().map_err(ImuError::from)
     }
 
-    async fn read_gyr(&mut self) -> Result<[f32; 3], DeviceError> {
-        self.read_gyr()
-            .await
-            .map_err(|e| DeviceError::I2c(e.into()))
+    fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+        self.sensor.read_gyr().map_err(ImuError::from)
     }
 
-    async fn read_acc_gyr(&mut self) -> Result<Imu6DofData<f32>, DeviceError> {
-        self.read_6dof()
-            .await
-            .map_err(|e| DeviceError::I2c(e.into()))
-            .map(|raw| Imu6DofData {
-                timestamp_us: Instant::now().as_micros(),
-                gyr: raw.gyr,
-                acc: raw.acc,
-            })
+    async fn read_acc_gyr(&mut self) -> Result<Imu6DofData<f32>, ImuError> {
+        let raw = self.sensor.read_6dof().await.map_err(ImuError::from)?;
+        Ok(Imu6DofData {
+            timestamp_us: Instant::now().as_micros(),
+            gyr: raw.gyr,
+            acc: raw.acc,
+        })
     }
 }
 
-impl<BUS> Imu9Dof for Icm20948<I2cDevice<BUS>, MagEnabled>
+// --- Error mapping
+
+fn map_setup_err_i2c<E: i2c::Error>(error: SetupError<E>) -> ImuError {
+    match error {
+        SetupError::Transport(e) => ImuError::I2cInterface(e.into()),
+        SetupError::ImuWhoAmI(actual) => ImuError::WhoAmI {
+            expected: 0xEA,
+            actual,
+        },
+        SetupError::MagWhoAmI(actual) => ImuError::WhoAmI {
+            expected: 0x09,
+            actual,
+        },
+    }
+}
+
+fn map_setup_err_spi<E: spi::Error>(error: SetupError<E>) -> ImuError {
+    match error {
+        SetupError::Transport(e) => ImuError::SpiInterface(e.into()),
+        SetupError::ImuWhoAmI(actual) => ImuError::WhoAmI {
+            expected: 0xEA,
+            actual,
+        },
+        SetupError::MagWhoAmI(actual) => ImuError::WhoAmI {
+            expected: 0x09,
+            actual,
+        },
+    }
+}
+
+// --- Initialization
+
+pub struct Icm209486DofI2c;
+
+impl<BUS> ImuInitialize for (Icm209486DofI2c, BUS)
 where
-    BUS: embedded_hal_async::i2c::I2c,
+    BUS: i2c::I2c,
+    ImuError: From<BUS::Error>,
 {
-    async fn read_mag(&mut self) -> Result<[f32; 3], DeviceError> {
-        self.read_mag()
-            .await
-            .map_err(|e| DeviceError::I2c(e.into()))
-    }
+    type Config = (u8, Config);
+    type Interface = BUS;
+    type Sensor<'a>
+        = Icm20948Sensor<I2cDevice<&'a mut BUS>>
+    where
+        Self: 'a;
 
-    async fn read_acc_gyr_mag(
-        &mut self,
-    ) -> Result<crate::types::measurements::Imu9DofData<f32>, DeviceError> {
-        self.read_9dof()
-            .await
-            .map_err(|e| DeviceError::I2c(e.into()))
-            .map(|raw| Imu9DofData {
-                timestamp_us: Instant::now().as_micros(),
-                gyr: raw.gyr,
-                acc: raw.acc,
-                mag: raw.mag,
-            })
+    fn initialize<'a>(
+        interface: &'a mut Self::Interface,
+        config: &Self::Config,
+    ) -> impl Future<Output = Result<Self::Sensor<'a>, ImuError>>
+    where
+        Self: 'a,
+    {
+        // The units are non-negotiable
+        let effective_config = Config {
+            acc_unit: AccUnit::Mpss,
+            gyr_unit: GyrUnit::Rps,
+            ..config.1
+        };
+        IcmBuilder::new_i2c(interface, Delay)
+            .with_config(effective_config)
+            .set_address(config.0)
+            .initialize_6dof()
+            .map_err(map_setup_err_i2c)
+            .map_ok(Icm20948Sensor::new)
     }
 }
 
-impl<BUS, MAG> Imu6Dof for Icm20948<SpiDevice<BUS>, MAG>
+pub struct Icm209486DofSpi;
+
+impl<BUS> ImuInitialize for (Icm209486DofSpi, BUS)
 where
-    BUS: embedded_hal_async::spi::SpiDevice,
-    BUS::Error: embedded_hal::spi::Error,
+    BUS: spi::SpiDevice,
+    ImuError: From<BUS::Error>,
 {
-    async fn read_acc(&mut self) -> Result<[f32; 3], DeviceError> {
-        self.read_acc()
-            .await
-            .map_err(|e| DeviceError::Spi(e.into()))
-    }
+    type Config = Config;
+    type Interface = BUS;
+    type Sensor<'a>
+        = Icm20948Sensor<SpiDevice<&'a mut BUS>>
+    where
+        Self: 'a;
 
-    async fn read_gyr(&mut self) -> Result<[f32; 3], DeviceError> {
-        self.read_gyr()
-            .await
-            .map_err(|e| DeviceError::Spi(e.into()))
-    }
+    fn initialize<'a>(
+        interface: &'a mut Self::Interface,
+        config: &Self::Config,
+    ) -> impl Future<Output = Result<Self::Sensor<'a>, ImuError>>
+    where
+        Self: 'a,
+    {
+        // The units are non-negotiable
+        let effective_config = Config {
+            acc_unit: AccUnit::Mpss,
+            gyr_unit: GyrUnit::Rps,
+            ..*config
+        };
 
-    async fn read_acc_gyr(&mut self) -> Result<Imu6DofData<f32>, DeviceError> {
-        self.read_6dof()
-            .await
-            .map_err(|e| DeviceError::Spi(e.into()))
-            .map(|raw| Imu6DofData {
-                timestamp_us: Instant::now().as_micros(),
-                gyr: raw.gyr,
-                acc: raw.acc,
-            })
-    }
-}
-
-impl<BUS> Imu9Dof for Icm20948<SpiDevice<BUS>, MagEnabled>
-where
-    BUS: embedded_hal_async::spi::SpiDevice,
-{
-    async fn read_mag(&mut self) -> Result<[f32; 3], DeviceError> {
-        self.read_mag()
-            .await
-            .map_err(|e| DeviceError::Spi(e.into()))
-    }
-
-    async fn read_acc_gyr_mag(
-        &mut self,
-    ) -> Result<crate::types::measurements::Imu9DofData<f32>, DeviceError> {
-        self.read_9dof()
-            .await
-            .map_err(|e| DeviceError::Spi(e.into()))
-            .map(|raw| Imu9DofData {
-                timestamp_us: Instant::now().as_micros(),
-                gyr: raw.gyr,
-                acc: raw.acc,
-                mag: raw.mag,
-            })
-    }
-}
-
-pub fn from_i2c_err<E: embedded_hal::i2c::Error>(value: SetupError<E>) -> DeviceError {
-    match value {
-        SetupError::Transport(e) => DeviceError::I2c(e.into()),
-        SetupError::ImuWhoAmI(_) => DeviceError::IdentificationError,
-        SetupError::MagWhoAmI(_) => DeviceError::IdentificationError,
-    }
-}
-
-pub fn from_spi_err<E: embedded_hal::spi::Error>(value: SetupError<E>) -> DeviceError {
-    match value {
-        SetupError::Transport(e) => DeviceError::Spi(e.into()),
-        SetupError::ImuWhoAmI(_) => DeviceError::IdentificationError,
-        SetupError::MagWhoAmI(_) => DeviceError::IdentificationError,
+        IcmBuilder::new_spi(interface, Delay)
+            .with_config(effective_config)
+            .initialize_6dof()
+            .map_err(map_setup_err_spi)
+            .map_ok(Icm20948Sensor::new)
     }
 }

@@ -1,13 +1,13 @@
 [package]
 name = "std-device"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [features]
 rerun = ["dep:rerun"]
 
 [dependencies]
-common = { path = "../../common", default-features = false, features = ["log", "mpc", "mavlink"] }
+common = { path = "../../common", default-features = false, features = ["log", "mpc", "mavlink", "imu_count_1"] }
 holsatus-sim = { path = "../../holsatus-sim" }
 
 static_cell = "2"

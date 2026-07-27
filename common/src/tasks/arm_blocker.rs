@@ -90,14 +90,14 @@ pub async fn main() -> ! {
 
         // Check if the active accelerometer and gyroscope is calibrated
         // TODO: This is a terrible way to do it, at least we should use Option
-        let params = crate::tasks::imu_reader::params::TABLE.read().await;
+        let params = crate::tasks::imu_reader::params::TABLE0.read().await;
         local_arm_blocker_flag.set(
             ArmingBlocker::NO_ACC_CALIB,
-            params.cal_acc == Calib3D::const_default(),
+            params.acc_cal == Calib3D::const_default(),
         );
         local_arm_blocker_flag.set(
             ArmingBlocker::NO_GYR_CALIB,
-            params.cal_gyr == Calib3D::const_default(),
+            params.gyr_cal == Calib3D::const_default(),
         );
         drop(params);
 

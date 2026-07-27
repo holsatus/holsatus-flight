@@ -1,7 +1,6 @@
 use common::{
-    drivers::imu::{
-        icm20948_async::{AccDlp, AccRange, AccUnit, Config, GyrDlp, GyrRange, GyrUnit},
-        ImuConfig,
+    drivers::imu::icm20948::{
+        AccDlp, AccRange, AccUnit, Config as IcmConfig, GyrDlp, GyrRange, GyrUnit,
     },
     types::config::{DshotConfig, I2cConfig, UartConfig},
 };
@@ -18,8 +17,8 @@ pub(crate) fn hwinfo() -> common::types::device::HardwareInfo {
     }
 }
 
-pub(crate) fn imu() -> ImuConfig {
-    ImuConfig::Icm20948(Config {
+pub(crate) fn imu() -> IcmConfig {
+    IcmConfig {
         acc_range: AccRange::Gs8,
         gyr_range: GyrRange::Dps2000,
         acc_unit: AccUnit::Mpss,
@@ -28,7 +27,7 @@ pub(crate) fn imu() -> ImuConfig {
         gyr_dlp: GyrDlp::Hz361,
         acc_odr: 0,
         gyr_odr: 0,
-    })
+    }
 }
 
 pub(crate) fn i2c1() -> I2cConfig {

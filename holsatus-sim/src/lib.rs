@@ -2,13 +2,13 @@ use std::f32::consts::PI;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
+pub mod config;
 mod distortion;
 mod motor_lin;
 pub mod physics_sim;
-pub mod config;
 
 use common::utils::func::wrap;
-use distortion::{Distortion};
+use distortion::Distortion;
 use nalgebra::SMatrix;
 use physics_sim::{Simulation, VehicleParams};
 
@@ -79,8 +79,9 @@ impl Sim for SimHandle {
     }
 }
 
-pub fn initialize(config: Configuration) -> Result<(Resources, SimHandle), Box<dyn std::error::Error>> {
-
+pub fn initialize(
+    config: Configuration,
+) -> Result<(Resources, SimHandle), Box<dyn std::error::Error>> {
     let vehicle = SimHandle::new(config.clone())?;
 
     let imu = SimulatedImu::new(vehicle.clone(), &config);
@@ -88,7 +89,15 @@ pub fn initialize(config: Configuration) -> Result<(Resources, SimHandle), Box<d
     let vicon = SimulatedVicon::new(vehicle.clone());
     let flash = SimulatedFlash::new(1024 * 1024);
 
-    Ok((Resources { imu, motors, vicon, flash }, vehicle))
+    Ok((
+        Resources {
+            imu,
+            motors,
+            vicon,
+            flash,
+        },
+        vehicle,
+    ))
 }
 
 pub struct Resources {
@@ -131,21 +140,19 @@ impl SimulatedImu {
         self.gyr_dist = gyr;
         self
     }
-}
 
-impl SimulatedImu {
-    pub fn read_acc(&mut self) -> [f32; 3] {
+    pub fn read_sim_acc(&mut self) -> [f32; 3] {
         let state = self.sim.vehicle_state();
         self.acc_dist.apply(state.body_acc).into()
     }
 
-    pub fn read_gyr(&mut self) -> [f32; 3] {
+    pub fn read_sim_gyr(&mut self) -> [f32; 3] {
         let state = self.sim.vehicle_state();
         self.gyr_dist.apply(state.body_gyr).into()
     }
 
-    pub fn read_acc_gyr(&mut self) -> ([f32; 3], [f32; 3]) {
-        (self.read_acc(), self.read_gyr())
+    pub fn read_sim_acc_gyr(&mut self) -> ([f32; 3], [f32; 3]) {
+        (self.read_sim_acc(), self.read_sim_gyr())
     }
 }
 
@@ -161,7 +168,8 @@ impl SimulatedMotors {
 
 impl SimulatedMotors {
     pub fn set_motor_speeds(&mut self, speeds: [u16; 4]) {
-        self.sim.set_motors_cmd(&speeds.map(|s|s.saturating_sub(47) as f32 / 2000.0));
+        self.sim
+            .set_motors_cmd(&speeds.map(|s| s.saturating_sub(47) as f32 / 2000.0));
     }
 
     pub fn set_motor_speeds_min(&mut self) {
@@ -213,14 +221,18 @@ impl SimulatedVicon {
         ) + Vector3::new(roll, pitch, yaw);
 
         // Ensure noise does not do weird things to angle
-        let attitude = attitude.map(|angle|wrap(angle, -PI, PI));
+        let attitude = attitude.map(|angle| wrap(angle, -PI, PI));
 
         common::types::measurements::ViconData {
             timestamp_us: self.sim.timestamp_us(),
             position: position.into(),
-            pos_var: SMatrix::from_diagonal_element(self.pos_noise.std_dev().powi(2)).data.0,
+            pos_var: SMatrix::from_diagonal_element(self.pos_noise.std_dev().powi(2))
+                .data
+                .0,
             attitude: attitude.into(),
-            att_var: SMatrix::from_diagonal_element(self.pos_noise.std_dev().powi(2)).data.0,
+            att_var: SMatrix::from_diagonal_element(self.pos_noise.std_dev().powi(2))
+                .data
+                .0,
         }
     }
 }
@@ -239,7 +251,7 @@ impl SimulatedFlash {
 
     pub fn range_u32(&self) -> Range<u32> {
         0..self.buf.capacity() as u32
-    } 
+    }
 }
 
 impl ErrorType for SimulatedFlash {

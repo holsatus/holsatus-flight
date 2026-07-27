@@ -84,6 +84,11 @@ pub fn split(p: Peripherals) -> AssignedResources {
 }
 
 pub mod i2c {
+    use common::{
+        drivers::{imu::icm20948::*, wrapped::WrappedI2c},
+        embassy_time::{Duration, Ticker},
+    };
+
     stm32_support::impl_i2c_setup!(
         super::I2c1,
         I2C1_EV => I2C1,
@@ -96,15 +101,21 @@ pub mod i2c {
     pub(crate) async fn imu_reader(
         i2c: super::I2c1,
         i2c_cfg: common::types::config::I2cConfig,
-        imu_cfg: common::drivers::imu::ImuConfig,
+        imu_cfg: Config,
     ) -> ! {
         let i2c = i2c.setup(i2c_cfg);
-        common::tasks::imu_reader::main_6dof_i2c(i2c, imu_cfg, Some(0x69)).await
+
+        common::tasks::imu_reader::ImuRunner::entry::<(Icm209486DofI2c, _)>(
+            WrappedI2c(i2c),
+            (0x69, imu_cfg),
+            Ticker::every(Duration::from_hz(1125)),
+        )
+        .await
     }
 }
 
 pub mod spi {
-    stm32_support::impl_spi_setup!(super::Spi1, DMA2_STREAM5 => DMA2_CH5, DMA2_STREAM0 => DMA2_CH0);
+    stm32_support::impl_spi_setup!(super::Spi1: MODE_3, DMA2_STREAM5 => DMA2_CH5, DMA2_STREAM0 => DMA2_CH0);
 
     #[embassy_executor::task]
     pub(crate) async fn spi_reader(spi: super::Spi1) -> ! {

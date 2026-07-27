@@ -1,12 +1,12 @@
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{Either, select};
 
 use crate::{
     calibration::Feedback,
     calibration::{
+        Calibrate,
         acc_routine::calibrate_acc,
         gyr_routine::calibrate_gyr_bias,
-        mag_routine::{calibrate_mag, MagCalState},
-        Calibrate,
+        mag_routine::{MagCalState, calibrate_mag},
     },
     signals::{self as s, register_error},
     tasks::param_storage,
@@ -42,15 +42,15 @@ pub async fn main() -> ! {
                 snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Acc));
                 match calibrate_acc(acc_calib, idx).await {
                     Ok(calibration) => {
-                        use crate::tasks::imu_reader::{params::TABLE, Message, CHANNEL};
+                        use crate::tasks::imu_reader::{CHANNEL, Message, params::TABLE0};
 
                         // TODO: This is hacky. Subsystems should not modify parameter tables directly
-                        let mut table = TABLE.params.write().await;
-                        table.cal_acc = calibration;
-                        info!("[{}] Setting acc calib: {:?}", ID, table.cal_acc);
+                        let mut table = TABLE0.params.write().await;
+                        table.acc_cal = calibration;
+                        info!("[{}] Setting acc calib: {:?}", ID, table.acc_cal);
                         drop(table);
 
-                        param_storage::send(param_storage::Request::SaveTable(TABLE.name)).await;
+                        param_storage::send(param_storage::Request::SaveTable(TABLE0.name)).await;
 
                         if let Some(channel) = CHANNEL.get(idx as usize) {
                             channel.send(Message::ReloadParams).await;
@@ -68,15 +68,15 @@ pub async fn main() -> ! {
                 snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Gyr));
                 match calibrate_gyr_bias(gyr_calib, idx).await {
                     Ok(calibration_bias) => {
-                        use crate::tasks::imu_reader::{params::TABLE, Message, CHANNEL};
+                        use crate::tasks::imu_reader::{CHANNEL, Message, params::TABLE0};
 
                         // TODO: This is hacky. Subsystems should not modify parameter tables directly
-                        let mut table = TABLE.params.write().await;
-                        table.cal_gyr.bias = calibration_bias.into();
-                        info!("[{}] Setting gyr calib: {:?}", ID, table.cal_gyr);
+                        let mut table = TABLE0.params.write().await;
+                        table.gyr_cal.bias = calibration_bias.into();
+                        info!("[{}] Setting gyr calib: {:?}", ID, table.gyr_cal);
                         drop(table);
 
-                        param_storage::send(param_storage::Request::SaveTable(TABLE.name)).await;
+                        param_storage::send(param_storage::Request::SaveTable(TABLE0.name)).await;
 
                         if let Some(channel) = CHANNEL.get(idx as usize) {
                             channel.send(Message::ReloadParams).await;

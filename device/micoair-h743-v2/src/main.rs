@@ -8,7 +8,7 @@ use panic_probe as _;
 
 mod config;
 mod resources;
-use resources::{flash, i2c, motors, spi, usart};
+use resources::{flash, motors, spi, usart};
 
 #[embassy_executor::main]
 async fn main(level_t_spawner: embassy_executor::Spawner) {
@@ -57,9 +57,9 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     // ------------------ high-priority tasks -------------------
 
     // These take direct ownership of their hardware to avoid additional complexity
-    level_0_spawner.spawn(spi::spi_2_imu_reader(r.spi_2).unwrap());
-    level_0_spawner.spawn(spi::spi_3_imu_reader(r.spi_3).unwrap());
-    level_0_spawner.spawn(i2c::imu_reader(r.i2c_2, config::i2c1(), config::imu()).unwrap());
+    level_0_spawner.spawn(spi::bmi088_reader(r.spi_2, r.spi_2_extra).unwrap());
+    level_0_spawner.spawn(spi::bmi270_reader(r.spi_3, r.spi_3_extra).unwrap());
+    // level_0_spawner.spawn(i2c::imu_reader(r.i2c_2, config::i2c1(), config::imu()).unwrap());
     level_0_spawner.spawn(motors::motor_governor(r.motors, config::motor()).unwrap());
 
     level_0_spawner.spawn(common::tasks::rc_reader::main("usart1").unwrap());
@@ -69,8 +69,8 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
 
     // ----------------- medium-priority tasks ------------------
 
-    #[cfg(feature = "gnss")]
-    level_1_spawner.spawn(common::tasks::gnss_reader::main("usart6").unwrap());
+    // #[cfg(feature = "gnss")]
+    // level_1_spawner.spawn(common::tasks::gnss_reader::main("usart6").unwrap());
     level_1_spawner.spawn(common::tasks::commander::main().unwrap());
     level_1_spawner.spawn(common::tasks::controller_angle::main().unwrap());
 
