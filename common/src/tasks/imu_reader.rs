@@ -1,5 +1,5 @@
 use embassy_futures::select::select;
-use embassy_time::{Instant, Timer};
+use embassy_time::Timer;
 use futures::TryFutureExt;
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use portable_atomic::{AtomicUsize, Ordering};
@@ -141,29 +141,20 @@ impl<T: Trigger> ImuReader<T> {
 impl<T: Trigger> ImuReader<T> {
     async fn run_inner<S: ImuSensor>(&mut self, sensor: &mut S) {
         loop {
-            let mut counter = 0;
-            let time_before = Instant::now();
-            for _ in 0..1000 {
-                match select(self.receiver.receive(), self.trigger.next_trigger()).await {
-                    embassy_futures::select::Either::First(message) => match message {
-                        Message::ReloadParams => self.reload_parameters().await,
-                    },
-                    embassy_futures::select::Either::Second(()) => {
-                        counter += 1;
-                        if self.on_trigger(sensor).await.is_err() {
-                            return;
-                        }
+            match select(self.receiver.receive(), self.trigger.next_trigger()).await {
+                embassy_futures::select::Either::First(message) => match message {
+                    Message::ReloadParams => self.reload_parameters().await,
+                },
+                embassy_futures::select::Either::Second(()) => {
+                    if let Err(error) = self.on_trigger(sensor).await {
+                        debug!(
+                            "[imu_reader:{}] Too many consecutive errors, reinitializing sensor: {:?}",
+                            self.sensor_id, error
+                        );
+                        return;
                     }
                 }
             }
-
-            let elapsed = time_before.elapsed();
-            info!(
-                "[imu_reader:{}] 1000 measurements ({} good) took: {}",
-                self.sensor_id,
-                counter,
-                elapsed.as_micros()
-            );
         }
     }
 
@@ -173,8 +164,8 @@ impl<T: Trigger> ImuReader<T> {
                 self.stats.consecutive_errors = 0;
                 Ok(())
             }
-            Err(_error) => {
-                // TODO: Register error globally
+            Err(error) => {
+                debug!("[imu_reader:{}] Error: {:?}", self.sensor_id, error);
                 self.stats.total_errors += 1;
                 if self.stats.consecutive_errors < MAX_CONSECUTIVE_ERRORS {
                     self.stats.consecutive_errors += 1;
@@ -189,7 +180,6 @@ impl<T: Trigger> ImuReader<T> {
     async fn reload_parameters(&mut self) {
         debug!("[imu_reader:{}] Reloading parameters", self.sensor_id);
         let intrinsics = self.param_table.read().await;
-        debug!("[imu_reader:{}] Done reloading parameters", self.sensor_id);
 
         self.acc_calib = intrinsics.acc_cal;
         self.gyr_calib = intrinsics.gyr_cal;
