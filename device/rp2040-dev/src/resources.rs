@@ -1,5 +1,4 @@
 use common::{
-    drivers::imu::ImuConfig,
     embedded_io,
     errors::adapter::embedded_io::EmbeddedIoError,
     hw_abstraction::OutputGroup,
@@ -81,10 +80,41 @@ impl I2c0 {
     }
 }
 
-#[embassy_executor::task]
-pub(crate) async fn imu_reader(i2c: I2c0, i2c_cfg: I2cConfig, imu_cfg: ImuConfig) -> ! {
-    let i2c = i2c.setup(i2c_cfg);
-    common::tasks::imu_reader::main_6dof_i2c(i2c, imu_cfg, Some(0x69)).await
+pub mod imu_reader {
+    use common::{
+        drivers::{
+            imu::{
+                icm20948::{AccDlp, AccRange, AccUnit, Config, GyrDlp, GyrRange, GyrUnit},
+                Icm209486DofI2c,
+            },
+            wrapped::WrappedI2c,
+        },
+        embassy_time::{Duration, Ticker},
+        types::config::I2cConfig,
+    };
+
+    #[embassy_executor::task]
+    pub(crate) async fn main(i2c: super::I2c0, i2c_cfg: I2cConfig) -> ! {
+        let i2c = i2c.setup(i2c_cfg);
+
+        let imu_cfg = Config {
+            acc_range: AccRange::Gs8,
+            gyr_range: GyrRange::Dps2000,
+            acc_unit: AccUnit::Mpss,
+            gyr_unit: GyrUnit::Rps,
+            acc_dlp: AccDlp::Hz246,
+            gyr_dlp: GyrDlp::Disabled,
+            acc_odr: 0,
+            gyr_odr: 0,
+        };
+
+        common::tasks::imu_reader::ImuReader::entry::<(Icm209486DofI2c, _)>(
+            WrappedI2c(i2c),
+            (0x69, imu_cfg),
+            Ticker::every(Duration::from_hz(1125)),
+        )
+        .await
+    }
 }
 
 // ----------------------------------------------------------

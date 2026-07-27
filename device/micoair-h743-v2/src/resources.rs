@@ -116,7 +116,7 @@ pub mod spi {
         },
         embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex},
         embedded_hal_bus::spi::ExclusiveDevice,
-        tasks::imu_reader::ImuRunner,
+        tasks::imu_reader::ImuReader,
     };
     use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
     use embassy_stm32::exti::InterruptHandler;
@@ -145,7 +145,7 @@ pub mod spi {
         let mut config = Bmi088Config::default();
         config.pin_3_int_data_ready = true;
 
-        ImuRunner::entry::<(Bmi088Spi, _, _)>(
+        ImuReader::entry::<(Bmi088Spi, _, _)>(
             (WrappedSpi(acc_spi), WrappedSpi(gyr_spi)),
             config,
             OnRising(int_pin),
@@ -169,7 +169,7 @@ pub mod spi {
         let mut config = Bmi270Config::default();
         config.pin_1_int_data_ready = true;
 
-        ImuRunner::entry::<(Bmi270Spi, _)>(WrappedSpi(spi_device), config, OnRising(int_pin)).await
+        ImuReader::entry::<(Bmi270Spi, _)>(WrappedSpi(spi_device), config, OnRising(int_pin)).await
     }
 }
 

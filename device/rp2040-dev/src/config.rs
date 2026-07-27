@@ -1,10 +1,4 @@
-use common::{
-    drivers::imu::{
-        icm20948_async::{AccDlp, AccRange, AccUnit, Config, GyrDlp, GyrRange, GyrUnit},
-        ImuConfig,
-    },
-    types::config::{DshotConfig, I2cConfig, UartConfig},
-};
+use common::types::config::{DshotConfig, I2cConfig, UartConfig};
 
 pub fn uart0() -> UartConfig {
     UartConfig { baud: 420_000 }
@@ -24,19 +18,6 @@ pub fn i2c1() -> I2cConfig {
 
 pub fn dshot() -> DshotConfig {
     DshotConfig::Dshot300
-}
-
-pub fn imu() -> ImuConfig {
-    ImuConfig::Icm20948(Config {
-        acc_range: AccRange::Gs8,
-        gyr_range: GyrRange::Dps2000,
-        acc_unit: AccUnit::Mpss,
-        gyr_unit: GyrUnit::Rps,
-        acc_dlp: AccDlp::Hz246,
-        gyr_dlp: GyrDlp::Disabled,
-        acc_odr: 0,
-        gyr_odr: 0,
-    })
 }
 
 #[cfg(feature = "usb")]
