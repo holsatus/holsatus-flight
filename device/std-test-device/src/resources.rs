@@ -64,7 +64,7 @@ pub mod imu_reader {
         common::tasks::imu_reader::ImuReader::entry::<Imu<'_>>(
             imu,
             (),
-            Ticker::every(Duration::from_hz(1000)),
+            Ticker::every(Duration::from_hz(500)),
         )
         .await
     }
