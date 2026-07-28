@@ -51,6 +51,22 @@ pub mod params {
 
     #[cfg(feature = "imu_count_4")]
     pub static TABLE3: Table<Params> = Table::new("imu3", Params::const_default());
+
+    pub fn get_table_ref(index: usize) -> Option<&'static Table<Params>> {
+        let table = match index {
+            #[cfg(feature = "imu_count_1")]
+            0 => &TABLE0,
+            #[cfg(feature = "imu_count_2")]
+            1 => &TABLE1,
+            #[cfg(feature = "imu_count_3")]
+            2 => &TABLE2,
+            #[cfg(feature = "imu_count_4")]
+            3 => &TABLE3,
+            _ => return None,
+        };
+
+        Some(table)
+    }
 }
 
 pub enum Message {
@@ -90,17 +106,7 @@ impl<T: Trigger> ImuReader<T> {
     ) -> ! {
         let idx = SENSOR_ID.fetch_add(1, Ordering::AcqRel);
 
-        let param_table = match idx {
-            #[cfg(feature = "imu_count_1")]
-            0 => &params::TABLE0,
-            #[cfg(feature = "imu_count_2")]
-            1 => &params::TABLE1,
-            #[cfg(feature = "imu_count_3")]
-            2 => &params::TABLE2,
-            #[cfg(feature = "imu_count_4")]
-            3 => &params::TABLE3,
-            _ => panic!("Invalid IMU index"),
-        };
+        let param_table = params::get_table_ref(idx).expect("Invalid IMU index");
 
         let mut runner = ImuReader {
             sensor_id: idx,
@@ -133,6 +139,8 @@ impl<T: Trigger> ImuReader<T> {
             };
 
             runner.reload_parameters().await;
+
+            // Returns on too many consecutive errors, loop back and re-initialize
             runner.run_inner(&mut sensor).await;
         }
     }
