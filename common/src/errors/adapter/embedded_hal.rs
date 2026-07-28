@@ -5,11 +5,11 @@ use thiserror::Error;
 #[derive(Error, Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum EmbeddedI2cError {
-    #[error("Bus error occurred. e.g. A START or a STOP condition is detected and is not located after a multiple of 9 SCL clock pulses.")]
+    #[error("The bus experienced an error.")]
     Bus,
-    #[error("The arbitration was lost, e.g. electrical problems with the clock signal.")]
+    #[error("The arbitration was lost.")]
     ArbitrationLoss,
-    #[error("A bus operation was not acknowledged, e.g. due to the addressed device not being available on the bus or the device not being ready to process requests at the moment.")]
+    #[error("A bus operation was not acknowledged.")]
     NoAcknowledge,
     #[error("The peripheral receive buffer was overrun.")]
     Overrun,
@@ -37,7 +37,7 @@ impl<E: embedded_hal::i2c::Error> From<E> for EmbeddedI2cError {
 pub enum EmbeddedSpiError {
     #[error("The peripheral receive buffer was overrun.")]
     Overrun,
-    #[error("Multiple devices on the SPI bus are trying to drive the slave select pin, e.g. in a multi-master setup.")]
+    #[error("Multiple devices on the SPI bus are trying to drive the slave select pin")]
     ModeFault,
     #[error("Received data does not conform to the peripheral configuration.")]
     FrameFormat,

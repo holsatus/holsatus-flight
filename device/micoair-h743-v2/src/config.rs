@@ -1,9 +1,4 @@
-use common::{
-    drivers::imu::icm20948::{
-        AccDlp, AccRange, AccUnit, Config as IcmConfig, GyrDlp, GyrRange, GyrUnit,
-    },
-    types::config::{DshotConfig, I2cConfig, UartConfig},
-};
+use common::types::config::{DshotConfig, UartConfig};
 
 #[cfg(feature = "usb")]
 pub(crate) fn hwinfo() -> common::types::device::HardwareInfo {
@@ -11,30 +6,9 @@ pub(crate) fn hwinfo() -> common::types::device::HardwareInfo {
     use core::str::FromStr;
     common::types::device::HardwareInfo {
         // These must not be longer than 32 characters
-        make: String::from_str("Peter Krull DIY").ok(),
-        model: String::from_str("stm32f405-dev-v1").ok(),
+        make: String::from_str("Micoair").ok(),
+        model: String::from_str("H743 V2").ok(),
         serial_nr: None,
-    }
-}
-
-pub(crate) fn imu() -> IcmConfig {
-    IcmConfig {
-        acc_range: AccRange::Gs8,
-        gyr_range: GyrRange::Dps2000,
-        acc_unit: AccUnit::Mpss,
-        gyr_unit: GyrUnit::Rps,
-        acc_dlp: AccDlp::Hz111,
-        gyr_dlp: GyrDlp::Hz361,
-        acc_odr: 0,
-        gyr_odr: 0,
-    }
-}
-
-pub(crate) fn i2c1() -> I2cConfig {
-    I2cConfig {
-        frequency: 1_000_000,
-        sda_pullup: true,
-        scl_pullup: true,
     }
 }
 

@@ -1,7 +1,7 @@
 use std::time::Instant;
 
-use nalgebra::{Isometry, Point3, UnitQuaternion, Vector3};
 use crate::motor_lin::MotorLin;
+use nalgebra::{Isometry, Point3, UnitQuaternion, Vector3};
 
 use rapier3d::prelude::*;
 
@@ -110,7 +110,6 @@ struct RapierPhys {
     ccd_solver: CCDSolver,
 }
 
-
 impl RapierPhys {
     // Rigidbody handle
     pub fn get_rb_mut(&mut self, handle: RigidBodyHandle) -> &mut RigidBody {
@@ -190,17 +189,20 @@ impl Simulation {
                 velocity: Vector3::zeros(),
                 body_acc: Vector3::zeros(),
                 body_gyr: Vector3::zeros(),
-                motors: vec![MotorState {
-                    force: 0.0,
-                    command: 0.0,
-                    direction: false,
-                }; num_motors],
+                motors: vec![
+                    MotorState {
+                        force: 0.0,
+                        command: 0.0,
+                        direction: false,
+                    };
+                    num_motors
+                ],
             },
             phys: RapierPhys {
                 bodies,
                 colliders,
                 gravity: vector![0.0, 0.0, 9.81],
-                .. RapierPhys::default()
+                ..RapierPhys::default()
             },
         }
     }
@@ -242,7 +244,6 @@ impl Simulation {
     /// Update the simulation by applying the inputs and
     /// move the simulation forward a single time step.
     pub fn update(&mut self, dt: f32) {
-
         // Apply first-order filtering to input motor signals and
         // calculate per motor body-force and -torque contributions.
         let mut body_force = Vector3::zeros();

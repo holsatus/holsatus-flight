@@ -5,12 +5,19 @@ edition = "2024"
 
 [features]
 default = [
+    "imu_count_1",
     "defmt",
     "mpc",
     "mavlink",
     "gnss",
     "usb",
 ]
+
+imu_count_0 = []
+imu_count_1 = ["imu_count_0"]
+imu_count_2 = ["imu_count_1"]
+imu_count_3 = ["imu_count_2"]
+imu_count_4 = ["imu_count_3"]
 
 usb = ["dep:embassy-usb"]
 mavlink = ["dep:mavio"]
@@ -40,6 +47,7 @@ embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" 
 embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
 embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
 embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "5bc8260" }
 
 # Logging, embedded and std environments
 defmt = { version = "1.0.1", optional = true }
@@ -48,6 +56,7 @@ log = { version = "0.4.28", optional = true }
 # Embedded HAL/IO traits
 embedded-hal-async = "1.0.0"
 embedded-hal = "1.0.0"
+embedded-hal-bus = { version = "0.3.0", features = ["async"] }
 
 embedded-io-async = "0.7.0"
 embedded-io = "0.7.1"
@@ -80,6 +89,8 @@ nalgebra = { version = "0.34.0", default-features = false, features = [
     "libm",
 ] }
 
+device-driver = { git = "https://github.com/peterkrull/device-driver", branch = "regop-self-by-value" }
+
 eskf_rs = { git = "https://github.com/peterkrull/eskf-rs", default-features = false, features = [
     "no_std",
 ] }
@@ -102,6 +113,9 @@ icm20948-async = { version = "0.6.0", features = [
     "align-mag",
     "serde",
 ] }
+
+bmi270-driver = { git = "https://github.com/holsatus/bmi270-driver" }
+bmi088-driver = { git = "https://github.com/holsatus/bmi088-driver" }
 
 ahrs = { git = "https://github.com/jmagnuson/ahrs-rs", rev = "4a4fb76", default-features = false }
 mag-calibrator-rs = { git = "https://github.com/peterkrull/mag-calibrator-rs" }

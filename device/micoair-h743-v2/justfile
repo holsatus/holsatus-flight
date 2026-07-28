@@ -1,0 +1,8 @@
+path := 'target/thumb*/release/micoair-h743-v2'
+
+attach:
+    probe-rs attach --chip STM32H743VI {{path}}
+
+flash:
+    cargo build --release
+    probe-rs run --always-print-stacktrace --chip STM32H743VI {{path}}

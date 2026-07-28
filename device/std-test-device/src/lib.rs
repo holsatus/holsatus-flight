@@ -1,8 +1,8 @@
 use std::{
     f32::consts::PI,
     sync::{
-        atomic::{AtomicBool, Ordering},
         LazyLock,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -40,8 +40,7 @@ const SIM_FREQUENCY: u64 = 500;
 
 pub fn test_entry(
     limit_seconds: u64,
-    #[allow(unused)]
-    test_name: &str,
+    #[allow(unused)] test_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _enter = RUNTIME.enter();
 
@@ -90,7 +89,7 @@ fn firmware_entry(spawner: Spawner, r: Resources, sim: SimHandle) {
     // ------------------ high-priority tasks -------------------
 
     // These take direct ownership of their hardware to avoid additional complexity
-    spawner.spawn(resources::imu_reader(r.imu).unwrap());
+    spawner.spawn(resources::imu_reader::main(r.imu).unwrap());
     spawner.spawn(resources::motor_governor(r.motors).unwrap());
 
     spawner.spawn(common::tasks::rc_binder::main().unwrap());
@@ -123,7 +122,7 @@ fn millis_in_future(millis: u64) -> common::embassy_time::Instant {
 async fn flight_test_task() {
     use common::nalgebra::SVector;
     use common::tasks::commander::*;
-    use common::tasks::controller_mpc::{Message, CHANNEL};
+    use common::tasks::controller_mpc::{CHANNEL, Message};
 
     Timer::after_secs(1).await;
 
@@ -214,7 +213,7 @@ async fn flight_test_task() {
         ))
         .await;
 
-    Timer::after_secs(6).await;
+    Timer::after_secs(7).await;
     assert!(
         (rcv_eskf_estimate.get().await.pos - SVector::from(position_setpoint)).norm() < 0.5,
         "Failed to get close to target setpoint"

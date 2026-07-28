@@ -1,12 +1,12 @@
 use core::ops::Range;
 
-use sequential_storage::map::{MapStorage, MapConfig, PostcardValue};
 use embedded_storage_async::nor_flash::NorFlash;
-use maitake_sync::{blocking::Mutex, RwLock, RwLockReadGuard, WaitQueue};
+use maitake_sync::{RwLock, RwLockReadGuard, WaitQueue, blocking::Mutex};
 use mav_param::{Ident, Value};
+use sequential_storage::map::{MapConfig, MapStorage, PostcardValue};
 use sequential_storage::{
     cache::{KeyCacheImpl, NoCache},
-    map::{MapItemIter},
+    map::MapItemIter,
 };
 
 use crate::{errors::adapter::sequential_storage::SequentialError, sync::procedure::Procedure};
@@ -101,7 +101,7 @@ pub struct TableCollection<const N: usize> {
     pub tables: Mutex<heapless::Vec<&'static Table<dyn mav_param::Node>, N>>,
 }
 
-pub static TABLES: TableCollection<10> = TableCollection::new();
+pub static TABLES: TableCollection<15> = TableCollection::new();
 
 impl<const N: usize> TableCollection<N> {
     pub const fn new() -> TableCollection<N> {
@@ -200,6 +200,7 @@ impl<F: NorFlash> ParamStorage<F> {
     }
 
     pub async fn run(&mut self) -> ! {
+        info!("[param_storage]: Task started");
         loop {
             if let Err(error) = self.run_inner().await {
                 error!("[param_storage]: Error: {:?}", error);
@@ -319,20 +320,23 @@ impl<S: NorFlash, C: KeyCacheImpl<[u8; 16]>, const N: usize> InnerStorage<S, C, 
     // TODO - Will be used for loading individual parameters.
     // However, after we load all into ram on boot is it even needed?
     async fn _load(&mut self, key: Ident) -> Result<Option<WrappedValue>, SequentialError> {
-        let ret = self.storage.fetch_item(self.buffer.as_mut(), key.as_raw()).await?;
+        let ret = self
+            .storage
+            .fetch_item(self.buffer.as_mut(), key.as_raw())
+            .await?;
         Ok(ret)
     }
 
     async fn save(&mut self, key: Ident, data: Value) -> Result<(), SequentialError> {
         let data = WrappedValue(data);
-        self.storage.store_item(self.buffer.as_mut(), key.as_raw(), &data).await?;
+        self.storage
+            .store_item(self.buffer.as_mut(), key.as_raw(), &data)
+            .await?;
 
         Ok(())
     }
 
-    async fn load_iter(
-        &mut self,
-    ) -> Result<MapItemIter<'_, [u8; 16], S, C>, SequentialError> {
+    async fn load_iter(&mut self) -> Result<MapItemIter<'_, [u8; 16], S, C>, SequentialError> {
         let ret = self.storage.fetch_all_items(self.buffer.as_mut()).await?;
         Ok(ret)
     }

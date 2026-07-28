@@ -37,6 +37,9 @@ pub enum HolsatusError {
     Sequential(#[from] SequentialError),
     #[error("Embedded storage error: {0}")]
     Storage(#[from] StorageError),
+
+    #[error("IMU sensorerror: {0}")]
+    Imu(#[from] ImuError),
 }
 
 #[non_exhaustive]
@@ -53,6 +56,40 @@ pub enum DeviceError {
     I2c(#[from] EmbeddedI2cError),
     #[error("Spi error: {0}")]
     Spi(#[from] EmbeddedSpiError),
+}
+
+#[derive(Error, Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ImuError {
+    #[error("I2c error: {0}")]
+    I2cInterface(#[from] EmbeddedI2cError),
+    #[error("Spi error: {0}")]
+    SpiInterface(#[from] EmbeddedSpiError),
+    #[error("Bad who-am-i, expected: {expected} actual: {actual}")]
+    WhoAmI { expected: u8, actual: u8 },
+    #[error("Bad readback from register {from_reg:x}")]
+    BadValueReadback { from_reg: u8 },
+    #[error("Some operation too too long and timed out")]
+    Timeout,
+    #[error("Error during sensor self-test procedure")]
+    SelfTestFailure,
+    #[error("Error during sensor initialization procedure")]
+    InitFailure,
+    #[error("Device FIFO buffer overflowed")]
+    FifoOverflow,
+    #[error("An unknown error occured")]
+    Unknown,
+}
+
+impl From<embedded_hal::spi::ErrorKind> for ImuError {
+    fn from(value: embedded_hal::spi::ErrorKind) -> Self {
+        ImuError::SpiInterface(value.into())
+    }
+}
+impl From<embedded_hal::i2c::ErrorKind> for ImuError {
+    fn from(value: embedded_hal::i2c::ErrorKind) -> Self {
+        ImuError::I2cInterface(value.into())
+    }
 }
 
 #[non_exhaustive]

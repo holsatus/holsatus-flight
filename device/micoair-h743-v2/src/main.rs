@@ -8,10 +8,10 @@ use panic_probe as _;
 
 mod config;
 mod resources;
+use resources::{flash, motors, spi, usart};
 
 #[embassy_executor::main]
 async fn main(level_t_spawner: embassy_executor::Spawner) {
-    use resources::{flash, i2c, motors, usart};
     // ---------------------- early setup -----------------------
 
     // Initialize the chip and split the resources
@@ -26,8 +26,8 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     common::signals::CONTROL_FREQUENCY.store(1125, Ordering::Relaxed);
 
     // Create interrupt executors
-    let level_0_spawner = stm32_support::interrupt_executor!(CAN1_RX0, P10);
-    let level_1_spawner = stm32_support::interrupt_executor!(CAN1_RX1, P11);
+    let level_0_spawner = stm32_support::interrupt_executor!(FDCAN2_IT0, P10);
+    let level_1_spawner = stm32_support::interrupt_executor!(FDCAN2_IT1, P11);
 
     // Might as well start the parameter storage module to get things loaded
     level_t_spawner.spawn(flash::param_storage(r.flash, config::flash()).unwrap());
@@ -57,7 +57,9 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     // ------------------ high-priority tasks -------------------
 
     // These take direct ownership of their hardware to avoid additional complexity
-    level_0_spawner.spawn(i2c::imu_reader(r.i2c_1, config::i2c1(), config::imu()).unwrap());
+    level_0_spawner.spawn(spi::bmi088_reader(r.spi_2, r.spi_2_extra).unwrap());
+    level_0_spawner.spawn(spi::bmi270_reader(r.spi_3, r.spi_3_extra).unwrap());
+    // level_0_spawner.spawn(i2c::imu_reader(r.i2c_2, config::i2c1(), config::imu()).unwrap());
     level_0_spawner.spawn(motors::motor_governor(r.motors, config::motor()).unwrap());
 
     level_0_spawner.spawn(common::tasks::rc_reader::main("usart1").unwrap());
@@ -67,8 +69,8 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
 
     // ----------------- medium-priority tasks ------------------
 
-    #[cfg(feature = "gnss")]
-    level_1_spawner.spawn(common::tasks::gnss_reader::main("usart6").unwrap());
+    // #[cfg(feature = "gnss")]
+    // level_1_spawner.spawn(common::tasks::gnss_reader::main("usart6").unwrap());
     level_1_spawner.spawn(common::tasks::commander::main().unwrap());
     level_1_spawner.spawn(common::tasks::controller_angle::main().unwrap());
 

@@ -3,7 +3,6 @@
 
 // Export the logging macros for either defmt or log
 #[macro_use]
-
 #[macro_export]
 pub mod logging;
 
@@ -36,10 +35,11 @@ use num_traits::Float as _;
 pub use embassy_futures;
 pub use embassy_sync;
 pub use embassy_time;
-pub use embedded_io;
-pub use embedded_io_async;
 pub use embedded_hal;
 pub use embedded_hal_async;
+pub use embedded_hal_bus;
+pub use embedded_io;
+pub use embedded_io_async;
 pub use embedded_storage_async;
 pub use grantable_io;
 pub use heapless;
@@ -55,7 +55,21 @@ pub mod mavlink;
 const DSHOT_MIN: u16 = 48;
 const DSHOT_MAX: u16 = 2047;
 
-const NUM_IMU: usize = 2;
 const NUM_MAG: usize = 2;
 
 const MAX_IO_STREAMS: usize = 6;
+
+#[cfg(all(feature = "imu_count_0", not(feature = "imu_count_1")))]
+const NUM_IMU: usize = 0;
+
+#[cfg(all(feature = "imu_count_1", not(feature = "imu_count_2")))]
+const NUM_IMU: usize = 1;
+
+#[cfg(all(feature = "imu_count_2", not(feature = "imu_count_3")))]
+const NUM_IMU: usize = 2;
+
+#[cfg(all(feature = "imu_count_3", not(feature = "imu_count_4")))]
+const NUM_IMU: usize = 3;
+
+#[cfg(feature = "imu_count_4")]
+const NUM_IMU: usize = 4;

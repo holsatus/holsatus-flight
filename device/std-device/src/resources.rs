@@ -28,13 +28,16 @@ pub fn setup_logging(mock: SimHandle) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-use std::time::Duration;
-
-use common::embassy_futures::select::select;
+use common::drivers::imu::ImuInitialize;
+use common::drivers::imu::ImuSensor;
 use common::embassy_futures::select::Either;
+use common::embassy_futures::select::select;
+use common::embassy_time::Duration;
+use common::embassy_time::Instant;
+use common::embassy_time::Ticker;
+use common::errors::ImuError;
 use common::errors::adapter::embedded_io::EmbeddedIoError;
 use common::grantable_io::GrantableIo;
-use common::hw_abstraction::Imu6Dof;
 use common::hw_abstraction::OutputGroup;
 use common::serial::IoStreamRaw;
 use common::types::measurements::Imu6DofData;
@@ -54,33 +57,52 @@ use tokio::io::AsyncWriteExt;
 
 #[embassy_executor::task]
 pub async fn imu_reader(imu: SimulatedImu) {
-    struct Imu(SimulatedImu);
+    struct Imu<'a>(&'a mut SimulatedImu);
 
-    impl Imu6Dof for Imu {
-        async fn read_acc(&mut self) -> Result<[f32; 3], common::errors::DeviceError> {
-            Ok(self.0.read_acc())
-        }
+    impl ImuInitialize for Imu<'_> {
+        type Config = ();
+        type Interface = SimulatedImu;
+        type Sensor<'a>
+            = Imu<'a>
+        where
+            Self: 'a;
 
-        async fn read_gyr(&mut self) -> Result<[f32; 3], common::errors::DeviceError> {
-            Ok(self.0.read_gyr())
-        }
-
-        async fn read_acc_gyr(
-            &mut self,
-        ) -> Result<common::types::measurements::Imu6DofData<f32>, common::errors::DeviceError>
+        async fn initialize<'a>(
+            interface: &'a mut Self::Interface,
+            _config: &Self::Config,
+        ) -> Result<Self::Sensor<'a>, ImuError>
+        where
+            Self: 'a,
         {
-            let (acc, gyr) = self.0.read_acc_gyr();
-            Ok(Imu6DofData {
-                timestamp_us: self.0.sim.timestamp_us(),
-                gyr,
-                acc,
-            })
+            Ok(Imu(interface))
         }
     }
 
-    let imu = Imu(imu);
+    impl ImuSensor for Imu<'_> {
+        fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+            async { Ok(self.0.read_sim_acc()) }
+        }
+        fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+            async { Ok(self.0.read_sim_gyr()) }
+        }
+        fn read_acc_gyr(&mut self) -> impl Future<Output = Result<Imu6DofData<f32>, ImuError>> {
+            async {
+                let (acc, gyr) = self.0.read_sim_acc_gyr();
+                Ok(Imu6DofData {
+                    timestamp_us: Instant::now().as_micros(),
+                    gyr,
+                    acc,
+                })
+            }
+        }
+    }
 
-    common::tasks::imu_reader::main_6dof(imu).await
+    common::tasks::imu_reader::ImuReader::entry::<Imu<'_>>(
+        imu,
+        (),
+        Ticker::every(Duration::from_hz(1000)),
+    )
+    .await
 }
 
 #[embassy_executor::task]
@@ -126,7 +148,7 @@ pub async fn motor_governor(motors: SimulatedMotors) {
 pub fn run_simulated_vicon(handle: SimHandle) {
     crate::thread_executor::RUNTIME.spawn(async move {
         // 10 Hz, similar to a GPS
-        let mut interval = tokio::time::interval(Duration::from_millis(10));
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
 
         loop {
             let vicon_data = {
@@ -167,7 +189,7 @@ pub async fn param_storage(flash: SimulatedFlash) {
 pub(crate) fn simulation_runner(sitl: SimHandle, frequency: usize) {
     crate::thread_executor::RUNTIME.spawn(async move {
         let dt = 1.0 / frequency as f32;
-        let mut interval = tokio::time::interval(Duration::from_secs_f32(dt));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs_f32(dt));
         loop {
             sitl.step(dt);
             interval.tick().await;
@@ -212,10 +234,7 @@ pub(crate) fn new_tcp_serial_io(addr: &str, stream_id: &'static str) {
                 }
             },
         )
-        .await
-        else {
-            unreachable!("The second branch never returns")
-        };
+        .await;
 
         let mut stream_buf = [0u8; 128];
         let mut device_buf = [0u8; 128];

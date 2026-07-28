@@ -1,33 +1,18 @@
-use core::ops::Range;
-
 use assign_resources::assign_resources;
-
-use common::{
-    drivers::imu::ImuConfig,
-    embedded_io,
-    errors::adapter::embedded_io::EmbeddedIoError,
-    hw_abstraction::OutputGroup,
-    serial::IoStreamRaw,
-    types::config::{DshotConfig, I2cConfig, UartConfig},
-};
-
-use embassy_stm32::{
-    bind_interrupts, exti::ExtiInput, mode::Async, peripherals, time::Hertz, Peri, Peripherals,
-};
-use static_cell::StaticCell;
+use embassy_stm32::{peripherals, Peri, Peripherals};
 
 assign_resources! {
     int_pin: IntPin {
         pin: PA10,
         exti: EXTI10,
-    }
+    },
     i2c_1: I2c1 {
         periph: I2C1,
         sda: PB9,
         scl: PB8,
         tx_dma: DMA1_CH7,
         rx_dma: DMA1_CH0,
-    }
+    },
     spi_1: Spi1 {
         periph: SPI1,
         sck: PB3,
@@ -37,43 +22,43 @@ assign_resources! {
         tx_dma: DMA2_CH5,
         cs_1: PA0,
         cs_2: PA1,
-    }
+    },
     usart_1: Usart1 {
         periph: USART1,
         rx_pin: PB7,
         tx_pin: PA9,
         rx_dma: DMA2_CH2,
         tx_dma: DMA2_CH7,
-    }
+    },
     usart_2: Usart2 {
         periph: USART2,
         rx_pin: PA3,
         tx_pin: PA2,
         rx_dma: DMA1_CH5,
         tx_dma: DMA1_CH6,
-    }
+    },
     usart_3: Usart3 {
         periph: USART3,
         rx_pin: PB11,
         tx_pin: PB10,
         rx_dma: DMA1_CH1,
         tx_dma: DMA1_CH3,
-    }
+    },
     usart_6: Usart6 {
         periph: USART6,
         rx_pin: PC7,
         tx_pin: PC6,
         rx_dma: DMA2_CH1,
         tx_dma: DMA2_CH6,
-    }
+    },
     motors: MotorDriver {
-        up_dma: DMA1_CH2,
         timer: TIM3,
+        up_dma: DMA1_CH2,
         pin_1: PA6,
         pin_2: PA7,
         pin_3: PB0,
         pin_4: PB1,
-    }
+    },
     sdcard: Sdcard {
         periph: SDIO,
         dma: DMA2_CH3,
@@ -83,387 +68,150 @@ assign_resources! {
         d1: PC9,
         d2: PC10,
         d3: PC11,
-    }
+    },
     flash: Flash {
         periph: FLASH
-    }
+    },
     usb: Usb {
         usb: USB_OTG_FS,
         dp: PA12,
         dm: PA11,
-    }
+    },
 }
 
 pub fn split(p: Peripherals) -> AssignedResources {
     split_resources!(p)
 }
 
-// ----------------------------------------------------------
-// -------------------- Main IMU I2C ------------------------
-// ----------------------------------------------------------
+pub mod i2c {
+    use common::{
+        drivers::{imu::icm20948::*, wrapped::WrappedI2c},
+        embassy_time::{Duration, Ticker},
+    };
 
-impl IntPin {
-    pub fn _setup(self) -> impl common::embedded_hal_async::digital::Wait {
-        bind_interrupts!(struct Irqs{
-            EXTI15_10 => embassy_stm32::exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI15_10>;
-        });
+    stm32_support::impl_i2c_setup!(
+        super::I2c1,
+        I2C1_EV => I2C1,
+        I2C1_ER => I2C1,
+        DMA1_STREAM0 => DMA1_CH0,
+        DMA1_STREAM7 => DMA1_CH7,
+    );
 
-        ExtiInput::new(self.pin, self.exti, embassy_stm32::gpio::Pull::Up, Irqs)
-    }
-}
+    #[embassy_executor::task]
+    pub(crate) async fn imu_reader(
+        i2c: super::I2c1,
+        i2c_cfg: common::types::config::I2cConfig,
+        imu_cfg: Config,
+    ) -> ! {
+        let i2c = i2c.setup(i2c_cfg);
 
-impl I2c1 {
-    pub fn setup(self, cfg: I2cConfig) -> impl common::embedded_hal_async::i2c::I2c {
-        bind_interrupts!(struct I2c1Irq {
-            I2C1_EV => embassy_stm32::i2c::EventInterruptHandler<peripherals::I2C1>;
-            I2C1_ER => embassy_stm32::i2c::ErrorInterruptHandler<peripherals::I2C1>;
-            DMA1_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH0>;
-            DMA1_STREAM7 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH7>;
-        });
-
-        let mut config = embassy_stm32::i2c::Config::default();
-        config.sda_pullup = cfg.sda_pullup;
-        config.scl_pullup = cfg.scl_pullup;
-        config.frequency = Hertz::hz(cfg.frequency);
-        embassy_stm32::i2c::I2c::new(
-            self.periph,
-            self.scl,
-            self.sda,
-            self.tx_dma,
-            self.rx_dma,
-            I2c1Irq,
-            config,
+        common::tasks::imu_reader::ImuReader::entry::<(Icm209486DofI2c, _)>(
+            WrappedI2c(i2c),
+            (0x69, imu_cfg),
+            Ticker::every(Duration::from_hz(1125)),
         )
+        .await
     }
 }
 
-#[embassy_executor::task]
-pub(crate) async fn imu_reader(i2c: I2c1, i2c_cfg: I2cConfig, imu_cfg: ImuConfig) -> ! {
-    let i2c = i2c.setup(i2c_cfg);
-    common::tasks::imu_reader::main_6dof_i2c(i2c, imu_cfg, Some(0x69)).await
-}
+pub mod spi {
+    stm32_support::impl_spi_setup!(super::Spi1: MODE_3, DMA2_STREAM5 => DMA2_CH5, DMA2_STREAM0 => DMA2_CH0);
 
-// ----------------------------------------------------------
-// ------------------------- SPI ----------------------------
-// ----------------------------------------------------------
-
-impl Spi1 {
-    pub fn _setup(self) -> impl common::embedded_hal_async::spi::SpiBus {
-        bind_interrupts!(struct Irqs {
-            DMA2_STREAM0 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH0>;
-            DMA2_STREAM5 => embassy_stm32::dma::InterruptHandler<peripherals::DMA2_CH5>;
-        });
-
-        embassy_stm32::spi::Spi::new(
-            self.periph,
-            self.sck,
-            self.mosi,
-            self.miso,
-            self.tx_dma,
-            self.rx_dma,
-            Irqs,
-            Default::default(),
-        )
+    #[embassy_executor::task]
+    pub(crate) async fn spi_reader(spi: super::Spi1) -> ! {
+        let _spi = spi.setup();
+        todo!("Not implemented yet")
     }
 }
-
-#[embassy_executor::task]
-pub(crate) async fn spi_reader(spi: Spi1) -> ! {
-    let _spi = spi._setup();
-    todo!("Not implemented yet")
-}
-
-// ----------------------------------------------------------
-// ---------------- Blackbox/SD logging ---------------------
-// ----------------------------------------------------------
-
-/// Thin wrapper around the Sdmmc peripheral so that we can store the frequency
-/// alongside it, which is required when resetting the device.
 
 #[cfg(feature = "sdmmc")]
 pub(crate) mod sdmmc {
-    use aligned::Aligned;
-    use common::{
-        embedded_io::{ErrorKind, ErrorType},
-        tasks::blackbox_fat::{BlockDevice, Reset},
-        types::config::SdmmcConfig,
-    };
-    use embassy_stm32::{
-        bind_interrupts, dma, sdmmc::{self, Error, Sdmmc, sd::{Card, CmdBlock, StorageDevice}}, time::Hertz
-    };
-    use static_cell::StaticCell;
+    use common::types::config::SdmmcConfig;
 
-    // NOTE: There is a TODO in the embassy `Sdmmc` read/write
-    // impls about handling the partition begin offset. If the SD
-    // card ever breaks when updating to newer versions of Embassy,
-    // please check if this has already been implemented there.
-    const BOOT_SECTOR_OFFS: u32 = 2048;
+    stm32_support::impl_sdmmc_setup!(super::Sdcard, SDIO => SDIO, DMA2_STREAM3 => DMA2_CH3);
 
-    pub struct SdmmcDevice<'d> {
-        storage: StorageDevice<'d, 'd, Card>,
-        freq: Hertz,
-    }
-
-    impl ErrorType for SdmmcDevice<'_> {
-        type Error = ErrorKind;
-    }
-
-    impl Reset for SdmmcDevice<'_> {
-        async fn reset(&mut self) -> bool {
-            self.storage.reacquire(&mut CmdBlock::new(), self.freq).await.is_ok()
-        }
-    }
-
-    impl BlockDevice<512> for SdmmcDevice<'_> {
-        type Error = Error;
-        type Align = aligned::A4;
-
-        async fn read(
-            &mut self,
-            block_address: u32,
-            data: &mut [Aligned<Self::Align, [u8; 512]>],
-        ) -> Result<(), Self::Error> {
-            // 2048 is the offset for the boot sector.
-            self.storage
-                .read(BOOT_SECTOR_OFFS + block_address, data)
-                .await
-        }
-
-        async fn write(
-            &mut self,
-            block_address: u32,
-            data: &[Aligned<Self::Align, [u8; 512]>],
-        ) -> Result<(), Self::Error> {
-            // 2048 is the offset for the boot sector.
-            self.storage
-                .write(BOOT_SECTOR_OFFS + block_address, data)
-                .await
-        }
-
-        async fn size(&mut self) -> Result<u64, Self::Error> {
-            self.storage.size().await
-        }
-    }
-
-    impl super::Sdcard {
-        pub fn setup(self, config: SdmmcConfig) -> impl BlockDevice<512> + Reset {
-            bind_interrupts!(struct SdioIrq {
-                SDIO => sdmmc::InterruptHandler<super::peripherals::SDIO>;
-                DMA2_STREAM3 => dma::InterruptHandler<super::peripherals::DMA2_CH3>;
-            });
-
-            static SDMMC: StaticCell<Sdmmc<'static>> = StaticCell::new();
-            let sdmmc = SDMMC.init(Sdmmc::new_4bit(
-                self.periph,
-                self.dma,
-                SdioIrq,
-                self.clk,
-                self.cmd,
-                self.d0,
-                self.d1,
-                self.d2,
-                self.d3,
-                Default::default(),
-            ));
-
-            SdmmcDevice {
-                storage: StorageDevice::new_uninit_sd_card(sdmmc),
-                freq: Hertz::hz(config.frequency),
-            }
-        }
-    }
-
-    #[cfg(feature = "sdmmc")]
     #[embassy_executor::task]
     pub(crate) async fn blackbox_fat(device: super::Sdcard, config: SdmmcConfig) -> ! {
         let device = device.setup(config);
-        common::tasks::blackbox_fat::main::<_, {512 * 2}>(device).await
+        common::tasks::blackbox_fat::main::<_, { 512 * 2 }>(device).await
     }
 }
 
-// ----------------------------------------------------------
-// ---------------- FLASH config storage --------------------
-// ----------------------------------------------------------
+pub mod flash {
+    stm32_support::impl_flash_setup!(super::Flash, FLASH);
 
-impl Flash {
-    pub fn setup<'d>(self) -> impl common::embedded_storage_async::nor_flash::NorFlash {
-        bind_interrupts!(struct FlashIrqs {
-            FLASH => embassy_stm32::flash::InterruptHandler;
-        });
-
-        embassy_stm32::flash::Flash::new(self.periph, FlashIrqs)
+    #[embassy_executor::task]
+    pub(crate) async fn param_storage(flash: super::Flash, range: core::ops::Range<u32>) -> ! {
+        let flash = flash.setup();
+        common::tasks::param_storage::entry(flash, range).await
     }
 }
 
-#[embassy_executor::task]
-pub(crate) async fn param_storage(flash: Flash, range: Range<u32>) -> ! {
-    let flash = flash.setup();
-    common::tasks::param_storage::entry(flash, range).await
-}
+pub mod motors {
+    stm32_support::impl_up_dma_dshot_setup!(super::MotorDriver, DMA1_STREAM2 => DMA1_CH2);
 
-// ----------------------------------------------------------
-// --------------- PWM-based motor driver -------------------
-// ----------------------------------------------------------
-
-impl MotorDriver {
-    pub fn setup(&mut self, dshot: DshotConfig) -> impl OutputGroup + '_ {
-        bind_interrupts!(struct DmaIrq {
-            DMA1_STREAM2 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH2>;
-        });
-        
-        use crate::dshot_pwm::{DshotDriver, UpDmaWaveform};
-        DshotDriver::new(
-            self.timer.reborrow(),
-            self.pin_1.reborrow(),
-            self.pin_2.reborrow(),
-            self.pin_3.reborrow(),
-            self.pin_4.reborrow(),
-            UpDmaWaveform::new(self.up_dma.reborrow(), DmaIrq),
-            dshot as u32,
-        )
+    #[embassy_executor::task]
+    pub(crate) async fn motor_governor(
+        mut motors: super::MotorDriver,
+        dshot_cfg: common::types::config::DshotConfig,
+    ) -> ! {
+        let motors = motors.setup(dshot_cfg);
+        common::tasks::motor_governor::main(motors).await
     }
 }
 
-#[embassy_executor::task]
-pub(crate) async fn motor_governor(mut motors: MotorDriver, dshot_cfg: DshotConfig) -> ! {
-    let motors = motors.setup(dshot_cfg);
-    common::tasks::motor_governor::main(motors).await
+pub mod usart {
+    stm32_support::impl_usart_setup!(
+        super::Usart1,
+        USART1 => USART1,
+        DMA2_STREAM2 => DMA2_CH2,
+        DMA2_STREAM7 => DMA2_CH7,
+        runner = run_usart1,
+        ring_buf = 32,
+        rx_buf = 256,
+        tx_buf = 512,
+    );
+
+    stm32_support::impl_usart_setup!(
+        super::Usart2,
+        USART2 => USART2,
+        DMA1_STREAM5 => DMA1_CH5,
+        DMA1_STREAM6 =>DMA1_CH6,
+        runner = run_usart2,
+        ring_buf = 32,
+        rx_buf = 256,
+        tx_buf = 512,
+    );
+
+    stm32_support::impl_usart_setup!(
+        super::Usart3,
+        USART3 => USART3,
+        DMA1_STREAM1 => DMA1_CH1,
+        DMA1_STREAM3 => DMA1_CH3,
+        runner = run_usart3,
+        ring_buf = 32,
+        rx_buf = 256,
+        tx_buf = 512,
+    );
+
+    stm32_support::impl_usart_setup!(
+        super::Usart6,
+        USART6 => USART6,
+        DMA2_STREAM1 => DMA2_CH1,
+        DMA2_STREAM6 => DMA2_CH6,
+        runner = run_usart6,
+        ring_buf = 32,
+        rx_buf = 256,
+        tx_buf = 512,
+    );
 }
-
-// ----------------------------------------------------------
-// --------------------- UARTs setup ------------------------
-// ----------------------------------------------------------
-
-#[allow(unused)]
-pub struct UsartBuffered<'d> {
-    pub rx: embassy_stm32::usart::RingBufferedUartRx<'d>,
-    pub tx: embassy_stm32::usart::UartTx<'d, Async>,
-}
-
-macro_rules! impl_usart_setup {
-    ($fn_name:ident, $UsartX:ident, $USARTX:ident, rb = $rb_size:literal, $buf_rx:path, $buf_tx:path, $rx_dma_str:ident, $rx_dma_ch:ident, $tx_dma_str:ident, $tx_dma_ch:ident) => {
-        #[allow(unused)]
-        impl $UsartX {
-            pub fn setup<'d>(&'d mut self, uart_cfg: UartConfig) -> UsartBuffered<'d> {
-                bind_interrupts!(struct UsartIrq {
-                    $USARTX => embassy_stm32::usart::InterruptHandler<peripherals::$USARTX>;
-                    $rx_dma_str => embassy_stm32::dma::InterruptHandler<peripherals::$rx_dma_ch>;
-                    $tx_dma_str => embassy_stm32::dma::InterruptHandler<peripherals::$tx_dma_ch>;
-                });
-
-                let mut config = embassy_stm32::usart::Config::default();
-                config.baudrate = uart_cfg.baud;
-
-                let usart = embassy_stm32::usart::Uart::new(
-                    self.periph.reborrow(),
-                    self.rx_pin.reborrow(),
-                    self.tx_pin.reborrow(),
-                    self.tx_dma.reborrow(),
-                    self.rx_dma.reborrow(),
-                    UsartIrq,
-                    config,
-                );
-
-                let (tx, rx) = usart.unwrap().split();
-
-                // Provide a static buffer for the ring buffer.
-                use static_cell::StaticCell;
-                static USART_BUFFER: StaticCell<[u8; $rb_size]> = StaticCell::new();
-                let rx = rx.into_ring_buffered(USART_BUFFER.init([0; $rb_size]));
-
-                UsartBuffered { rx, tx }
-            }
-        }
-
-        #[embassy_executor::task]
-        pub(crate) async fn $fn_name(mut usart: $UsartX, uart_cfg: UartConfig, serial_id: &'static str) {
-            let usart = usart.setup(uart_cfg);
-
-            let (rx, tx) = (usart.rx, usart.tx);
-
-            let (mut dev_prod, app_cons) = $buf_tx.claim_reader();
-            let (mut dev_cons, app_prod) = $buf_rx.claim_writer();
-
-            let io_stream_raw = IoStreamRaw::new(serial_id, app_cons, app_prod);
-
-            static IO_STREAM_RAW: StaticCell<IoStreamRaw<'static>> = StaticCell::new();
-            let io_stream_ref = IO_STREAM_RAW.init(io_stream_raw);
-
-            common::serial::insert(io_stream_ref).unwrap();
-
-            let map_err = |error: embassy_stm32::usart::Error| {
-                <embassy_stm32::usart::Error as embedded_io::Error>::kind(&error).into()
-            };
-
-            common::embassy_futures::join::join(
-                dev_prod.embedded_io_connect(rx, map_err),
-                dev_cons.embedded_io_connect(tx, map_err),
-            ).await;
-
-            defmt::warn!("[{}] Stream disconnected unexpectedly", serial_id)
-        }
-    };
-}
-
-use common::grantable_io::GrantableIo;
-
-static BUF_RX1: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
-static BUF_TX1: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
-
-static BUF_RX2: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
-static BUF_TX2: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
-
-static BUF_RX3: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
-static BUF_TX3: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
-
-static BUF_RX6: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
-static BUF_TX6: GrantableIo<128, EmbeddedIoError> = GrantableIo::new();
-
-impl_usart_setup!(run_usart1, Usart1, USART1, rb = 32, BUF_RX1, BUF_TX1, DMA2_STREAM2, DMA2_CH2, DMA2_STREAM7, DMA2_CH7);
-impl_usart_setup!(run_usart2, Usart2, USART2, rb = 32, BUF_RX2, BUF_TX2, DMA1_STREAM5, DMA1_CH5, DMA1_STREAM6, DMA1_CH6);
-impl_usart_setup!(run_usart3, Usart3, USART3, rb = 32, BUF_RX3, BUF_TX3, DMA1_STREAM1, DMA1_CH1, DMA1_STREAM3, DMA1_CH3);
-impl_usart_setup!(run_usart6, Usart6, USART6, rb = 32, BUF_RX6, BUF_TX6, DMA2_STREAM1, DMA2_CH1, DMA2_STREAM6, DMA2_CH6);
-
-// ----------------------------------------------------------
-// --------------- USB for PC-FW connection -----------------
-// ----------------------------------------------------------
 
 #[cfg(feature = "usb")]
 pub mod usb {
-    use common::{embassy_usb::driver::Driver, types::device::HardwareInfo};
-    use embassy_stm32::{
-        bind_interrupts,
-        usb::{Config, InterruptHandler},
-    };
-
-    // 2x USB packet size
-    const USB_BUF_LEN: usize = 128;
-
     use crate::resources::Usb;
-    use static_cell::StaticCell;
+    use common::types::device::HardwareInfo;
 
-    impl Usb {
-        pub fn setup(self) -> impl Driver<'static> {
-            bind_interrupts!(pub struct UsbIrq {
-                OTG_FS => InterruptHandler<embassy_stm32::peripherals::USB_OTG_FS>;
-            });
-
-            static USB_BUFFER: StaticCell<[u8; USB_BUF_LEN]> = StaticCell::new();
-            let usb_buffer = USB_BUFFER.init([0u8; USB_BUF_LEN]);
-
-            let mut config = Config::default();
-            config.vbus_detection = true;
-
-            embassy_stm32::usb::Driver::new_fs(
-                self.usb,
-                UsbIrq,
-                self.dp,
-                self.dm,
-                usb_buffer,
-                Default::default(),
-            )
-        }
-    }
+    stm32_support::impl_usb_setup!(Usb, OTG_FS => USB_OTG_FS, 128);
 
     #[embassy_executor::task]
     pub(crate) async fn runner(usb: Usb, info: HardwareInfo) -> ! {
@@ -471,9 +219,3 @@ pub mod usb {
         common::tasks::usb_manager::main(usb, info).await
     }
 }
-
-// ----------------------------------------------------------
-// -------------------------- fin ---------------------------
-// ----------------------------------------------------------
-
-

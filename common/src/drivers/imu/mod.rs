@@ -1,113 +1,73 @@
+pub mod bmi088;
+pub mod bmi270;
 pub mod icm20948;
-use embassy_time::{Delay, Duration, WithTimeout};
-use embedded_hal_async::{i2c::I2c, spi::SpiDevice};
-pub use icm20948_async;
-use icm20948_async::{Config, IcmBuilder};
 
-use crate::{
-    errors::DeviceError,
-    hw_abstraction::{Imu6Dof, Imu9Dof},
-};
+pub use bmi088::{Bmi088Config, Bmi088I2c, Bmi088Spi};
+pub use bmi270::{Bmi270Config, Bmi270I2c, Bmi270Spi};
+pub use icm20948::{Icm209486DofI2c, Icm209486DofSpi};
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum ImuConfig {
-    Icm20948(Config),
+use crate::{errors::ImuError, types::measurements::Imu6DofData};
+
+pub fn map_deg_to_rad(arr: [f32; 3]) -> [f32; 3] {
+    arr.map(|v| v.to_radians())
 }
 
-impl ImuConfig {
-    pub async fn i2c_setup_6dof<BUS: I2c>(
-        &self,
-        i2c: BUS,
-        addr: Option<u8>,
-    ) -> Result<impl Imu6Dof, DeviceError> {
-        match self {
-            ImuConfig::Icm20948(config) => {
-                let icm = IcmBuilder::new_i2c(i2c, Delay)
-                    .with_config(*config)
-                    .set_address(addr.unwrap_or(0x69));
+pub fn map_g_to_mpss(arr: [f32; 3]) -> [f32; 3] {
+    arr.map(|v| v * crate::consts::GRAVITY)
+}
 
-                // Try to run setup, but with a timeout to detect hanging devices
-                let timeout = Duration::from_secs(2);
-                icm.initialize_6dof()
-                    .with_timeout(timeout)
-                    .await
-                    .map_err(|_| DeviceError::Timeout {
-                        millis: timeout.as_millis(),
-                    })?
-                    .map_err(icm20948::from_i2c_err)
-            }
+/// A sensor which knows how to initialize itself and use a specific interface kind.
+pub trait ImuInitialize {
+    type Config;
+    type Interface;
+    type Sensor<'a>: ImuSensor
+    where
+        Self: 'a;
+
+    fn initialize<'a>(
+        interface: &'a mut Self::Interface,
+        config: &Self::Config,
+    ) -> impl Future<Output = Result<Self::Sensor<'a>, ImuError>>
+    where
+        Self: 'a;
+}
+
+/// Operations available on an initialized IMU sensor.
+pub trait ImuSensor: Sized {
+    /// Read out a 3D sample from the accelerometer, units are in meters/second^2
+    fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>>;
+    /// Read out a 3D sample from the gyroscope, units are in radians/second
+    fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>>;
+    /// Read out 3D samples for both the accelerometer and gyroscope
+    fn read_acc_gyr(&mut self) -> impl Future<Output = Result<Imu6DofData<f32>, ImuError>>;
+}
+
+pub mod trigger {
+    use futures::FutureExt;
+
+    /// Some event trigger to read a sensor. Can be an interrupt, a timer, or an in-software signal.
+    pub trait Trigger {
+        fn next_trigger(&mut self) -> impl Future<Output = ()>;
+    }
+
+    impl Trigger for embassy_time::Ticker {
+        fn next_trigger(&mut self) -> impl Future<Output = ()> {
+            self.next()
         }
     }
 
-    pub async fn spi_setup_6dof<BUS: SpiDevice>(
-        &self,
-        spi: BUS,
-    ) -> Result<impl Imu6Dof, DeviceError> {
-        match self {
-            ImuConfig::Icm20948(config) => {
-                let icm = IcmBuilder::new_spi(spi, Delay).with_config(*config);
+    pub struct OnRising<W>(pub W);
+    pub struct OnFalling<W>(pub W);
 
-                // Try to run setup, but with a timeout to detect hanging devices
-                let timeout = Duration::from_secs(2);
-                icm.initialize_6dof()
-                    .with_timeout(timeout)
-                    .await
-                    .map_err(|_| DeviceError::Timeout {
-                        millis: timeout.as_millis(),
-                    })?
-                    .map_err(icm20948::from_spi_err)
-            }
+    impl<W: embedded_hal_async::digital::Wait> Trigger for OnRising<W> {
+        fn next_trigger(&mut self) -> impl Future<Output = ()> {
+            self.0.wait_for_rising_edge().map(|_| ())
         }
     }
 
-    pub async fn i2c_setup_9dof<BUS: I2c>(
-        &self,
-        i2c: BUS,
-        addr: Option<u8>,
-    ) -> Result<impl Imu9Dof, DeviceError> {
-        match self {
-            ImuConfig::Icm20948(config) => {
-                let icm = IcmBuilder::new_i2c(i2c, Delay)
-                    .with_config(*config)
-                    .set_address(addr.unwrap_or(0x69));
-
-                // Try to run setup, but with a timeout to detect hanging devices
-                let timeout = Duration::from_secs(2);
-                icm.initialize_9dof()
-                    .with_timeout(timeout)
-                    .await
-                    .map_err(|_| DeviceError::Timeout {
-                        millis: timeout.as_millis(),
-                    })?
-                    .map_err(icm20948::from_i2c_err)
-            }
-        }
-    }
-
-    pub async fn spi_setup_9dof<BUS: SpiDevice<Error = embedded_hal::spi::ErrorKind>>(
-        &self,
-        spi: BUS,
-    ) -> Result<impl Imu9Dof, DeviceError> {
-        match self {
-            ImuConfig::Icm20948(config) => {
-                let icm = IcmBuilder::new_spi(spi, Delay).with_config(*config);
-
-                // Try to run setup, but with a timeout to detect hanging devices
-                let timeout = Duration::from_secs(2);
-                icm.initialize_9dof()
-                    .with_timeout(timeout)
-                    .await
-                    .map_err(|_| DeviceError::Timeout {
-                        millis: timeout.as_millis(),
-                    })?
-                    .map_err(icm20948::from_spi_err)
-            }
-        }
-    }
-
-    pub const fn str_id(&self) -> &'static str {
-        match self {
-            ImuConfig::Icm20948(_) => "ICM-20948",
+    impl<W: embedded_hal_async::digital::Wait> Trigger for OnFalling<W> {
+        fn next_trigger(&mut self) -> impl Future<Output = ()> {
+            self.0.wait_for_falling_edge().map(|_| ())
         }
     }
 }

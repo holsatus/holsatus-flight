@@ -74,7 +74,7 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
 
     // ------------------ high-priority tasks -------------------
 
-    level_0_spawner.spawn(resources::imu_reader(r.i2c_0, config::i2c1(), config::imu()).unwrap());
+    level_0_spawner.spawn(resources::imu_reader::main(r.i2c_0, config::i2c1()).unwrap());
     level_0_spawner.spawn(resources::motor_governor(r.motors, config::dshot()).unwrap());
 
     level_0_spawner.spawn(common::tasks::rc_reader::main("uart0").unwrap());
