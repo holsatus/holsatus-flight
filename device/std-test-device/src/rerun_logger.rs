@@ -31,7 +31,7 @@ impl RerunLogger {
     pub fn new(
         rec: RecordingStream,
         handle: SimHandle,
-        subsample: usize
+        subsample: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         rec.set_time("embassy-time", std::time::Duration::from_nanos(0));
 
@@ -50,19 +50,16 @@ impl RerunLogger {
     }
 
     pub fn log_subsampled(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-
         self.subsample_count += 1;
         if self.subsample_count < self.subsample_cfg {
-            return Ok(())
+            return Ok(());
         }
         self.subsample_count = 0;
 
         self.log_now()
     }
 
-
     pub fn log_now(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-
         let state = self.handle.vehicle_state();
         let pos = state.position;
         let rot = state.rotation;

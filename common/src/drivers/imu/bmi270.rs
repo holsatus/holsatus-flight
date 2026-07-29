@@ -9,9 +9,7 @@ use embedded_hal_async::{i2c, spi};
 use futures::TryFutureExt as _;
 
 use crate::{
-    drivers::imu::{ImuInitialize, ImuSensor, map_deg_to_rad, map_g_to_mpss},
-    errors::ImuError,
-    types::measurements::Imu6DofData,
+    drivers::{imu::{ImuInitialize, ImuSensor, map_deg_to_rad, map_g_to_mpss}, wrapped::{WrappedI2c, WrappedSpi}}, errors::ImuError, types::measurements::Imu6DofData,
 };
 
 impl<I> ImuSensor for Bmi270<I>
@@ -98,12 +96,11 @@ pub struct Bmi270Spi;
 impl<SPI> ImuInitialize for (Bmi270Spi, SPI)
 where
     SPI: spi::SpiDevice,
-    ImuError: From<SPI::Error>,
 {
     type Config = Bmi270Config;
     type Interface = SPI;
     type Sensor<'a>
-        = Bmi270<SpiWrap<&'a mut SPI>>
+        = Bmi270<SpiWrap<WrappedSpi<&'a mut SPI>>>
     where
         Self: 'a;
 
@@ -114,7 +111,7 @@ where
     where
         Self: 'a,
     {
-        let mut imu = Bmi270::initialize_spi(interface, Delay)
+        let mut imu = Bmi270::initialize_spi(WrappedSpi(interface), Delay)
             .map_err(|error| map_spi_error(error, bmi270_driver::BMI270_CHIP_ID))
             .await?;
 
@@ -129,12 +126,11 @@ pub struct Bmi270I2c;
 impl<I2C> ImuInitialize for (Bmi270I2c, I2C)
 where
     I2C: i2c::I2c,
-    ImuError: From<I2C::Error>,
 {
     type Config = (u8, Bmi270Config);
     type Interface = I2C;
     type Sensor<'a>
-        = Bmi270<I2cWrap<&'a mut I2C>>
+        = Bmi270<I2cWrap<WrappedI2c<&'a mut I2C>>>
     where
         Self: 'a;
 
@@ -145,7 +141,7 @@ where
     where
         Self: 'a,
     {
-        let mut imu = Bmi270::initialize_i2c(interface, config.0, Delay)
+        let mut imu = Bmi270::initialize_i2c(WrappedI2c(interface), config.0, Delay)
             .map_err(|error| map_i2c_error(error, bmi270_driver::BMI270_CHIP_ID))
             .await?;
 

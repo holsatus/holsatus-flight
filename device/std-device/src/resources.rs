@@ -40,6 +40,7 @@ use common::errors::adapter::embedded_io::EmbeddedIoError;
 use common::grantable_io::GrantableIo;
 use common::hw_abstraction::OutputGroup;
 use common::serial::IoStreamRaw;
+use common::tasks::imu_reader::ImuReader;
 use common::types::measurements::Imu6DofData;
 use common::types::measurements::ViconData;
 use embedded_io::ErrorKind;
@@ -97,12 +98,8 @@ pub async fn imu_reader(imu: SimulatedImu) {
         }
     }
 
-    common::tasks::imu_reader::ImuReader::entry::<Imu<'_>>(
-        imu,
-        (),
-        Ticker::every(Duration::from_hz(1000)),
-    )
-    .await
+    let trigger = Ticker::every(Duration::from_hz(1000));
+    ImuReader::entry::<Imu<'_>>(imu, (), trigger).await
 }
 
 #[embassy_executor::task]

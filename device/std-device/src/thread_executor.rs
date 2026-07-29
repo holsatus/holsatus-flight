@@ -1,7 +1,7 @@
 use embassy_executor::Executor;
 use embassy_executor::SendSpawner;
-use std::sync::mpsc;
 use std::sync::LazyLock;
+use std::sync::mpsc;
 use tokio::runtime::Runtime;
 
 pub fn new_spawner() -> Result<SendSpawner, Box<dyn std::error::Error>> {

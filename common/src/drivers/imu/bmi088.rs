@@ -9,9 +9,7 @@ use embedded_hal_async::{i2c, spi};
 use futures::TryFutureExt as _;
 
 use crate::{
-    drivers::imu::{ImuInitialize, ImuSensor, map_deg_to_rad, map_g_to_mpss},
-    errors::ImuError,
-    types::measurements::Imu6DofData,
+    drivers::{imu::{ImuInitialize, ImuSensor, map_deg_to_rad, map_g_to_mpss}, wrapped::{WrappedI2c, WrappedSpi}}, errors::ImuError, types::measurements::Imu6DofData,
 };
 
 pub struct Bmi088<IACC, IGYR> {
@@ -84,13 +82,11 @@ impl<A, G> ImuInitialize for (Bmi088Spi, A, G)
 where
     A: spi::SpiDevice,
     G: spi::SpiDevice,
-    ImuError: From<A::Error>,
-    ImuError: From<G::Error>,
 {
     type Config = Bmi088Config;
     type Interface = (A, G);
     type Sensor<'a>
-        = Bmi088<SpiAcc<&'a mut A>, SpiGyr<&'a mut G>>
+        = Bmi088<SpiAcc<WrappedSpi<&'a mut A>>, SpiGyr<WrappedSpi<&'a mut G>>>
     where
         Self: 'a;
 
@@ -101,10 +97,10 @@ where
     where
         Self: 'a,
     {
-        let acc = Bmi088Accelerometer::initialize_spi(&mut interface.0, &mut Delay)
+        let acc = Bmi088Accelerometer::initialize_spi(WrappedSpi(&mut interface.0), &mut Delay)
             .map_err(|error| map_spi_error(error, bmi088_driver::ACC_CHIP_ID))
             .await?;
-        let mut gyr = Bmi088Gyroscope::initialize_spi(&mut interface.1, &mut Delay)
+        let mut gyr = Bmi088Gyroscope::initialize_spi(WrappedSpi(&mut interface.1), &mut Delay)
             .map_err(|error| map_spi_error(error, bmi088_driver::GYR_CHIP_ID))
             .await?;
 
@@ -130,13 +126,11 @@ impl<A, G> ImuInitialize for (Bmi088I2c, A, G)
 where
     A: i2c::I2c,
     G: i2c::I2c,
-    ImuError: From<A::Error>,
-    ImuError: From<G::Error>,
 {
     type Config = (u8, u8, Bmi088Config);
     type Interface = (A, G);
     type Sensor<'a>
-        = Bmi088<I2cAny<&'a mut A>, I2cAny<&'a mut G>>
+        = Bmi088<I2cAny<WrappedI2c<&'a mut A>>, I2cAny<WrappedI2c<&'a mut G>>>
     where
         Self: 'a;
 
@@ -147,10 +141,10 @@ where
     where
         Self: 'a,
     {
-        let acc = Bmi088Accelerometer::initialize_i2c(&mut interface.0, config.0, &mut Delay)
+        let acc = Bmi088Accelerometer::initialize_i2c(WrappedI2c(&mut interface.0), config.0, &mut Delay)
             .map_err(|error| map_i2c_error(error, bmi088_driver::ACC_CHIP_ID))
             .await?;
-        let mut gyr = Bmi088Gyroscope::initialize_i2c(&mut interface.1, config.1, &mut Delay)
+        let mut gyr = Bmi088Gyroscope::initialize_i2c(WrappedI2c(&mut interface.1), config.1, &mut Delay)
             .map_err(|error| map_i2c_error(error, bmi088_driver::GYR_CHIP_ID))
             .await?;
 
