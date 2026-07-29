@@ -85,7 +85,7 @@ pub fn split(p: Peripherals) -> AssignedResources {
 
 pub mod i2c {
     use common::{
-        drivers::{imu::icm20948::*, wrapped::WrappedI2c},
+        drivers::imu::icm20948::*,
         embassy_time::{Duration, Ticker},
     };
 
@@ -106,7 +106,7 @@ pub mod i2c {
         let i2c = i2c.setup(i2c_cfg);
 
         common::tasks::imu_reader::ImuReader::entry::<(Icm209486DofI2c, _)>(
-            WrappedI2c(i2c),
+            i2c,
             (0x69, imu_cfg),
             Ticker::every(Duration::from_hz(1125)),
         )

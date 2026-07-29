@@ -110,10 +110,7 @@ pub mod i2c {
 
 pub mod spi {
     use common::{
-        drivers::{
-            imu::{trigger::OnRising, Bmi088Config, Bmi088Spi, Bmi270Config, Bmi270Spi},
-            wrapped::WrappedSpi,
-        },
+        drivers::imu::{trigger::OnRising, Bmi088Config, Bmi088Spi, Bmi270Config, Bmi270Spi},
         embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex},
         embedded_hal_bus::spi::ExclusiveDevice,
         tasks::imu_reader::ImuReader,
@@ -145,12 +142,7 @@ pub mod spi {
         let mut config = Bmi088Config::default();
         config.pin_3_int_data_ready = true;
 
-        ImuReader::entry::<(Bmi088Spi, _, _)>(
-            (WrappedSpi(acc_spi), WrappedSpi(gyr_spi)),
-            config,
-            OnRising(int_pin),
-        )
-        .await
+        ImuReader::entry::<(Bmi088Spi, _, _)>((acc_spi, gyr_spi), config, OnRising(int_pin)).await
     }
 
     stm32_support::impl_spi_setup!(super::Spi3: MODE_3, DMA1_STREAM6 => DMA1_CH6, DMA1_STREAM7 => DMA1_CH7);
@@ -169,7 +161,7 @@ pub mod spi {
         let mut config = Bmi270Config::default();
         config.pin_1_int_data_ready = true;
 
-        ImuReader::entry::<(Bmi270Spi, _)>(WrappedSpi(spi_device), config, OnRising(int_pin)).await
+        ImuReader::entry::<(Bmi270Spi, _)>(spi_device, config, OnRising(int_pin)).await
     }
 }
 

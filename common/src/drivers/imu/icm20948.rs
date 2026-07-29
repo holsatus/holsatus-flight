@@ -9,9 +9,7 @@ use icm20948_async::{
 pub use icm20948_async::{AccDlp, AccRange, AccUnit, Config, GyrDlp, GyrRange, GyrUnit};
 
 use crate::{
-    drivers::imu::{ImuInitialize, ImuSensor},
-    errors::ImuError,
-    types::measurements::Imu6DofData,
+    drivers::{imu::{ImuInitialize, ImuSensor}, wrapped::{WrappedI2c, WrappedSpi}}, errors::ImuError, types::measurements::Imu6DofData,
 };
 
 pub struct Icm20948Sensor<TRANSPORT> {
@@ -88,7 +86,7 @@ where
     type Config = (u8, Config);
     type Interface = BUS;
     type Sensor<'a>
-        = Icm20948Sensor<I2cDevice<&'a mut BUS>>
+        = Icm20948Sensor<I2cDevice<WrappedI2c<&'a mut BUS>>>
     where
         Self: 'a;
 
@@ -105,7 +103,7 @@ where
             gyr_unit: GyrUnit::Rps,
             ..config.1
         };
-        IcmBuilder::new_i2c(interface, Delay)
+        IcmBuilder::new_i2c(WrappedI2c(interface), Delay)
             .with_config(effective_config)
             .set_address(config.0)
             .initialize_6dof()
@@ -124,7 +122,7 @@ where
     type Config = Config;
     type Interface = BUS;
     type Sensor<'a>
-        = Icm20948Sensor<SpiDevice<&'a mut BUS>>
+        = Icm20948Sensor<SpiDevice<WrappedSpi<&'a mut BUS>>>
     where
         Self: 'a;
 
@@ -142,7 +140,7 @@ where
             ..*config
         };
 
-        IcmBuilder::new_spi(interface, Delay)
+        IcmBuilder::new_spi(WrappedSpi(interface), Delay)
             .with_config(effective_config)
             .initialize_6dof()
             .map_err(map_setup_err_spi)

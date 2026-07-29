@@ -82,12 +82,9 @@ impl I2c0 {
 
 pub mod imu_reader {
     use common::{
-        drivers::{
-            imu::{
-                icm20948::{AccDlp, AccRange, AccUnit, Config, GyrDlp, GyrRange, GyrUnit},
-                Icm209486DofI2c,
-            },
-            wrapped::WrappedI2c,
+        drivers::imu::{
+            icm20948::{AccDlp, AccRange, AccUnit, Config, GyrDlp, GyrRange, GyrUnit},
+            Icm209486DofI2c,
         },
         embassy_time::{Duration, Ticker},
         types::config::I2cConfig,
@@ -109,7 +106,7 @@ pub mod imu_reader {
         };
 
         common::tasks::imu_reader::ImuReader::entry::<(Icm209486DofI2c, _)>(
-            WrappedI2c(i2c),
+            i2c,
             (0x69, imu_cfg),
             Ticker::every(Duration::from_hz(1125)),
         )
