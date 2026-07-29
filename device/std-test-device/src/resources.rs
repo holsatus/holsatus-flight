@@ -15,6 +15,7 @@ pub mod imu_reader {
     use common::{
         drivers::imu::{ImuInitialize, ImuSensor},
         errors::ImuError,
+        tasks::imu_reader::ImuReader,
         types::measurements::Imu6DofData,
     };
     use embassy_time::{Duration, Instant, Ticker};
@@ -61,12 +62,8 @@ pub mod imu_reader {
             }
         }
 
-        common::tasks::imu_reader::ImuReader::entry::<Imu<'_>>(
-            imu,
-            (),
-            Ticker::every(Duration::from_hz(crate::SIM_FREQUENCY)),
-        )
-        .await
+        let trigger = Ticker::every(Duration::from_hz(crate::SIM_FREQUENCY));
+        ImuReader::entry::<Imu<'_>>(imu, (), trigger).await
     }
 }
 

@@ -143,7 +143,7 @@ async fn autonomous_flight_speedloop() {
     for i in 0..8 {
         common::tasks::controller_mpc::CHANNEL
             .send(common::tasks::controller_mpc::Message::SetPositionAt(
-                [-8.0 + (i*2) as f32, 0.0, -25.0],
+                [-8.0 + (i * 2) as f32, 0.0, -25.0],
                 millis_in_future(9900),
             ))
             .await;

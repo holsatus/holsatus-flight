@@ -88,12 +88,12 @@ pub(crate) fn rerun_thread(
         if let Some(estimate) = common::signals::ESKF_ESTIMATE.try_get() {
             rec.log(
                 "sim/firmware/eskf/pos",
-                &Scalars::new(estimate.pos.map(|x|x as f64).iter().cloned()),
+                &Scalars::new(estimate.pos.map(|x| x as f64).iter().cloned()),
             )?;
 
             rec.log(
                 "sim/firmware/eskf/vel",
-                &Scalars::new(estimate.vel.map(|x|x as f64).iter().cloned()),
+                &Scalars::new(estimate.vel.map(|x| x as f64).iter().cloned()),
             )?;
 
             let (roll, pitch, yaw) = estimate.att.euler_angles();
@@ -104,12 +104,12 @@ pub(crate) fn rerun_thread(
 
             rec.log(
                 "sim/firmware/eskf/gyr_bias",
-                &Scalars::new(estimate.gyr_bias.map(|x|x as f64).iter().cloned()),
+                &Scalars::new(estimate.gyr_bias.map(|x| x as f64).iter().cloned()),
             )?;
 
             rec.log(
                 "sim/firmware/eskf/acc_bias",
-                &Scalars::new(estimate.acc_bias.map(|x|x as f64).iter().cloned()),
+                &Scalars::new(estimate.acc_bias.map(|x| x as f64).iter().cloned()),
             )?;
         }
 
@@ -146,11 +146,8 @@ pub(crate) fn rerun_thread(
                     &Points3D::new([intercept_pos]).with_radii([1.0]),
                 )?;
             } else {
-                let empty: &[[f32; 3]] = &[]; 
-                rec.log(
-                    "sim/firmware/mpc_intercept_pos",
-                    &Points3D::new(empty),
-                )?;
+                let empty: &[[f32; 3]] = &[];
+                rec.log("sim/firmware/mpc_intercept_pos", &Points3D::new(empty))?;
             }
         }
 

@@ -87,6 +87,7 @@ pub mod imu_reader {
             Icm209486DofI2c,
         },
         embassy_time::{Duration, Ticker},
+        tasks::imu_reader::ImuReader,
         types::config::I2cConfig,
     };
 
@@ -105,12 +106,8 @@ pub mod imu_reader {
             gyr_odr: 0,
         };
 
-        common::tasks::imu_reader::ImuReader::entry::<(Icm209486DofI2c, _)>(
-            i2c,
-            (0x69, imu_cfg),
-            Ticker::every(Duration::from_hz(1125)),
-        )
-        .await
+        let trigger = Ticker::every(Duration::from_hz(1125));
+        ImuReader::entry::<(Icm209486DofI2c, _)>(i2c, (0x69, imu_cfg), trigger).await
     }
 }
 

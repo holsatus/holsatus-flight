@@ -1,9 +1,9 @@
 use core::task::Waker;
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use embassy_executor::{raw, Spawner};
+use embassy_executor::{Spawner, raw};
 use embassy_time::Duration;
 use embassy_time_driver::Driver;
 use embassy_time_queue_utils::Queue;
