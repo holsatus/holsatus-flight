@@ -81,7 +81,6 @@ pub struct Icm209486DofI2c;
 impl<BUS> ImuInitialize for (Icm209486DofI2c, BUS)
 where
     BUS: i2c::I2c,
-    ImuError: From<BUS::Error>,
 {
     type Config = (u8, Config);
     type Interface = BUS;
@@ -117,7 +116,6 @@ pub struct Icm209486DofSpi;
 impl<BUS> ImuInitialize for (Icm209486DofSpi, BUS)
 where
     BUS: spi::SpiDevice,
-    ImuError: From<BUS::Error>,
 {
     type Config = Config;
     type Interface = BUS;
