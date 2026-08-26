@@ -89,7 +89,7 @@ nalgebra = { version = "0.34.0", default-features = false, features = [
     "libm",
 ] }
 
-device-driver = { git = "https://github.com/peterkrull/device-driver", branch = "regop-self-by-value" }
+device-driver = { version = "2.1.0" }
 
 eskf_rs = { git = "https://github.com/peterkrull/eskf-rs", default-features = false, features = [
     "no_std",
@@ -114,8 +114,8 @@ icm20948-async = { version = "0.6.0", features = [
     "serde",
 ] }
 
-bmi270-driver = { git = "https://github.com/holsatus/bmi270-driver" }
-bmi088-driver = { git = "https://github.com/holsatus/bmi088-driver" }
+bmi270-driver = { git = "https://github.com/holsatus/bmi270-driver", rev = "afd35a3" }
+bmi088-driver = { git = "https://github.com/holsatus/bmi088-driver", rev = "13e1009" }
 
 ahrs = { git = "https://github.com/jmagnuson/ahrs-rs", rev = "4a4fb76", default-features = false }
 mag-calibrator-rs = { git = "https://github.com/peterkrull/mag-calibrator-rs" }
