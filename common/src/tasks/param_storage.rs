@@ -1,8 +1,10 @@
 use core::ops::Range;
+use core::sync::atomic::Ordering;
 
 use embedded_storage_async::nor_flash::NorFlash;
 use maitake_sync::{RwLock, RwLockReadGuard, WaitQueue, blocking::Mutex};
 use mav_param::{Ident, Value};
+use portable_atomic::AtomicU8;
 use sequential_storage::map::{MapConfig, MapStorage, PostcardValue};
 use sequential_storage::{
     cache::{KeyCacheImpl, NoCache},
@@ -61,6 +63,7 @@ pub async fn request(req: Request) -> Option<Response> {
 
 pub struct Table<T: ?Sized> {
     pub name: &'static str,
+    pub generation: AtomicU8,
     pub waiters: WaitQueue,
     pub params: RwLock<T>,
 }
@@ -69,6 +72,7 @@ impl<T: mav_param::Node + 'static> Table<T> {
     pub const fn new(name: &'static str, data: T) -> Self {
         Table {
             name,
+            generation: AtomicU8::new(0),
             waiters: WaitQueue::new(),
             params: RwLock::new(data),
         }
@@ -87,6 +91,29 @@ impl<T: mav_param::Node + 'static> Table<T> {
         }
 
         self.params.read().await
+    }
+
+    pub async fn run_notifier<Fut: Future>(&self, func: impl Fn() -> Fut) -> ! {
+        let mut generation = 0;
+        loop {
+            _ = self
+                .waiters
+                .wait_for(|| {
+                    let table_generation = self.generation.load(Ordering::Acquire);
+                    let updated = table_generation != generation;
+                    generation = table_generation;
+                    updated
+                })
+                .await;
+
+            embassy_time::Timer::after_millis(100).await;
+
+            // If the generation is stable after 100 millis,
+            // assume the parameter changes are finished.
+            if self.generation.load(Ordering::Acquire) == generation {
+                func().await;
+            }
+        }
     }
 }
 

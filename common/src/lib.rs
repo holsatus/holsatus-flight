@@ -15,6 +15,7 @@ pub mod filters;
 pub mod geo;
 pub mod health;
 pub mod hw_abstraction;
+pub mod multicopter;
 pub mod parsers;
 pub mod serial;
 pub mod signals;

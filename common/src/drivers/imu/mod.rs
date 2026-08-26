@@ -8,10 +8,12 @@ pub use icm20948::{Icm209486DofI2c, Icm209486DofSpi};
 
 use crate::{errors::ImuError, types::measurements::Imu6DofData};
 
+/// Map a set of values given in degrees into radians (also works for angular velocities).
 pub fn map_deg_to_rad(arr: [f32; 3]) -> [f32; 3] {
     arr.map(|v| v.to_radians())
 }
 
+/// Map a set of values given in Gs of gravity into meters/second^2.
 pub fn map_g_to_mpss(arr: [f32; 3]) -> [f32; 3] {
     arr.map(|v| v * crate::consts::GRAVITY)
 }
@@ -56,7 +58,10 @@ pub mod trigger {
         }
     }
 
+    /// Type implementing the [`Trigger`] trait on the rising edge of a digital signal
     pub struct OnRising<W>(pub W);
+
+    /// Type implementing the [`Trigger`] trait on the falling edge of a digital signal
     pub struct OnFalling<W>(pub W);
 
     impl<W: embedded_hal_async::digital::Wait> Trigger for OnRising<W> {
