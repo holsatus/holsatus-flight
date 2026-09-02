@@ -6,12 +6,16 @@ edition = "2024"
 [features]
 default = [
     "imu_count_1",
+    "multicopter",
     "defmt",
     "mpc",
     "mavlink",
     "gnss",
     "usb",
 ]
+
+multicopter = []
+fixedwing = []
 
 imu_count_0 = []
 imu_count_1 = ["imu_count_0"]

@@ -15,8 +15,8 @@ pub async fn main() -> ! {
     let mut rcv_multi_imu_data = multi_receiver!(s::CAL_MULTI_IMU_DATA, NUM_IMU);
 
     // Task outputs
-    let mut snd_main_imu_data = s::CAL_IMU_DATA.sender();
-    let mut snd_imu_modes = s::IMU_MODES.sender();
+    let snd_main_imu_data = s::CAL_IMU_DATA.sender();
+    let snd_imu_modes = s::IMU_MODES.sender();
 
     // TODO - Make cfg to select the main IMU
     let mut _main_imu_idx: usize = 0;

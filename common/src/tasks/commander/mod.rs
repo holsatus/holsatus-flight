@@ -10,7 +10,7 @@ use crate::{
     sync::{procedure::Procedure, watch::Watch},
     tasks::calibrator::CalibratorState,
 };
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Instant, Ticker};
 
 const CHANNEL_LEN: usize = 4;
@@ -40,7 +40,7 @@ pub mod params {
 
     impl Params {
         pub const fn const_default() -> Self {
-            Params { 
+            Params {
                 rearm_grace_ms: 5000,
                 periodics_ms: 500,
             }
@@ -122,7 +122,7 @@ impl Commander {
     /// hold up the commander. If some action takes time, it should be
     /// delegated to another task, and if some action is temporarily
     /// rejected, this should just be reflected in the response.
-    /// 
+    ///
     /// Maybe this will be relaxed in the future with an async timeout?
     fn handle_command(&mut self, request: Request) -> Response {
         trace!("[{}] Handling command: {:?}", self.name, request);
@@ -131,7 +131,10 @@ impl Commander {
                 true => self.arm_vehicle(force),
                 false => self.disarm_vehicle(force, request.origin),
             },
-            Command::DoCalibration { sensor_id, sensor_type }=> {
+            Command::DoCalibration {
+                sensor_id,
+                sensor_type,
+            } => {
                 use crate::calibration::{AccCalib, Calibrate, GyrCalib};
 
                 if COMMAD_ARM_VEHICLE.partial_eq(&true) {
@@ -197,27 +200,13 @@ impl Commander {
                 true => Response::Accepted,
                 false => Response::Rejected,
             },
-            Command::SetControlMode(requested_mode) => {
-                let mode = match requested_mode {
-                    message::ControlMode::Rate => control::ControlMode::Rate,
-                    message::ControlMode::Angle => control::ControlMode::Angle,
-                    message::ControlMode::Velocity => {
-                        // TODO Ensure valid velocity estimate
-                        control::ControlMode::Velocity
-                    }
-                    message::ControlMode::Autonomous => {
-                        // TODO Ensure valid position estimate
-                        control::ControlMode::Autonomous
-                    }
-                };
-
-                CMD_CONTROL_MODE.send(mode);
-
+            Command::SetFlightMode(requested_mode) => {
+                crate::multicopter::flight_mode::request_mode(requested_mode);
                 Response::Accepted
-            },
+            }
             #[cfg(feature = "gnss")]
             Command::EskfResetOrigin => {
-                use crate::tasks::eskf::{Message, CHANNEL};
+                use crate::tasks::eskf::{CHANNEL, Message};
                 if CHANNEL.try_send(Message::GnssResetOrigin).is_ok() {
                     Response::Accepted
                 } else {
@@ -225,9 +214,7 @@ impl Commander {
                 }
             }
             #[cfg(not(feature = "gnss"))]
-            Command::EskfResetOrigin => {
-                Response::Unsupported
-            }
+            Command::EskfResetOrigin => Response::Unsupported,
         }
     }
 
@@ -331,7 +318,7 @@ impl Commander {
     }
 
     /// Execute a disarming check
-    /// 
+    ///
     /// Currently this always returns true
     fn disarm_checks(&self) -> bool {
         trace!("[{}] Running disarm checks", self.name);
@@ -406,7 +393,8 @@ mod tests {
                 force: false,
             },
             Origin::Unspecified,
-        ).into();
+        )
+            .into();
 
         let response = commander.handle_command(request);
         assert_eq!(response, Response::Rejected);
@@ -426,7 +414,8 @@ mod tests {
                 force: false,
             },
             Origin::RemoteControl,
-        ).into();
+        )
+            .into();
 
         let response = commander.handle_command(request);
         assert_eq!(response, Response::Unchanged);

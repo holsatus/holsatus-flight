@@ -42,7 +42,7 @@ pub async fn main() {
     info!("{}: Task started", ID);
 
     // Task outputs
-    let mut snd_ctrl_motors = s::CTRL_MOTORS.sender();
+    let snd_ctrl_motors = s::CTRL_MOTORS.sender();
     let mut ticker = Ticker::every(Duration::from_hz(1000));
 
     'infinite: loop {

@@ -1,7 +1,6 @@
 use std::sync::atomic::Ordering;
 
 use clap::Parser;
-use common::{embassy_time::Timer, signals::ESKF_ESTIMATE};
 
 mod rerun_logger;
 mod resources;
@@ -50,40 +49,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // level_0_spawner.spawn(common::tasks::rc_reader::main("serial0").unwrap()); // TODO Emulate rc serial?
     level_0_spawner.spawn(common::tasks::rc_binder::main().unwrap());
-    level_0_spawner.spawn(common::tasks::signal_router::main().unwrap());
-    level_0_spawner.spawn(common::tasks::controller_rate::main().unwrap());
+    level_0_spawner.spawn(common::multicopter::attitude_control::main().unwrap());
+    level_0_spawner.spawn(simulated_rc().unwrap());
 
     // ----------------- medium-priority tasks ------------------
 
     // level_1_spawner.spawn(common::tasks::gnss_reader::main("serial2").unwrap()); // TODO Emulate GNSS?
     level_1_spawner.spawn(common::tasks::commander::main().unwrap());
     level_1_spawner.spawn(common::tasks::att_estimator::main().unwrap());
-    level_1_spawner.spawn(common::tasks::controller_angle::main().unwrap());
+    level_1_spawner.spawn(common::multicopter::flight_mode::entry().unwrap());
 
     // ------------------- Low-priority tasks -------------------
 
     level_t_spawner.spawn(common::tasks::calibrator::main().unwrap());
     level_t_spawner.spawn(common::tasks::arm_blocker::main().unwrap());
     level_t_spawner.spawn(common::tasks::eskf::main().unwrap());
-    level_t_spawner.spawn(common::tasks::controller_mpc::main().unwrap());
     level_t_spawner.spawn(common::mavlink::main("tcp-serial1").unwrap());
 
-    level_t_spawner.spawn(autonomous_flight_speedloop().unwrap());
+    level_t_spawner.spawn(hover_hold_demo().unwrap());
 
     // Park the current thread
     std::thread::park();
     Ok(())
 }
 
-fn millis_in_future(millis: u64) -> common::embassy_time::Instant {
-    let now = common::embassy_time::Instant::now();
-    now + common::embassy_time::Duration::from_millis(millis)
+/// Emulates an RC transmitter publishing a fixed set of controls at 100 Hz.
+#[embassy_executor::task]
+async fn simulated_rc() -> ! {
+    use common::types::control::RcAnalog;
+
+    // Throttle slightly above hover; sticks centered.
+    let rc = RcAnalog::new(0.0, 0.0, 0.0, 0.44);
+    let mut ticker = common::embassy_time::Ticker::every(common::embassy_time::Duration::from_hz(100));
+    loop {
+        common::signals::RC_ANALOG_UNIT.send(rc);
+        ticker.next().await;
+    }
 }
 
 /* READY FOR TESTING */
 
 #[embassy_executor::task]
-async fn autonomous_flight_speedloop() {
+async fn hover_hold_demo() {
     use common::tasks::commander::*;
 
     // Arm the vehicle and wait for it to be armed
@@ -97,119 +104,24 @@ async fn autonomous_flight_speedloop() {
         })
         .await;
 
-    let mut receiver = ESKF_ESTIMATE.receiver();
-
-    // Set the flight mode to autonomous to enable MPC to take control
-    PROCEDURE
-        .send(Request {
-            command: Command::SetControlMode(ControlMode::Autonomous),
-            origin: Origin::Automatic,
-        })
-        .await;
-
     let mut rcv_motors_state = common::signals::MOTORS_STATE.receiver();
     rcv_motors_state.get_and(|state| state.is_armed()).await;
 
-    common::tasks::controller_mpc::CHANNEL
-        .send(common::tasks::controller_mpc::Message::SetPositionAt(
-            [0.0, 0.0, -1.0],
-            millis_in_future(1000),
-        ))
-        .await;
-
-    // Hover at 5 meters for 5 seconds
-    Timer::after_secs(2).await;
-
-    common::tasks::controller_mpc::CHANNEL
-        .send(common::tasks::controller_mpc::Message::SetPositionAt(
-            [0.0, 0.0, -5.0],
-            millis_in_future(1000),
-        ))
-        .await;
-
-    Timer::after_secs(2).await;
-
-    for i in 0..20 {
-        common::tasks::controller_mpc::CHANNEL
-            .send(common::tasks::controller_mpc::Message::SetPositionAt(
-                [0.0 - i as f32 / 2.5, 0.0, -5.0 - i as f32],
-                millis_in_future(9900),
-            ))
-            .await;
-
-        Timer::after_millis(60).await;
-    }
-
-    for i in 0..8 {
-        common::tasks::controller_mpc::CHANNEL
-            .send(common::tasks::controller_mpc::Message::SetPositionAt(
-                [-8.0 + (i * 2) as f32, 0.0, -25.0],
-                millis_in_future(9900),
-            ))
-            .await;
-
-        Timer::after_millis(90).await;
-    }
-
-    for i in 0..20 {
-        common::tasks::controller_mpc::CHANNEL
-            .send(common::tasks::controller_mpc::Message::SetPositionAt(
-                [8.0 - i as f32 / 2.5, 0.0, -25.0 + i as f32],
-                millis_in_future(9900),
-            ))
-            .await;
-
-        Timer::after_millis(60).await;
-    }
-
-    // Get all the way to the ground
-    common::tasks::controller_mpc::CHANNEL
-        .send(common::tasks::controller_mpc::Message::SetPositionAt(
-            [0.0, 0.0, -5.0],
-            millis_in_future(99000),
-        ))
-        .await;
-
-    Timer::after_secs(10).await;
-
-    // Get all the way to the ground
-    common::tasks::controller_mpc::CHANNEL
-        .send(common::tasks::controller_mpc::Message::SetPositionAt(
-            [0.0, 0.0, -15.0],
-            millis_in_future(1000),
-        ))
-        .await;
-
-    // Get all the way to the ground
-    common::tasks::controller_mpc::CHANNEL
-        .send(common::tasks::controller_mpc::Message::SetPositionAt(
-            [0.0, 0.0, -2.0],
-            millis_in_future(1500),
-        ))
-        .await;
-
-    // Wait for us to almost contact the ground
-    receiver.get_and(|est| est.pos[2] > -2.1).await;
-
-    // Get all the way to the ground
-    common::tasks::controller_mpc::CHANNEL
-        .send(common::tasks::controller_mpc::Message::SetPositionAt(
-            [0.0, 0.0, 0.0],
-            millis_in_future(500),
-        ))
-        .await;
-
-    // Wait for us to almost contact the ground
-    receiver.get_and(|est| est.pos[2] > -0.1).await;
-
-    // Disarm
+    // Engage stabilized (angle) mode so the vehicle levels and holds altitude.
     PROCEDURE
         .send(Request {
-            command: Command::ArmDisarm {
-                arm: false,
-                force: true,
-            },
+            command: Command::SetControlMode(ControlMode::Angle),
             origin: Origin::Automatic,
         })
         .await;
+
+    let mut rcv_current_mode = common::multicopter::flight_mode::CURRENT_MODE.receiver();
+    rcv_current_mode
+        .get_and(|mode| *mode == common::multicopter::flight_mode::ModeKind::Stabilized)
+        .await;
+
+    // Hold the hover for the duration of the simulation.
+    loop {
+        common::embassy_time::Timer::after_secs(1).await;
+    }
 }

@@ -184,7 +184,7 @@ pub async fn main() -> ! {
     #[cfg(feature = "gnss")]
     spawner.spawn(gnss_helper().unwrap());
 
-    let mut snd_eskf_estimate = s::ESKF_ESTIMATE.sender();
+    let snd_eskf_estimate = s::ESKF_ESTIMATE.sender();
 
     let mut filter = eskf_rs::NavigationFilter::new()
         .acc_noise_density(params.acc_noise_std)

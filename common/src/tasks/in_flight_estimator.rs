@@ -10,7 +10,7 @@ pub async fn main() -> ! {
 
     let mut rcv_imu_data = crate::signals::CAL_MULTI_IMU_DATA[0].receiver();
     let mut rcv_motors_state = crate::signals::MOTORS_STATE.receiver();
-    let mut rcv_motors_mixed = crate::tasks::controller_rate::RATE_MOTORS_MIXED.receiver();
+    let mut rcv_motors_mixed = crate::multicopter::attitude_control::MOTORS_MIXED.receiver();
 
     let dt = 1.0 / get_ctrl_freq!() as f32;
 

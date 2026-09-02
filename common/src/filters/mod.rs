@@ -4,8 +4,8 @@ pub mod motor_lin;
 pub mod rate_pid;
 pub mod statistics;
 
-mod foh_smoother;
-pub use foh_smoother::FohSmoother;
+mod ramp_smoother;
+pub use ramp_smoother::RampSmoother;
 
 use core::array::from_fn;
 use num_traits::Float;

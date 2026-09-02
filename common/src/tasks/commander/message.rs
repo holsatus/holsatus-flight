@@ -2,7 +2,7 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Command {
-    ArmDisarm{
+    ArmDisarm {
         arm: bool,
         force: bool,
     },
@@ -26,19 +26,13 @@ pub enum Command {
     SetActuatorOverride {
         active: bool,
     },
-    SetControlMode(ControlMode),
+    SetFlightMode(FlightMode),
     RunArmChecks,
     EskfResetOrigin,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ControlMode {
-    Rate,
-    Angle,
-    Velocity,
-    Autonomous,
-}
+#[cfg(feature = "multicopter")]
+pub use crate::multicopter::flight_mode::Kind as FlightMode;
 
 /// A request to the [`Commander`](crate::commander::Commander)
 #[derive(Debug, Clone, Copy, PartialEq)]

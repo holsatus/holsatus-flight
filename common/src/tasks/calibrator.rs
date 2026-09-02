@@ -31,7 +31,7 @@ pub enum CalibratorState {
 pub async fn main() -> ! {
     const ID: &str = "calibrator";
     let mut rcv_calibrate = s::CMD_CALIBRATE.receiver();
-    let mut snd_calibrator_state = s::CALIBRATOR_STATE.sender();
+    let snd_calibrator_state = s::CALIBRATOR_STATE.sender();
 
     loop {
         snd_calibrator_state.send(CalibratorState::Idle);

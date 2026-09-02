@@ -19,6 +19,9 @@ pub struct Params {
     pub att_leak_tc: f32,
     /// Configurable flags for the attitude controller
     pub flags: CtrlFlags,
+    /// Timeout for the attitude command setpoint before it is considered
+    /// stale, and the controller disengages.
+    pub cmd_timeout_ms: u16,
 }
 
 #[derive(Clone, Debug, mav_param::Tree)]
@@ -119,6 +122,7 @@ crate::const_default!(
         ref_lp: 0.002,
         att_leak_tc: 1.0,
         flags: CtrlFlags(0),
+        cmd_timeout_ms: 250,
     }
 );
 

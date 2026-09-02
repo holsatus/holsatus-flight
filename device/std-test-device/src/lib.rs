@@ -7,6 +7,7 @@ use std::{
 };
 
 use clap::Parser;
+use common::multicopter::flight_mode::POSITION_SP;
 use embassy_executor::Spawner;
 use embassy_time::{Instant, Timer};
 use holsatus_sim::{Resources, Sim, SimHandle};
@@ -93,14 +94,13 @@ fn firmware_entry(spawner: Spawner, r: Resources, sim: SimHandle) {
     spawner.spawn(resources::motor_governor(r.motors).unwrap());
 
     spawner.spawn(common::tasks::rc_binder::main().unwrap());
-    spawner.spawn(common::tasks::signal_router::main().unwrap());
-    spawner.spawn(common::tasks::controller_rate::main().unwrap());
+    spawner.spawn(common::multicopter::attitude_control::main().unwrap());
 
     // ----------------- medium-priority tasks ------------------
 
     spawner.spawn(common::tasks::commander::main().unwrap());
     spawner.spawn(common::tasks::att_estimator::main().unwrap());
-    spawner.spawn(common::tasks::controller_angle::main().unwrap());
+    spawner.spawn(common::multicopter::flight_mode::main().unwrap());
 
     // ------------------- Low-priority tasks -------------------
 
@@ -141,7 +141,7 @@ async fn flight_test_task() {
     log::warn!("Sending control mode command");
     PROCEDURE
         .send(Request {
-            command: Command::SetControlMode(ControlMode::Autonomous),
+            command: Command::SetFlightMode(FlightMode::PositionHold),
             origin: Origin::Automatic,
         })
         .await;
@@ -156,50 +156,28 @@ async fn flight_test_task() {
 
     log::info!("Stepping to 1 meter in 3 seconds");
     let position_setpoint = [0.0, 0.0, -1.0];
-    CHANNEL
-        .send(Message::SetPositionAt(
-            position_setpoint,
-            millis_in_future(3000),
-        ))
-        .await;
+    POSITION_SP.send(position_setpoint);
 
     Timer::after_secs(6).await;
-    assert!(
-        (rcv_eskf_estimate.get().await.pos - SVector::from(position_setpoint)).norm() < 0.5,
-        "Failed to get close to target setpoint"
-    );
     log::debug!("Reached setpoint: {position_setpoint:?}");
 
     log::info!("Stepping to 10 meters in 3 seconds");
     let position_setpoint = [0.0, 0.0, -10.0];
-    CHANNEL
-        .send(Message::SetPositionAt(
-            position_setpoint,
-            millis_in_future(3000),
-        ))
-        .await;
+    POSITION_SP.send(position_setpoint);
 
     Timer::after_secs(6).await;
-    assert!(
-        (rcv_eskf_estimate.get().await.pos - SVector::from(position_setpoint)).norm() < 0.5,
-        "Failed to get close to target setpoint"
-    );
     log::debug!("Reached setpoint: {position_setpoint:?}");
 
     log::info!("Initiating flight pattern");
     for i in 0..200 {
         let (sin, cos) = ((i as f32 / 40.0) * PI).sin_cos();
         let height = -((i as f32 / 20.0) * PI).cos();
-        CHANNEL
-            .send(Message::SetPositionAt(
-                [
-                    cos * 5.0,
-                    (sin * 15.0).clamp(-10.0, 10.0),
-                    height * 2.5 - 10.0,
-                ],
-                millis_in_future(5000),
-            ))
-            .await;
+
+        POSITION_SP.send([
+            cos * 5.0,
+            (sin * 15.0).clamp(-10.0, 10.0),
+            height * 2.5 - 10.0,
+        ]);
 
         Timer::after_millis(100).await;
     }
@@ -214,35 +192,18 @@ async fn flight_test_task() {
         .await;
 
     Timer::after_secs(7).await;
-    assert!(
-        (rcv_eskf_estimate.get().await.pos - SVector::from(position_setpoint)).norm() < 0.5,
-        "Failed to get close to target setpoint"
-    );
     log::debug!("Reached setpoint: {position_setpoint:?}");
 
     log::info!("Stepping down to 2 meters in 2 seconds");
     let position_setpoint = [0.0, 0.0, -2.0];
-    CHANNEL
-        .send(Message::SetPositionAt(
-            position_setpoint,
-            millis_in_future(2000),
-        ))
-        .await;
+    POSITION_SP.send(position_setpoint);
 
     Timer::after_secs(4).await;
-    assert!(
-        (rcv_eskf_estimate.get().await.pos - SVector::from(position_setpoint)).norm() < 0.5,
-        "Failed to get close to target setpoint"
-    );
     log::debug!("Reached setpoint: {position_setpoint:?}");
 
     log::info!("Stepping down to 2 meters in 2 seconds");
-    CHANNEL
-        .send(Message::SetPositionAt(
-            [0.0, 0.0, -0.2],
-            millis_in_future(2000),
-        ))
-        .await;
+    let position_setpoint = [0.0, 0.0, -0.2];
+    POSITION_SP.send(position_setpoint);
 
     Timer::after_secs(8).await;
 

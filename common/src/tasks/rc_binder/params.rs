@@ -1,4 +1,4 @@
- use crate::tasks::param_storage::Table;
+use crate::tasks::param_storage::Table;
 
 pub const NUM_CHANNELS: usize = 16;
 pub const NUM_DIGITALS: usize = 4;
@@ -61,9 +61,9 @@ crate::const_default!(
                 (POS_3, digital::Event::DoAccCalibrate),
             ]),
             digital_binds(&[ // Switch B
-                (POS_1, digital::Event::SetModeRate),
-                (POS_2, digital::Event::SetModeAngle),
-                (POS_3, digital::Event::SetModeAutonomous),
+                (POS_1, digital::Event::SetModeMcAcrobatic),
+                (POS_2, digital::Event::SetModeMcStabilize),
+                (POS_3, digital::Event::SetModeMcPositionHold),
             ]),
             digital_binds(&[ // Switch C
                 (POS_1, digital::Event::DisarmVehicle),
@@ -75,7 +75,7 @@ crate::const_default!(
             ]),
 
             digital_binds(&[ /* Button E */ ]),
-            digital_binds(&[ /* Button F */ 
+            digital_binds(&[ /* Button F */
                 (POS_3, digital::Event::EskfResetOrigin),
             ]),
         ])
@@ -128,7 +128,6 @@ pub(super) enum Binding {
     Analog(analog::Binding),
     Digital([digital::Binding; NUM_DIGITALS]),
 }
-
 
 /// The parameter table for the angular rate controller
 pub static TABLE: Table<Parameters> = Table::new("rc", Parameters::const_default());
@@ -243,6 +242,8 @@ pub mod analog {
 }
 
 pub mod digital {
+    #[cfg(feature = "multicopter")]
+    use crate::multicopter;
 
     #[derive(mav_param::Tree, Debug, Default, Clone, Copy)]
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -271,9 +272,19 @@ pub mod digital {
         DoGyrCalibrate,
         DoMagCalibrate,
 
-        SetModeRate = 300,
-        SetModeAngle,
-        SetModeAutonomous,
+        #[cfg(feature = "multicopter")]
+        SetModeMcAcrobatic = 300,
+        #[cfg(feature = "multicopter")]
+        SetModeMcStabilize,
+        #[cfg(feature = "multicopter")]
+        SetModeMcPositionHold,
+
+        #[cfg(feature = "fixedwing")]
+        SetModeFwManual = 400,
+        #[cfg(feature = "fixedwing")]
+        SetModeFwAcrobatic,
+        #[cfg(feature = "fixedwing")]
+        SetModeFwStabilized,
     }
 
     impl TryFrom<Event> for crate::tasks::commander::message::Command {
@@ -311,9 +322,25 @@ pub mod digital {
                     sensor_id: None,
                     sensor_type: SensorType::Magnetometer,
                 },
-                Event::SetModeRate => Command::SetControlMode(ControlMode::Rate),
-                Event::SetModeAngle => Command::SetControlMode(ControlMode::Angle),
-                Event::SetModeAutonomous => Command::SetControlMode(ControlMode::Autonomous),
+
+                #[cfg(feature = "multicopter")]
+                Event::SetModeMcAcrobatic => {
+                    Command::SetFlightMode(multicopter::flight_mode::Kind::RcAcrobatic)
+                }
+                #[cfg(feature = "multicopter")]
+                Event::SetModeMcStabilize => {
+                    Command::SetFlightMode(multicopter::flight_mode::Kind::RcStabilized)
+                }
+                #[cfg(feature = "multicopter")]
+                Event::SetModeMcPositionHold => {
+                    Command::SetFlightMode(multicopter::flight_mode::Kind::PositionHold)
+                }
+
+                #[cfg(feature = "fixedwing")]
+                SetModeFwManual | SetModeFwAcrobatic | SetModeFwStabilized => {
+                    todo!("Fixed wing flight modes not yet implemented")
+                }
+
                 Event::EskfResetOrigin => Command::EskfResetOrigin,
             };
 

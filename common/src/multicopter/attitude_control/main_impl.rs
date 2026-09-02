@@ -2,19 +2,19 @@ use core::array::from_fn;
 use embassy_executor::SendSpawner;
 use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Instant, with_timeout};
-use nalgebra::UnitQuaternion;
+use nalgebra::{Matrix4, UnitQuaternion, Vector3, Vector4};
 
+use super::command::AttitudeCommand;
 use super::params::CtrlFlags;
+use crate::airframe::DEV_QUAD_MOTOR_SETUP;
 use crate::filters::angle_pid::Pid;
 use crate::filters::rate_pid::RatePid;
-use crate::filters::{Complementary, FohSmoother, Lowpass, NthOrderLowpass, SlewRate};
+use crate::filters::{Complementary, Lowpass, NthOrderLowpass, RampSmoother, SlewRate};
 use crate::get_ctrl_freq;
-use crate::signals as sig;
+use crate::signals::{self as sig, ThrottleCommand};
 use crate::sync::channel::Channel;
 use crate::sync::watch::{Receiver, Watch};
 use crate::tasks::eskf::EskfEstimate;
-use crate::tasks::rc_binder::rates::Rates;
-use crate::types::control::RcAnalog;
 use crate::types::measurements::Imu6DofData;
 use crate::types::status::PidTerms;
 
@@ -39,60 +39,49 @@ pub async fn integrator_enable_notifier() -> ! {
 
 pub enum Message {
     UpdateParameters,
-    SetRateSource(&'static Watch<[f32; 3]>),
-    SetAngleSource(&'static Watch<UnitQuaternion<f32>>),
-    SetModeKind(ModeKind),
     EnableIntegrators(bool),
 }
 
 pub static CHANNEL: Channel<Message, 4> = Channel::new();
 
+/// The control law selected by the last-seen [`AttitudeCommand`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ModeKind {
+enum CtrlKind {
     Disabled,
-    SticksRate,
-    SticksAngle,
-    DirectRate,
-    DirectAngle,
+    Rate,
+    Angle,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-enum ModeState {
-    Disabled,
-    SticksRate(SticksRateState),
-    SticksAngle(SticksAngleState),
-    DirectRate,
-    DirectAngle,
-}
-
-impl ModeState {
-    const fn kind(&self) -> ModeKind {
-        match self {
-            ModeState::Disabled => ModeKind::Disabled,
-            ModeState::SticksRate { .. } => ModeKind::SticksRate,
-            ModeState::SticksAngle { .. } => ModeKind::SticksAngle,
-            ModeState::DirectRate => ModeKind::DirectRate,
-            ModeState::DirectAngle => ModeKind::DirectAngle,
-        }
+fn ctrl_kind(cmd: &AttitudeCommand) -> CtrlKind {
+    match cmd {
+        AttitudeCommand::Disengage => CtrlKind::Disabled,
+        AttitudeCommand::Rate { .. } => CtrlKind::Rate,
+        AttitudeCommand::Angle { .. } => CtrlKind::Angle,
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-struct SticksAngleState {
-    yaw_angle_rad: f32,
+#[derive(Debug)]
+enum ModeState {
+    Disabled,
+    Rate {
+        leaky_quat: LeakyQuaternion,
+        ref_smoother: RampSmoother<Vector3<f32>>,
+    },
+    Angle {
+        ref_smoother: RampSmoother<UnitQuaternion<f32>>,
+    },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-struct SticksRateState {
-    leaky_quat: LeakyQuaternion,
+impl ModeState {
+    const fn kind(&self) -> CtrlKind {
+        match self {
+            ModeState::Disabled => CtrlKind::Disabled,
+            ModeState::Rate { .. } => CtrlKind::Rate,
+            ModeState::Angle { .. } => CtrlKind::Angle,
+        }
+    }
 }
-
-#[derive(Debug, Clone, Copy)]
-struct Sticks3D([f32; 3]);
 
 #[derive(Debug, Clone, Copy)]
 pub struct TorqueSetpoint(pub [f32; 3]);
@@ -100,30 +89,31 @@ pub struct TorqueSetpoint(pub [f32; 3]);
 #[derive(Debug, Clone, Copy)]
 pub struct RateSetpoint(pub [f32; 3]);
 
-#[derive(Debug, Clone, Copy)]
-pub struct AngleSetpoint(pub UnitQuaternion<f32>);
-
-struct RateController<'a> {
+struct Controller<'a> {
     rcv_imu_data: Receiver<'a, Imu6DofData<f32>>,
-    rcv_rc_analog: Receiver<'a, RcAnalog>,
-    rcv_rate_target: Receiver<'a, [f32; 3]>,
-    rcv_angle_target: Receiver<'a, UnitQuaternion<f32>>,
+    rcv_cmd: Receiver<'a, AttitudeCommand>,
+    rcv_throttle: Receiver<'a, ThrottleCommand>,
     rcv_eksf_estimate: Receiver<'a, EskfEstimate>,
     rate_axes: [RateAxis; 3],
     angle_axes: [AngleAxis; 3],
-    stick_foh: [FohSmoother; 3],
 
     gyro_bias: Option<[f32; 3]>,
     flags: params::CtrlFlags,
 
     mode: ModeState,
+    last_cmd: AttitudeCommand,
+    last_cmd_time: Instant,
+    cmd_timeout: Duration,
+    thrust_lp: NthOrderLowpass<f32, 2>,
     leak_tc: f32,
     dt: f32,
+    // TEMPORARY: Should be moved out of this task
+    mixing_matrix: Matrix4<f32>,
+    throttle: f32,
 }
 
 struct AngleAxis {
     pid: Pid<f32>,
-    rates: Rates,
 }
 
 struct RateAxis {
@@ -133,17 +123,16 @@ struct RateAxis {
     sp_lp: NthOrderLowpass<f32, 2>,
     pred_model: Lowpass<f32>,
     comp_filt: Complementary<f32>,
-    rates: Rates,
 }
 
 #[embassy_executor::task]
 pub async fn main() -> ! {
-    RateController::start().await.run().await
+    Controller::new().await.run().await
 }
 
 const MAX_GYR_MEAS: f32 = (0.95f32 * 2000.0).to_radians();
-impl RateController<'_> {
-    async fn start() -> Self {
+impl Controller<'_> {
+    async fn new() -> Self {
         let spawner = SendSpawner::for_current_executor().await;
         let dt = 1.0 / get_ctrl_freq!() as f32;
 
@@ -159,11 +148,10 @@ impl RateController<'_> {
 
         let params = params::TABLE.read().await;
 
-        RateController {
-            rcv_imu_data: sig::CAL_IMU_DATA.receiver(),
-            rcv_rc_analog: sig::RC_ANALOG_UNIT.receiver(),
-            rcv_rate_target: sig::TRUE_RATE_SP.receiver(),
-            rcv_angle_target: sig::TRUE_ATTITUDE_Q_SP.receiver(),
+        let mut controller = Controller {
+            rcv_imu_data: sig::CAL_MULTI_IMU_DATA[0].receiver(),
+            rcv_cmd: super::command::ATTITUDE_COMMAND.receiver(),
+            rcv_throttle: sig::THROTTLE_COMMAND.receiver(),
             rcv_eksf_estimate: sig::ESKF_ESTIMATE.receiver(),
             rate_axes: [
                 RateAxis {
@@ -173,7 +161,6 @@ impl RateController<'_> {
                     sp_lp: NthOrderLowpass::new(params.ref_lp, dt),
                     pred_model: Lowpass::new(params.x.pred, dt),
                     comp_filt: Complementary::new(params.x.comp, dt),
-                    rates: params.x.rc.clone(),
                 },
                 RateAxis {
                     qint_gain: params.y.qint,
@@ -182,7 +169,6 @@ impl RateController<'_> {
                     sp_lp: NthOrderLowpass::new(params.ref_lp, dt),
                     pred_model: Lowpass::new(params.y.pred, dt),
                     comp_filt: Complementary::new(params.y.comp, dt),
-                    rates: params.y.rc.clone(),
                 },
                 RateAxis {
                     qint_gain: params.z.qint,
@@ -191,34 +177,41 @@ impl RateController<'_> {
                     sp_lp: NthOrderLowpass::new(params.ref_lp, dt),
                     pred_model: Lowpass::new(params.z.pred, dt),
                     comp_filt: Complementary::new(params.z.comp, dt),
-                    rates: params.z.rc.clone(),
                 },
             ],
             angle_axes: [
                 AngleAxis {
                     pid: Pid::new(15., 0., 0., true, dt),
-                    rates: Rates::Identity,
                 },
                 AngleAxis {
                     pid: Pid::new(15., 0., 0., true, dt),
-                    rates: Rates::Identity,
                 },
                 AngleAxis {
                     pid: Pid::new(25., 0., 0., true, dt),
-                    rates: Rates::Identity,
                 },
-            ],
-            stick_foh: [
-                FohSmoother::new(0.0),
-                FohSmoother::new(0.0),
-                FohSmoother::new(0.0),
             ],
             gyro_bias: None,
             flags: params.flags.clone(),
             mode: ModeState::Disabled,
+            last_cmd: AttitudeCommand::Disengage,
+            last_cmd_time: Instant::now(),
+            cmd_timeout: Duration::from_millis(params.cmd_timeout_ms as u64),
+            thrust_lp: NthOrderLowpass::new(params.ref_lp, dt * 100.),
             leak_tc: params.att_leak_tc,
             dt: dt,
-        }
+
+            mixing_matrix: DEV_QUAD_MOTOR_SETUP.into_mixing_matrix().unwrap(),
+            throttle: 0.0,
+        };
+
+        // Disable all integral controllers initially; they are enabled when
+        // the vehicle is detected as being in flight.
+        controller
+            .rate_axes
+            .iter_mut()
+            .for_each(|axis| axis.pid.enable_reset_integral(false));
+
+        controller
     }
 
     async fn run(&mut self) -> ! {
@@ -234,34 +227,10 @@ impl RateController<'_> {
         }
     }
 
-    /// Observe the value receivers to make sure the next call to (try_)changed is never stale.
-    fn observe_receivers(&mut self) {
-        match self.mode.kind() {
-            ModeKind::Disabled => (),
-            ModeKind::SticksAngle | ModeKind::SticksRate => _ = self.rcv_rc_analog.try_changed(),
-            ModeKind::DirectAngle => _ = self.rcv_angle_target.try_changed(),
-            ModeKind::DirectRate => _ = self.rcv_rate_target.try_changed(),
-        }
-    }
-
     async fn handle_message(&mut self, message: Message) {
         match message {
             Message::UpdateParameters => {
                 self.param_update().await;
-            }
-            Message::SetRateSource(source) => {
-                debug!("[mc/attitude_control]: Setting rate sp source");
-                self.rcv_rate_target = source.receiver();
-                self.observe_receivers();
-            }
-            Message::SetAngleSource(source) => {
-                debug!("[mc/attitude_control]: Setting angle sp source");
-                self.rcv_angle_target = source.receiver();
-                self.observe_receivers();
-            }
-            Message::SetModeKind(mode_kind) => {
-                self.switch_mode(mode_kind);
-                self.observe_receivers();
             }
             Message::EnableIntegrators(enable) => {
                 debug!("[mc/attitude_control]: Integrators enabled: {}", enable);
@@ -281,35 +250,32 @@ impl RateController<'_> {
             return;
         };
 
+        self.cmd_timeout = Duration::from_millis(params.cmd_timeout_ms as u64);
         self.set_parameters(&params);
     }
 
-    fn switch_mode(&mut self, mode_kind: ModeKind) {
-        // Already in the desired state, just return
-        if self.mode.kind() == mode_kind {
+    /// Switch the internal control law based on a newly received command.
+    ///
+    /// Only switches when the *kind* of command changes, so that a
+    /// continuous stream of e.g. `Rate` commands does not reset the
+    /// reference-smoothing state.
+    fn switch_cmd(&mut self, cmd: AttitudeCommand) {
+        let new_kind = ctrl_kind(&cmd);
+        if self.mode.kind() == new_kind {
             return;
         }
 
-        debug!("[mc/attitude_control]: Setting mode: {:?}", mode_kind);
+        debug!("[mc/attitude_control]: Setting control law: {:?}", new_kind);
 
-        self.mode = match mode_kind {
-            ModeKind::Disabled => ModeState::Disabled,
-            ModeKind::SticksRate => ModeState::SticksRate(SticksRateState {
+        self.mode = match cmd {
+            AttitudeCommand::Disengage => ModeState::Disabled,
+            AttitudeCommand::Rate(target) => ModeState::Rate {
                 leaky_quat: LeakyQuaternion::new(self.leak_tc, 1.0, self.dt),
-            }),
-            ModeKind::SticksAngle => {
-                let attitude = self
-                    .rcv_eksf_estimate
-                    .try_get()
-                    .map(|est| est.att)
-                    .unwrap_or(UnitQuaternion::identity());
-
-                ModeState::SticksAngle(SticksAngleState {
-                    yaw_angle_rad: attitude.euler_angles().2,
-                })
-            }
-            ModeKind::DirectRate => ModeState::DirectRate,
-            ModeKind::DirectAngle => ModeState::DirectAngle,
+                ref_smoother: RampSmoother::new(target),
+            },
+            AttitudeCommand::Angle(target) => ModeState::Angle {
+                ref_smoother: RampSmoother::new(target),
+            },
         };
     }
 
@@ -328,54 +294,54 @@ impl RateController<'_> {
             axis.sp_lp = NthOrderLowpass::new(params.ref_lp, self.dt);
         }
 
-        self.angle_axes[0].rates = params.x.rc;
-        self.angle_axes[1].rates = params.y.rc;
-        self.angle_axes[2].rates = params.z.rc;
-
         self.leak_tc = params.att_leak_tc;
         self.flags = params.flags.clone();
     }
 
     fn on_imu_data(&mut self, mut imu_data: Imu6DofData<f32>) -> Option<TorqueSetpoint> {
-        let mut get_sticks = || {
-            if let Some(analog) = self.rcv_rc_analog.try_changed() {
-                let sticks = analog.roll_pitch_yaw();
-                for ax in 0..3 {
-                    self.stick_foh[ax].add_sample(sticks[ax]);
-                }
-            }
-            Sticks3D(self.stick_foh.each_mut().map(|ax| ax.get()))
-        };
+        let now = Instant::now();
+
+        // Consume any new attitude commands and throttle setpoints.
+        if let Some(cmd) = self.rcv_cmd.try_changed() {
+            self.last_cmd = cmd;
+            self.last_cmd_time = now;
+            self.switch_cmd(cmd);
+        }
+
+        if let Some(throttle) = self.rcv_throttle.try_changed() {
+            self.throttle = throttle.0;
+        }
+
+        // Stale-command failsafe: if the active flight mode has not produced
+        // a fresh command within `cmd_timeout`, disengage attitude control.
+        // The flight-mode manager already supervises the mode itself; this is
+        // a defense-in-depth guard on the data path.
+        if now.saturating_duration_since(self.last_cmd_time) > self.cmd_timeout {
+            self.mode = ModeState::Disabled;
+        }
 
         // Pre rate-target filtering stage
         let raw_rate_setpoint = match &mut self.mode {
-            ModeState::Disabled => return None,
-            ModeState::SticksRate(..) => {
-                let sticks = get_sticks();
-
-                RateSetpoint(from_fn(|ax| self.rate_axes[ax].rates.apply(sticks.0[ax])))
+            ModeState::Disabled => {
+                // Disengaged: no torque, and keep the motors at a safe idle.
+                MOTORS_MIXED.send([0.0; 4]);
+                return None;
             }
-            ModeState::SticksAngle(sticks_angle) => {
-                let sticks = get_sticks();
+            ModeState::Rate { ref_smoother, .. } => {
+                if let Some(AttitudeCommand::Rate(target_rate)) = self.rcv_cmd.try_changed() {
+                    ref_smoother.add_sample(target_rate.into());
+                }
 
-                let [roll, pitch, yaw] =
-                    from_fn(|axis| self.angle_axes[axis].rates.apply(sticks.0[axis]));
-
-                // The yaw target is the integrated stick position
-                sticks_angle.yaw_angle_rad += yaw * self.dt;
-                let quaternion =
-                    UnitQuaternion::from_euler_angles(roll, pitch, sticks_angle.yaw_angle_rad);
-                let angle_setpoint = AngleSetpoint(quaternion);
-                self.angle_control(angle_setpoint)?
-            }
-            ModeState::DirectRate => {
-                let rates = self.rcv_rate_target.try_get()?;
+                let rates = ref_smoother.get().into();
                 RateSetpoint(rates)
             }
-            ModeState::DirectAngle => {
-                let quaternion = self.rcv_angle_target.try_get()?;
-                let angle_setpoint = AngleSetpoint(quaternion);
-                self.angle_control(angle_setpoint)?
+            ModeState::Angle { ref_smoother } => {
+                if let Some(AttitudeCommand::Angle(target_angle)) = self.rcv_cmd.try_changed() {
+                    ref_smoother.add_sample(target_angle.into());
+                }
+
+                let target = ref_smoother.get();
+                self.angle_control(target)?
             }
         };
 
@@ -393,10 +359,12 @@ impl RateController<'_> {
 
         // Post rate-target filtering stage
         let rate_target = match &mut self.mode {
-            ModeState::SticksRate(sticks_rate)
-                if self
-                    .flags
-                    .intersects(CtrlFlags::LEAK_QUAT_FILT | CtrlFlags::LEAK_QUAT_PRED) =>
+            ModeState::Rate {
+                ref_smoother,
+                leaky_quat,
+            } if self
+                .flags
+                .intersects(CtrlFlags::LEAK_QUAT_FILT | CtrlFlags::LEAK_QUAT_PRED) =>
             {
                 let leaky_rate_target = if self.flags.contains(CtrlFlags::LEAK_QUAT_FILT) {
                     filt_rate_setpoint.0
@@ -404,10 +372,7 @@ impl RateController<'_> {
                     ff_rate_prediction
                 };
 
-                let axis_error =
-                    sticks_rate
-                        .leaky_quat
-                        .update(imu_data.gyr, leaky_rate_target, self.dt);
+                let axis_error = leaky_quat.update(imu_data.gyr, leaky_rate_target, self.dt);
 
                 RateSetpoint(from_fn(|ax| {
                     axis_error[ax] * self.rate_axes[ax].qint_gain + filt_rate_setpoint.0[ax]
@@ -434,6 +399,17 @@ impl RateController<'_> {
             ff_prediction: ff_rate_prediction,
             comp_estimate: comp_rate_estimate,
         });
+
+        let z_thrust_filt = self.thrust_lp.update(-self.throttle);
+        let mixed_motors = self.mixing_matrix
+            * Vector4::new(
+                torque_target.0[0],
+                torque_target.0[1],
+                torque_target.0[2],
+                z_thrust_filt,
+            );
+
+        MOTORS_MIXED.send(mixed_motors.into());
 
         Some(torque_target)
     }
@@ -464,12 +440,12 @@ impl RateController<'_> {
         (ff_pred_gyr, comp_fuse_gyr)
     }
 
-    fn angle_control(&mut self, target: AngleSetpoint) -> Option<RateSetpoint> {
+    fn angle_control(&mut self, target: UnitQuaternion<f32>) -> Option<RateSetpoint> {
         let q_attitude = self.rcv_eksf_estimate.try_get()?.att;
 
         // Using the "quaternion error" rather than the euler angle error gives some
         // much nicer behavior where euler angles would normally experiece gimbal lock.
-        let q_error = q_attitude.inverse() * target.0;
+        let q_error = q_attitude.inverse() * target;
         let axis_error = q_error.scaled_axis();
 
         Some(RateSetpoint(from_fn(|ax| {
@@ -480,6 +456,7 @@ impl RateController<'_> {
 
 pub static TORQUE_SETPOINT: Watch<TorqueSetpoint> = Watch::new();
 pub static RATE_CONTROL_LOG: Watch<RateControlLog> = Watch::new();
+pub static MOTORS_MIXED: Watch<[f32; 4]> = Watch::new();
 
 #[derive(Debug, Clone)]
 pub struct RateControlLog {

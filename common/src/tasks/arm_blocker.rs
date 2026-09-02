@@ -49,7 +49,7 @@ pub async fn main() -> ! {
     // let mut rcv_landed_state = s::LANDED_STATE.receiver();
 
     // Output channels
-    let mut snd_arm_blocker = s::ARMING_BLOCKER.sender();
+    let snd_arm_blocker = s::ARMING_BLOCKER.sender();
 
     // Initialize the arm blocker flag as all high
     let mut local_arm_blocker_flag = ArmingBlocker::all();

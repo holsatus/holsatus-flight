@@ -1,5 +1,5 @@
-use super::{mav_mode, mav_state, Error};
-use mavio::{dialects::common::messages::*};
+use super::{Error, mav_mode, mav_state};
+use mavio::dialects::common::messages::*;
 
 // Pick a lane man..
 mod time {
@@ -134,7 +134,6 @@ pub trait Generate: Sized + mavio::Message {
 
 impl Generate for Heartbeat {
     fn generate() -> Result<Self, Error> {
-
         Ok(Heartbeat {
             type_: mavio::dialects::minimal::enums::MavType::Quadrotor,
             autopilot: mavio::dialects::minimal::enums::MavAutopilot::Generic,
@@ -266,14 +265,15 @@ impl Generate for RcChannelsScaled {
         message.time_boot_ms = time::ms_u32();
 
         if let Some(channel) = crate::signals::RC_ANALOG_UNIT.try_get() {
-            message.chan1_scaled = (channel.0[0] * 1e4).clamp(-1e4, 1e4) as i16;
-            message.chan2_scaled = (channel.0[1] * 1e4).clamp(-1e4, 1e4) as i16;
-            message.chan3_scaled = (channel.0[2] * 1e4).clamp(-1e4, 1e4) as i16;
-            message.chan4_scaled = (channel.0[3] * 1e4).clamp(-1e4, 1e4) as i16;
-            message.chan5_scaled = (channel.0[4] * 1e4).clamp(-1e4, 1e4) as i16;
-            message.chan6_scaled = (channel.0[5] * 1e4).clamp(-1e4, 1e4) as i16;
-            message.chan7_scaled = (channel.0[6] * 1e4).clamp(-1e4, 1e4) as i16;
-            message.chan8_scaled = (channel.0[7] * 1e4).clamp(-1e4, 1e4) as i16;
+            message.time_boot_ms = (channel.timestamp_us / 1000) as u32;
+            message.chan1_scaled = (channel.values[0] * 1e4).clamp(-1e4, 1e4) as i16;
+            message.chan2_scaled = (channel.values[1] * 1e4).clamp(-1e4, 1e4) as i16;
+            message.chan3_scaled = (channel.values[2] * 1e4).clamp(-1e4, 1e4) as i16;
+            message.chan4_scaled = (channel.values[3] * 1e4).clamp(-1e4, 1e4) as i16;
+            message.chan5_scaled = (channel.values[4] * 1e4).clamp(-1e4, 1e4) as i16;
+            message.chan6_scaled = (channel.values[5] * 1e4).clamp(-1e4, 1e4) as i16;
+            message.chan7_scaled = (channel.values[6] * 1e4).clamp(-1e4, 1e4) as i16;
+            message.chan8_scaled = (channel.values[7] * 1e4).clamp(-1e4, 1e4) as i16;
         }
 
         Ok(message)
@@ -303,7 +303,7 @@ impl Generate for RcChannelsRaw {
 impl Generate for AutopilotVersion {
     fn generate() -> Result<Self, Error> {
         let mut message = AutopilotVersion::default();
-        
+
         use mavio::default_dialect::enums::MavProtocolCapability as Cap;
         message.capabilities |= Cap::MAVLINK2;
         message.capabilities |= Cap::COMMAND_INT;
@@ -405,7 +405,6 @@ impl Generate for GpsRawInt {
         Ok(message)
     }
 }
-
 
 impl Generate for ProtocolVersion {
     fn generate() -> Result<Self, Error> {

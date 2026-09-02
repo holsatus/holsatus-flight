@@ -80,10 +80,10 @@ pub async fn main(mut motors: impl OutputGroup) -> ! {
 
     // Input signals
     let mut rcv_comand_arm = crate::tasks::commander::COMMAD_ARM_VEHICLE.receiver();
-    let mut rcv_motors_mixed = crate::tasks::controller_rate::RATE_MOTORS_MIXED.receiver();
+    let mut rcv_motors_mixed = crate::multicopter::attitude_control::MOTORS_MIXED.receiver();
 
     // Output signals
-    let mut snd_motors_state = s::MOTORS_STATE.sender();
+    let snd_motors_state = s::MOTORS_STATE.sender();
 
     let params = params::TABLE.read().await;
 

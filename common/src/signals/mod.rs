@@ -4,6 +4,7 @@ use embassy_time::Duration;
 use nalgebra::UnitQuaternion;
 
 use crate::{
+    NUM_IMU, NUM_MAG,
     calibration::Calibrate,
     errors::HolsatusError,
     health::redundancy::Mode,
@@ -16,7 +17,6 @@ use crate::{
         measurements::{GnssData, Imu6DofData, Imu9DofData, ViconData},
         status::{ArmingBlocker, PidTerms, RcStatus},
     },
-    NUM_IMU, NUM_MAG,
 };
 
 /// Helper macro to create multiple independent instances
@@ -74,7 +74,10 @@ pub static VICON_POSITION_ESTIMATE: Watch<ViconData> = Watch::new();
 pub static ESKF_ESTIMATE: Watch<EskfEstimate> = Watch::new();
 
 // Setpoint signals for the controller tasks
-pub static TRUE_Z_THRUST_SP: Watch<f32> = Watch::new();
+#[derive(Clone)]
+pub struct ThrottleCommand(pub f32);
+pub static THROTTLE_COMMAND: Watch<ThrottleCommand> = Watch::new();
+
 pub static TRUE_VELOCITY_SP: Watch<[f32; 3]> = Watch::new();
 pub static TRUE_ATTITUDE_Q_SP: Watch<UnitQuaternion<f32>> = Watch::new();
 pub static TRUE_RATE_SP: Watch<[f32; 3]> = Watch::new();

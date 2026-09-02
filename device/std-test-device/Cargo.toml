@@ -7,7 +7,7 @@ edition = "2024"
 rerun = ["dep:rerun"]
 
 [dependencies]
-common = { path = "../../common", default-features = false, features = ["log", "mpc", "mavlink", "imu_count_1"] }
+common = { path = "../../common", default-features = false, features = ["log", "multicopter", "mpc", "mavlink", "imu_count_1"] }
 holsatus-sim = { path = "../../holsatus-sim" }
 
 static_cell = "2"
