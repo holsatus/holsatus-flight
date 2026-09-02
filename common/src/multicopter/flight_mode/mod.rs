@@ -152,6 +152,7 @@ pub trait FlightMode: Sized {
 
 mod descend;
 mod position_hold;
+pub use position_hold::POSITION_SP;
 mod rc_acrobatic;
 mod rc_stabilized;
 mod stabilized;
@@ -278,7 +279,7 @@ impl FlightModeRunner<'_> {
             // Publish if the flight mode changed
             let curr_kind = self.current_mode.kind();
             if prev_kind != curr_kind {
-                info!("[mc::flight_mode] Entered flight mode {}", curr_kind);
+                info!("[mc::flight_mode] Entered flight mode {:?}", curr_kind);
                 self.send_current.send(curr_kind);
             }
         }
@@ -291,15 +292,7 @@ impl FlightModeRunner<'_> {
         }
     }
 
-    /// Transition to a new mode, atomically.
-    ///
-    /// Ordering:
-    /// 1. Exit the current mode (cleanup).
-    /// 2. Disengage attitude control (commit point 1, before any fallible work).
-    /// 3. Enter the target mode; on success publish its initial setpoints
-    ///    (commit point 2) and swap the state.
-    ///
-    /// If entry fails or times out, walk the fallback ladder.
+    /// Transition to a new mode, specified by the `target` argument.
     async fn transition(&mut self, target: Kind) -> Result<(), Error> {
         if self.current_mode.kind() == target {
             warn!("[mc/flight_mode] Redundant flight mode change ignored");
@@ -320,6 +313,6 @@ impl FlightModeRunner<'_> {
 }
 
 #[embassy_executor::task]
-pub async fn entry() -> ! {
+pub async fn main() -> ! {
     FlightModeRunner::new().run().await
 }
