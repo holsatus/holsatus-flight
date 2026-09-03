@@ -1,4 +1,4 @@
-use nalgebra::{Quaternion, UnitQuaternion};
+use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 
 /// Used to represent a kind of pseudo-orientation for rate-based control
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,9 +38,8 @@ impl LeakyQuaternion {
 
         // Using the "quaternion error" rather than the euler angle error gives some
         // much nicer behavior where euler angles would normally experiece gimbal lock.
-        // TODO: Investigate approximation to scaled_axis which does not use heavy trig functions
         let q_error = self.leaky_gyro.inverse() * self.leaky_pred;
-        let axis_error = q_error.scaled_axis();
+        let axis_error = approximate_scaled_axis(&q_error);
 
         // Use error-boosting leak rate if available. Leaks quicker for large errors.
         let alpha = if self.error_boost > 0.0 {
@@ -69,5 +68,39 @@ impl LeakyQuaternion {
         self.leaky_pred = nlerp_to_identity(self.leaky_pred);
 
         axis_error.into()
+    }
+}
+
+/// Faster approximate alternative to `quat.scaled_axis()`, only loses some magnitude at very large angles.
+fn approximate_scaled_axis(quat: &UnitQuaternion<f32>) -> Vector3<f32> {
+    let v = quat.vector();
+    let n2 = v.norm_squared();
+    v * (2.0 * (1.0 + n2 / 6.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use nalgebra::Unit;
+
+    #[test]
+    fn approximate_scaled_axis_accuracy() {
+        // Use an axis that is not aligned with any coordinate axis.
+        let axis = Vector3::new(0.3, -0.5, 0.2);
+
+        for angle_deg in [0.5f32, 1.0, 5.0, 10.0, 20.0, 30.0, 40.0, 50.0] {
+            let q =
+                UnitQuaternion::from_axis_angle(&Unit::new_normalize(axis), angle_deg.to_radians());
+
+            let exact = q.scaled_axis();
+            let approx = approximate_scaled_axis(&q);
+
+            // Ensure the vectors computed using either method are nearly identical
+            assert_relative_eq!(approx, exact, epsilon = 2.0e-3);
+
+            // The approximation must preserve the rotation axis exactly.
+            assert_relative_eq!(approx.normalize(), exact.normalize(), epsilon = 1.0e-6);
+        }
     }
 }
