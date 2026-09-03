@@ -1,16 +1,11 @@
-use crate::tasks::{
-    param_storage::Table,
-    rc_binder::rates::{Actual, Rates},
-};
+use crate::tasks::param_storage::Table;
 
 #[derive(Clone, Debug, mav_param::Tree)]
 pub struct Params {
     /// Roll-axis related parameters
-    pub x: AxisParameters,
+    pub angl: AngleParameters,
     /// Pitch-axis related parameters
-    pub y: AxisParameters,
-    /// Yaw-axis related parameters
-    pub z: AxisParameters,
+    pub rate: RateParameters,
     /// Slewrate limiter for reference signal
     pub ref_slew: f32,
     /// Low-pass filter for reference signal
@@ -21,11 +16,21 @@ pub struct Params {
     pub flags: CtrlFlags,
     /// Timeout for the attitude command setpoint before it is considered
     /// stale, and the controller disengages.
-    pub cmd_timeout_ms: u16,
+    pub timeout_ms: u16,
 }
 
 #[derive(Clone, Debug, mav_param::Tree)]
-pub struct AxisParameters {
+pub struct RateParameters {
+    /// Roll-axis related parameters
+    pub x: RateAxisParameters,
+    /// Pitch-axis related parameters
+    pub y: RateAxisParameters,
+    /// Yaw-axis related parameters
+    pub z: RateAxisParameters,
+}
+
+#[derive(Clone, Debug, mav_param::Tree)]
+pub struct RateAxisParameters {
     /// Proportional gain
     pub kp: f32,
     /// Integral gain
@@ -42,8 +47,26 @@ pub struct AxisParameters {
     pub comp: f32,
     /// Proportional attitude disturbance rejection gain
     pub qint: f32,
-    /// Rates to use in manual rates "acro" mode
-    pub rc: Rates,
+}
+
+#[derive(Clone, Debug, mav_param::Tree)]
+pub struct AngleParameters {
+    /// Roll-axis related parameters
+    pub x: AngleAxisParameters,
+    /// Pitch-axis related parameters
+    pub y: AngleAxisParameters,
+    /// Yaw-axis related parameters
+    pub z: AngleAxisParameters,
+}
+
+#[derive(Clone, Debug, mav_param::Tree)]
+pub struct AngleAxisParameters {
+    /// Proportional gain
+    pub kp: f32,
+    /// Integral gain
+    pub ki: f32,
+    /// Derivative gain
+    pub kd: f32,
 }
 
 #[derive(Clone, Debug, mav_param::Node)]
@@ -73,56 +96,60 @@ bitflags::bitflags! {
 
 crate::const_default!(
     Params => {
-        x: AxisParameters {
-            kp: 0.06,
-            ki: 0.5,
-            kd: 0.041,
-            flag: RateAxisFlags(0),
-            dtau: 0.0010,
-            pred: 0.035,
-            comp: 0.005,
-            qint: 15.0,
-            rc: Rates::Actual(Actual {
-                rate: 20.,
-                expo: 0.5,
-                cent: 5.0,
-            }),
+        rate: RateParameters {
+            x: RateAxisParameters {
+                kp: 0.06,
+                ki: 0.5,
+                kd: 0.041,
+                flag: RateAxisFlags(0),
+                dtau: 0.0010,
+                pred: 0.035,
+                comp: 0.005,
+                qint: 15.0,
+            },
+            y: RateAxisParameters {
+                kp: 0.06,
+                ki: 0.5,
+                kd: 0.041,
+                flag: RateAxisFlags(0),
+                dtau: 0.0010,
+                pred: 0.035,
+                comp: 0.005,
+                qint: 15.0,
+            },
+            z: RateAxisParameters {
+                kp: 0.15,
+                ki: 0.5,
+                kd: 0.05,
+                flag: RateAxisFlags(0),
+                dtau: 0.001,
+                pred: 0.08,
+                comp: 0.01,
+                qint: 5.0
+            },
         },
-        y: AxisParameters {
-            kp: 0.06,
-            ki: 0.5,
-            kd: 0.041,
-            flag: RateAxisFlags(0),
-            dtau: 0.0010,
-            pred: 0.035,
-            comp: 0.005,
-            qint: 15.0,
-            rc: Rates::Actual(Actual {
-                rate: 20.,
-                expo: 0.5,
-                cent: 5.0,
-            }),
-        },
-        z: AxisParameters {
-            kp: 0.15,
-            ki: 0.5,
-            kd: 0.05,
-            flag: RateAxisFlags(0),
-            dtau: 0.001,
-            pred: 0.08,
-            comp: 0.01,
-            qint: 5.0,
-            rc: Rates::Actual(Actual {
-                rate: 10.,
-                expo: 0.5,
-                cent: 5.0,
-            }),
+        angl: AngleParameters {
+            x: AngleAxisParameters {
+                kp: 25.,
+                ki: 0.,
+                kd: 0.,
+            },
+            y: AngleAxisParameters {
+                kp: 25.,
+                ki: 0.,
+                kd: 0.,
+            },
+            z: AngleAxisParameters {
+                kp: 10.,
+                ki: 0.,
+                kd: 0.,
+            },
         },
         ref_slew: 500.0,
         ref_lp: 0.002,
         att_leak_tc: 1.0,
         flags: CtrlFlags(0),
-        cmd_timeout_ms: 250,
+        timeout_ms: 250,
     }
 );
 

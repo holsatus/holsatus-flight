@@ -12,7 +12,7 @@ use crate::sync::watch::Watch;
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum AttitudeCommand {
     /// Disengage all attitude control.
-    Disengage,
+    Disabled,
 
     /// Commanded body angular rates in radians per second.
     Rate(Vector3<f32>),
