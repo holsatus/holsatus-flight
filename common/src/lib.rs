@@ -23,6 +23,7 @@ pub mod sync;
 pub mod tasks;
 pub mod types;
 pub mod utils;
+pub mod vehicle;
 
 pub mod shell;
 

@@ -3,6 +3,7 @@
 //!
 
 use crate::signals as s;
+use crate::vehicle::VehicleDefinition;
 
 use crate::types::control;
 use crate::{
@@ -201,7 +202,7 @@ impl Commander {
                 false => Response::Rejected,
             },
             Command::SetFlightMode(requested_mode) => {
-                crate::multicopter::flight_mode::request_mode(requested_mode);
+                crate::vehicle::Vehicle::set_flight_mode(requested_mode);
                 Response::Accepted
             }
             #[cfg(feature = "gnss")]

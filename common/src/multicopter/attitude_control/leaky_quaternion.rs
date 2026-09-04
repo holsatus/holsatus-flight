@@ -41,7 +41,7 @@ impl LeakyQuaternion {
         let q_error = self.leaky_gyro.inverse() * self.leaky_pred;
         let axis_error = approximate_scaled_axis(&q_error);
 
-        // Use error-boosting leak rate if available. Leaks quicker for large errors.
+        // Use error-boosted leak rate if available. Leaks quicker for large errors.
         let alpha = if self.error_boost > 0.0 {
             let time_const = self.time_const / (1.0 + axis_error.norm_squared() * self.error_boost);
             time_const / (time_const + dt)
@@ -49,23 +49,11 @@ impl LeakyQuaternion {
             self.time_const / (self.time_const + dt)
         };
 
+        // Do nlerp-based "leaking" to drive both quaternions towards identity.
         // Same as the regular `nlerp` function in nalgebra, except this is guaranteed to
         // use the quaternion with the quaternion with the shortest path to identity.
-        let nlerp_to_identity = |q: UnitQuaternion<f32>| {
-            let q_shortest = if q.w < 0.0 {
-                -q.into_inner()
-            } else {
-                q.into_inner()
-            };
-            let q_lerped = Quaternion::identity().lerp(&q_shortest, alpha);
-
-            // This normalization is IMPORTANT to avoid the quaternion from becoming non-unity
-            UnitQuaternion::new_normalize(q_lerped)
-        };
-
-        // Do nlerp-based "leaking" to drive both quaternions towards identity
-        self.leaky_gyro = nlerp_to_identity(self.leaky_gyro);
-        self.leaky_pred = nlerp_to_identity(self.leaky_pred);
+        self.leaky_gyro = nlerp_to_identity(self.leaky_gyro, alpha);
+        self.leaky_pred = nlerp_to_identity(self.leaky_pred, alpha);
 
         axis_error.into()
     }
@@ -76,6 +64,18 @@ fn approximate_scaled_axis(quat: &UnitQuaternion<f32>) -> Vector3<f32> {
     let v = quat.vector();
     let n2 = v.norm_squared();
     v * (2.0 * (1.0 + n2 / 6.0))
+}
+
+fn nlerp_to_identity(q: UnitQuaternion<f32>, alpha: f32) -> UnitQuaternion<f32> {
+    let q_shortest = if q.w < 0.0 {
+        -q.into_inner()
+    } else {
+        q.into_inner()
+    };
+    let q_lerped = Quaternion::identity().lerp(&q_shortest, alpha);
+
+    // This normalization is IMPORTANT to avoid the quaternion from becoming non-unity
+    UnitQuaternion::new_normalize(q_lerped)
 }
 
 #[cfg(test)]

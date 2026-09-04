@@ -1,42 +1,9 @@
 //! Flight mode framework.
 //!
 //! This module manages the single active flight mode of the vehicle. A flight
-//! mode produces attitude commands and a thrust setpoint through a small,
-//! explicit set of "knobs". The attitude controller consumes those setpoints
-//! without knowing which mode produced them.
-//!
-//! # Contract
-//!
-//! A flight mode implements [`FlightMode`]:
-//!
-//! - [`FlightMode::enter`] must be **pure**: it may read any global state
-//!   (signals, parameter tables) to validate preconditions, but it must not
-//!   write to any `Watch` or `Channel`. Instead it returns a [`Claim`]
-//!   describing the initial setpoints the manager should publish on its behalf.
-//!   This is what makes mode entry atomic: a failed entry cannot have modified
-//!   anything.
-//! - [`FlightMode::step`] produces the mode's setpoints. It is cancel-safe: it
-//!   must be safe to drop at any await point, because the manager drops the
-//!   step future whenever a mode switch is requested.
-//! - [`FlightMode::exit`] is **synchronous and infallible**. Leaving a mode
-//!   must never be partial or fallible, so any teardown work must be designed
-//!   to be non-async: spawned tasks should be stopped through *cooperative
-//!   cancellation* (a cancellation flag or signal they poll) rather than an
-//!   async join, and owned handles simply drop when the mode is consumed.
-//!   `exit` is guaranteed to run before every transition away from a mode,
-//!   including after failed or timed-out steps.
-//!
-//! # Enforcement (manager-side)
-//!
-//! - `enter` must complete within [`ENTER_TIMEOUT`] (100 ms).
-//! - `step` must complete within [`STEP_TIMEOUT`] (1 s). This is a *hang guard*
-//!   not a cadence requirement; a mode may return [`Action::None`] frequently
-//!   and publish setpoints at its own pace.
-//!
-//! On any failure (failed entry, failed or timed-out step), the manager walks a
-//! fallback ladder ([`FALLBACK`]) to reach a safe mode. Unimplemented modes
-//! panic in debug builds and fail entry in release builds, letting the ladder
-//! descend instead.
+//! mode produces setpoints, such as attitude and thrust commands through a small,
+//! explicit set of [`Controls`]. The appropriate controllers consumes those setpoints
+//! without having to know which mode produced them.
 
 use core::future::Future;
 
@@ -49,19 +16,6 @@ use crate::{
     signals::{THROTTLE_COMMAND, ThrottleCommand},
     sync::watch::{Receiver, Sender, Watch},
 };
-
-pub mod params {
-    use crate::tasks::param_storage::Table;
-
-    #[derive(Clone, Debug, mav_param::Tree)]
-    pub struct Params {}
-
-    crate::const_default!(
-        Params => Params {}
-    );
-
-    pub static TABLE: Table<Params> = Table::new("fm", Params::const_default());
-}
 
 macro_rules! flight_modes {
     (
@@ -236,11 +190,19 @@ const ENTER_TIMEOUT: Duration = Duration::from_millis(100);
 pub static CURRENT_MODE: Watch<Kind> = Watch::new();
 
 /// The desired (requested) flight mode.
-static REQUEST_MODE: Watch<Kind> = Watch::new();
+pub static REQUEST_MODE: Watch<Kind> = Watch::new();
 
-/// Request the flight mode to change
-pub fn request_mode(kind: Kind) {
-    REQUEST_MODE.send(kind);
+pub mod params {
+    use crate::tasks::param_storage::Table;
+
+    #[derive(Clone, Debug, mav_param::Tree)]
+    pub struct Params {}
+
+    crate::const_default!(
+        Params => Params {}
+    );
+
+    pub static TABLE: Table<Params> = Table::new("fm", Params::const_default());
 }
 
 /// The single flight mode manager task.
@@ -250,8 +212,15 @@ pub struct FlightModeRunner<'a> {
     send_current: Sender<'a, Kind>,
 }
 
+#[embassy_executor::task]
+pub async fn main() -> ! {
+    FlightModeRunner::new().await.run().await
+}
+
 impl FlightModeRunner<'_> {
-    pub fn new() -> Self {
+    pub async fn new() -> Self {
+        let _ = params::TABLE.read().await;
+
         Self {
             current_mode: State::None,
             recv_request: REQUEST_MODE.receiver(),
@@ -310,9 +279,4 @@ impl FlightModeRunner<'_> {
             }),
         }
     }
-}
-
-#[embassy_executor::task]
-pub async fn main() -> ! {
-    FlightModeRunner::new().run().await
 }

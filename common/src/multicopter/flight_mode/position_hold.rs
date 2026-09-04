@@ -2,6 +2,9 @@ use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Timer};
 use nalgebra::{UnitQuaternion, Vector3};
 
+#[allow(unused_imports)]
+use num_traits::Float as _;
+
 use super::{Action, Controls, EnterError, FlightMode, Precondition};
 use crate::{
     consts::GRAVITY,
@@ -69,7 +72,7 @@ impl Default for Params {
 
 /// Control loop period. The attitude inner loops run at the IMU rate; the
 /// position/velocity cascade is intentionally slower.
-const CONTROL_PERIOD: Duration = Duration::from_millis(10);
+const CONTROL_PERIOD: Duration = Duration::from_millis(100);
 
 impl FlightMode for PositionHold {
     async fn enter(controls: &Controls) -> Result<Self, EnterError> {
@@ -108,7 +111,7 @@ impl PositionHold {
     fn run_control(&mut self) {
         let Some(est) = sig::ESKF_ESTIMATE.try_get() else {
             // No state estimate: disengage attitude control until one appears.
-            self.send_attitude.send(AttitudeCommand::Disengage);
+            self.send_attitude.send(AttitudeCommand::Disabled);
             self.send_throttle.send(ThrottleCommand(1.0));
             return;
         };

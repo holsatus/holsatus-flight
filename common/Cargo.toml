@@ -7,8 +7,6 @@ edition = "2024"
 default = [
     "imu_count_1",
     "multicopter",
-    "defmt",
-    "mpc",
     "mavlink",
     "gnss",
     "usb",

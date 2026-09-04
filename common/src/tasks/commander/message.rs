@@ -31,8 +31,7 @@ pub enum Command {
     EskfResetOrigin,
 }
 
-#[cfg(feature = "multicopter")]
-pub use crate::multicopter::flight_mode::Kind as FlightMode;
+type FlightMode = crate::vehicle::FlightMode;
 
 /// A request to the [`Commander`](crate::commander::Commander)
 #[derive(Debug, Clone, Copy, PartialEq)]
