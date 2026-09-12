@@ -362,8 +362,6 @@ impl MpcAutonomous {
         MPC_REFERENCE.send(self.x_ref.clone());
         MPC_POS_PRED.send(pos_pred.clone_owned());
 
-        info!("[mpc] force target: {}", force_target);
-
         critical_section::with(|_cs| {
             self.send_attitude.send(AttitudeCommand::Angle(att_target));
             self.send_throttle.send(ThrottleCommand(force_target));
