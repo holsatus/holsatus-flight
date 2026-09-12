@@ -3,7 +3,8 @@ use embassy_futures::select::select;
 use embassy_time::Timer;
 use futures::TryFutureExt;
 
-use crate::abstraction::imu::{AccelGyro, ImuInitialize};
+use crate::abstraction::accelgyro::AccelGyro;
+use crate::abstraction::initialize::Initialize;
 use crate::abstraction::trigger::Trigger;
 use crate::calibration::sens3d::Calib3D;
 use crate::errors::SensorError;
@@ -50,7 +51,7 @@ pub mod params {
 #[embassy_executor::task(pool_size = IMU_COUNT)]
 async fn params_notifier(imu_index: crate::ImuIndex) -> ! {
     params::TABLES[imu_index as usize]
-        .run_notifier(|| CHANNEL[imu_index as usize].send(Message::ReloadParams))
+        .run_notifier(|| CHANNELS[imu_index as usize].send(Message::ReloadParams))
         .await
 }
 
@@ -58,8 +59,9 @@ pub enum Message {
     ReloadParams,
 }
 
-pub static CHANNEL: [Channel<Message, 1>; IMU_COUNT] = [const { Channel::new() }; IMU_COUNT];
+pub static CHANNELS: [Channel<Message, 1>; IMU_COUNT] = [const { Channel::new() }; IMU_COUNT];
 
+/// The number of consecutive errors before trying a reinitialization of the IMU.
 const MAX_CONSECUTIVE_ERRORS: usize = 10;
 
 pub struct ImuReader<'a, T> {
@@ -83,12 +85,16 @@ struct Stats {
 }
 
 impl<T: Trigger> ImuReader<'_, T> {
-    pub async fn entry<I: ImuInitialize>(
+    pub async fn entry<I>(
         imu_index: crate::ImuIndex,
         mut interface: I::Interface,
         config: I::Config,
         trigger: T,
-    ) -> ! {
+    ) -> !
+    where
+        I: Initialize,
+        for<'a> I::Sensor<'a>: AccelGyro,
+    {
         if let Ok(task) = params_notifier(imu_index) {
             SendSpawner::for_current_executor().await.spawn(task);
         }
@@ -101,7 +107,7 @@ impl<T: Trigger> ImuReader<'_, T> {
             gyr_calib: Calib3D::const_default(),
             rotation: Rotation::const_default(),
             param_table: &params::TABLES[imu_index as usize],
-            recv_channel: CHANNEL[imu_index as usize].receiver(),
+            recv_channel: CHANNELS[imu_index as usize].receiver(),
             snd_raw_imu_data: s::RAW_MULTI_IMU_DATA[imu_index as usize].sender(),
             snd_cal_imu_data: s::CAL_MULTI_IMU_DATA[imu_index as usize].sender(),
         };

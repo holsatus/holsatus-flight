@@ -1,22 +1,5 @@
 use crate::{errors::SensorError, types::measurements::Imu6DofData};
 
-/// A sensor which knows how to initialize itself and use a specific interface kind.
-pub trait ImuInitialize {
-    type Config;
-    type Interface;
-    type Sensor<'a>: AccelGyro
-    where
-        Self: 'a;
-
-    /// Try to initialize the sensor using an interface and configuration
-    fn initialize<'a>(
-        interface: &'a mut Self::Interface,
-        config: &Self::Config,
-    ) -> impl Future<Output = Result<Self::Sensor<'a>, SensorError>>
-    where
-        Self: 'a;
-}
-
 /// Operations available on an initialized accel+gyro (IMU) sensor.
 pub trait AccelGyro: Sized {
     /// Read out a 3D sample from the accelerometer, units are in meters/second^2

@@ -40,7 +40,7 @@ pub async fn main() -> ! {
                 snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Acc));
                 match calibrate_acc(acc_calib, idx).await {
                     Ok(calibration) => {
-                        use crate::tasks::imu_reader::{CHANNEL, Message, params::TABLES};
+                        use crate::tasks::imu_reader::{CHANNELS, Message, params::TABLES};
 
                         // TODO: This is hacky. Subsystems should not modify parameter tables directly
                         if let Some(table) = TABLES.get(idx as usize) {
@@ -50,7 +50,7 @@ pub async fn main() -> ! {
                             use crate::params::{Request, request};
                             request(Request::SaveTable(table.name())).await;
 
-                            if let Some(channel) = CHANNEL.get(idx as usize) {
+                            if let Some(channel) = CHANNELS.get(idx as usize) {
                                 channel.send(Message::ReloadParams).await;
                             }
                         }
@@ -67,7 +67,7 @@ pub async fn main() -> ! {
                 snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Gyr));
                 match calibrate_gyr_bias(gyr_calib, idx).await {
                     Ok(calibration_bias) => {
-                        use crate::tasks::imu_reader::{CHANNEL, Message, params::TABLES};
+                        use crate::tasks::imu_reader::{CHANNELS, Message, params::TABLES};
 
                         if let Some(table) = TABLES.get(idx as usize) {
                             // TODO: This is hacky. Subsystems should not modify parameter tables directly
@@ -77,7 +77,7 @@ pub async fn main() -> ! {
                             use crate::params::{Request, request};
                             request(Request::SaveTable(table.name())).await;
 
-                            if let Some(channel) = CHANNEL.get(idx as usize) {
+                            if let Some(channel) = CHANNELS.get(idx as usize) {
                                 channel.send(Message::ReloadParams).await;
                             }
                         }

@@ -9,7 +9,8 @@ use embedded_hal_async::{i2c, spi};
 use futures::TryFutureExt as _;
 
 use crate::{
-    abstraction::imu::{AccelGyro, ImuInitialize},
+    abstraction::accelgyro::AccelGyro,
+    abstraction::initialize::Initialize,
     errors::SensorError,
     types::measurements::Imu6DofData,
     wrapped::{i2c::WrappedI2c, spi::WrappedSpi},
@@ -83,7 +84,7 @@ pub struct Bmi088Config {
 
 pub struct Bmi088Spi;
 
-impl<A, G> ImuInitialize for (Bmi088Spi, A, G)
+impl<A, G> Initialize for (Bmi088Spi, A, G)
 where
     A: spi::SpiDevice,
     G: spi::SpiDevice,
@@ -127,7 +128,7 @@ where
 
 pub struct Bmi088I2c;
 
-impl<A, G> ImuInitialize for (Bmi088I2c, A, G)
+impl<A, G> Initialize for (Bmi088I2c, A, G)
 where
     A: i2c::I2c,
     G: i2c::I2c,
