@@ -95,4 +95,7 @@ impl FlightMode for RcAcrobatic {
 
         Action::None
     }
+
+    const PARAMS: Option<&'static crate::params::ParamTable<dyn mav_param::Node>> =
+        Some(&params::TABLE);
 }

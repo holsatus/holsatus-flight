@@ -41,7 +41,7 @@ impl<T: ?Sized> DerefMut for TableWriteGuard<'_, T> {
     }
 }
 
-impl<T: mav_param::Node + 'static> ParamTable<T> {
+impl<T: mav_param::Node> ParamTable<T> {
     pub const fn new(name: &'static str, data: T) -> Self {
         ParamTable {
             name,
@@ -106,7 +106,7 @@ impl<T: mav_param::Node + 'static> ParamTable<T> {
     /// You only need to call this for the first reading of the table.
     /// Once it is registered, the table is globally discoverable.
     pub fn read(&'static self) -> impl Future<Output = TableReadGuard<'static, T>> {
-        self.ensure_registration().then(|_| self.pure_read())
+        ParamTable::ensure_registered(self).then(|_| self.pure_read())
     }
 }
 
@@ -134,6 +134,16 @@ impl<T: ?Sized> ParamTable<T> {
 }
 
 impl ParamTable<dyn mav_param::Node> {
+    /// Register this table within the global static registry.
+    ///
+    /// This must be called in order to make the table globally available
+    pub async fn ensure_registered(&'static self) {
+        if PARAM_REGISTRY.register(self) == Registration::Inserted {
+            use super::task::{Request, request};
+            request(Request::LoadTable(self.name())).await;
+        }
+    }
+
     /// Get the number of values currently present in this table.
     ///
     /// This does not reflect the maximum number of possible values, but only the current set.

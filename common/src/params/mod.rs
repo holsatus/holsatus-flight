@@ -3,7 +3,7 @@ mod storage;
 mod table;
 mod task;
 
-pub use registry::PARAM_REGISTRY;
+pub use registry::{PARAM_REGISTRY, Registration};
 pub use table::{ParamTable, TableReadGuard, TableWriteGuard};
 pub use task::{Request, Response, entry, request};
 

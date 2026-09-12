@@ -13,6 +13,7 @@ use futures::TryFutureExt;
 
 use crate::{
     multicopter::attitude_control::{ATTITUDE_COMMAND, AttitudeCommand},
+    params::ParamTable,
     signals::{THROTTLE_COMMAND, ThrottleCommand},
     sync::{
         procedure::Procedure,
@@ -95,6 +96,12 @@ macro_rules! flight_modes {
             }
         }
 
+        const PARAM_TABLES: &'static [Option<&'static ParamTable<dyn mav_param::Node>>] = &[
+            $(
+                <$ty>::PARAMS,
+            )*
+        ];
+
         impl TryFrom<Event> for Kind {
             type Error = ();
 
@@ -150,14 +157,17 @@ pub trait FlightMode: Sized {
     ///
     /// Must be cancel-safe and complete within [`STEP_TIMEOUT`] to avoid triggering a failsafe.
     fn step(&mut self) -> impl Future<Output = Action>;
+
+    /// Get the the parameter table to this flight mode
+    ///
+    /// This will be used to eagerly register its parameters globally.
+    const PARAMS: Option<&'static ParamTable<dyn mav_param::Node>> = None;
 }
 
-pub use position_hold::POSITION_SP;
-
-mod position_hold;
-mod rc_acrobatic;
-mod rc_stabilized;
-mod stabilized;
+pub mod position_hold;
+pub mod rc_acrobatic;
+pub mod rc_stabilized;
+pub mod stabilized;
 
 #[cfg(feature = "mpc")]
 pub mod mpc_autonomous;
@@ -275,6 +285,13 @@ pub async fn main() -> ! {
 impl FlightModeRunner<'_> {
     pub async fn new() -> Self {
         let _ = params::TABLE.read().await;
+
+        for table in PARAM_TABLES.iter().flatten() {
+            use crate::params::{PARAM_REGISTRY, Registration};
+            if PARAM_REGISTRY.register(table) == Registration::Full {
+                error!("[mc/flight_mode] Unable to register table {}", table.name())
+            }
+        }
 
         Self {
             current_mode: State::None,
