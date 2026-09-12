@@ -3,8 +3,7 @@ use embassy_futures::select::select;
 use embassy_time::Timer;
 use futures::TryFutureExt;
 
-use crate::abstraction::accelgyro::AccelGyro;
-use crate::abstraction::initialize::Initialize;
+use crate::abstraction::imu::{Imu, ImuInitialize};
 use crate::abstraction::trigger::Trigger;
 use crate::calibration::sens3d::Calib3D;
 use crate::errors::SensorError;
@@ -85,16 +84,12 @@ struct Stats {
 }
 
 impl<T: Trigger> ImuReader<'_, T> {
-    pub async fn entry<I>(
+    pub async fn entry<I: ImuInitialize>(
         imu_index: crate::ImuIndex,
         mut interface: I::Interface,
         config: I::Config,
         trigger: T,
-    ) -> !
-    where
-        I: Initialize,
-        for<'a> I::Sensor<'a>: AccelGyro,
-    {
+    ) -> ! {
         if let Ok(task) = params_notifier(imu_index) {
             SendSpawner::for_current_executor().await.spawn(task);
         }
@@ -138,7 +133,7 @@ impl<T: Trigger> ImuReader<'_, T> {
 }
 
 impl<T: Trigger> ImuReader<'_, T> {
-    async fn run_inner<S: AccelGyro>(&mut self, sensor: &mut S) {
+    async fn run_inner<S: Imu>(&mut self, sensor: &mut S) {
         loop {
             match select(self.recv_channel.receive(), self.trigger.next_trigger()).await {
                 embassy_futures::select::Either::First(message) => match message {
@@ -157,7 +152,7 @@ impl<T: Trigger> ImuReader<'_, T> {
         }
     }
 
-    async fn on_trigger<S: AccelGyro>(&mut self, sensor: &mut S) -> Result<(), ()> {
+    async fn on_trigger<S: Imu>(&mut self, sensor: &mut S) -> Result<(), ()> {
         match self.read_sensor(sensor).await {
             Ok(_) => {
                 self.stats.consecutive_errors = 0;
@@ -185,7 +180,7 @@ impl<T: Trigger> ImuReader<'_, T> {
         self.rotation = params.rot;
     }
 
-    fn read_sensor<S: AccelGyro>(
+    fn read_sensor<S: Imu>(
         &mut self,
         sensor: &mut S,
     ) -> impl Future<Output = Result<(), SensorError>> {

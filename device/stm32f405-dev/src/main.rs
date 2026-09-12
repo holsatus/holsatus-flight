@@ -69,7 +69,7 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     #[cfg(feature = "gnss")]
     level_1_spawner.spawn(common::tasks::gnss_reader::main("usart6").unwrap());
     level_1_spawner.spawn(common::tasks::commander::main().unwrap());
-    level_1_spawner.spawn(common::multicopter::flight_mode::entry().unwrap());
+    level_1_spawner.spawn(common::multicopter::flight_mode::main().unwrap());
 
     // ------------------- Low-priority tasks -------------------
 

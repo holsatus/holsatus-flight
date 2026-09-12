@@ -1,5 +1,5 @@
 use assign_resources::assign_resources;
-use embassy_stm32::{peripherals, Peri, Peripherals};
+use embassy_stm32::{Peri, Peripherals, peripherals};
 
 assign_resources! {
     int_pin: IntPin {
@@ -85,6 +85,7 @@ pub fn split(p: Peripherals) -> AssignedResources {
 
 pub mod i2c {
     use common::{
+        ImuIndex,
         drivers::imu::icm20948::*,
         embassy_time::{Duration, Ticker},
         tasks::imu_reader::ImuReader,
@@ -107,7 +108,8 @@ pub mod i2c {
         let i2c = i2c.setup(i2c_cfg);
 
         let trigger = Ticker::every(Duration::from_hz(1125));
-        ImuReader::entry::<(Icm209486DofI2c, _)>(i2c, (0x69, imu_cfg), trigger).await
+        ImuReader::entry::<(Icm209486DofI2c, _)>(ImuIndex::Imu0, i2c, (0x69, imu_cfg), trigger)
+            .await
     }
 }
 
@@ -140,7 +142,7 @@ pub mod flash {
     #[embassy_executor::task]
     pub(crate) async fn param_storage(flash: super::Flash, range: core::ops::Range<u32>) -> ! {
         let flash = flash.setup();
-        common::tasks::param_storage::entry(flash, range).await
+        common::params::entry(flash, range).await
     }
 }
 
@@ -153,7 +155,7 @@ pub mod motors {
         dshot_cfg: common::types::config::DshotConfig,
     ) -> ! {
         let motors = motors.setup(dshot_cfg);
-        common::tasks::motor_governor::main(motors).await
+        common::actuators::motor_governor::main(motors).await
     }
 }
 

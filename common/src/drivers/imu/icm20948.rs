@@ -9,8 +9,7 @@ use icm20948_async::{
 pub use icm20948_async::{AccDlp, AccRange, AccUnit, Config, GyrDlp, GyrRange, GyrUnit};
 
 use crate::{
-    abstraction::accelgyro::AccelGyro,
-    abstraction::initialize::Initialize,
+    abstraction::imu::{Imu, ImuInitialize},
     errors::SensorError,
     types::measurements::Imu6DofData,
     wrapped::{i2c::WrappedI2c, spi::WrappedSpi},
@@ -26,7 +25,7 @@ impl<TRANSPORT> Icm20948Sensor<TRANSPORT> {
     }
 }
 
-impl<BUS: Transport> AccelGyro for Icm20948Sensor<BUS>
+impl<BUS: Transport> Imu for Icm20948Sensor<BUS>
 where
     SensorError: From<BUS::Error>,
 {
@@ -82,7 +81,7 @@ fn map_setup_err_spi<E: spi::Error>(error: SetupError<E>) -> SensorError {
 
 pub struct Icm209486DofI2c;
 
-impl<BUS> Initialize for (Icm209486DofI2c, BUS)
+impl<BUS> ImuInitialize for (Icm209486DofI2c, BUS)
 where
     BUS: i2c::I2c,
 {
@@ -117,7 +116,7 @@ where
 
 pub struct Icm209486DofSpi;
 
-impl<BUS> Initialize for (Icm209486DofSpi, BUS)
+impl<BUS> ImuInitialize for (Icm209486DofSpi, BUS)
 where
     BUS: spi::SpiDevice,
 {

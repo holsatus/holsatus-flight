@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use common::embassy_time::{self, Duration};
+use common::embassy_time;
 ///! Dshot driver for the stm32f405 using a timer-backed PWM
 use dshot_encoder;
 
@@ -12,7 +12,7 @@ use embassy_stm32::{
     Peri,
 };
 
-use common::hw_abstraction::OutputGroup;
+use common::abstraction::motor::MotorGroup;
 use static_cell::ConstStaticCell;
 
 const TRANSMIT_SIZE: usize = 24;
@@ -95,7 +95,7 @@ where
     }
 }
 
-impl<'d, T, WAV> OutputGroup for DshotDriver<'d, T, WAV>
+impl<'d, T, WAV> MotorGroup for DshotDriver<'d, T, WAV>
 where
     T: GeneralInstance4Channel,
     WAV: WaveformGenerator<Timer = T>,

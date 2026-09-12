@@ -1,9 +1,9 @@
 //! Commander module
-//!
-//!
 
 use crate::signals as s;
-use crate::vehicle::SetFlightMode;
+
+#[allow(unused)]
+use crate::vehicle::SetFlightMode as _;
 
 use crate::types::control;
 use crate::{

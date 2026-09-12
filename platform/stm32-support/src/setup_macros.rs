@@ -272,7 +272,7 @@ macro_rules! impl_up_dma_dshot_setup {
         $(,)?
     ) => {
         impl $MotorDriver {
-            pub fn setup(&mut self, dshot: common::types::config::DshotConfig) -> impl common::hw_abstraction::OutputGroup + '_ {
+            pub fn setup(&mut self, dshot: common::types::config::DshotConfig) -> impl common::abstraction::motor::MotorGroup + '_ {
                 embassy_stm32::bind_interrupts!(struct Irqs {
                     $dma_irq => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::$dma_periph>;
                 });
@@ -299,7 +299,7 @@ macro_rules! impl_qs_dshot_setup {
         $(,)?
     ) => {
         impl $MotorDriver {
-            pub fn setup(&mut self, dshot: common::types::config::DshotConfig) -> impl common::hw_abstraction::OutputGroup + '_ {
+            pub fn setup(&mut self, dshot: common::types::config::DshotConfig) -> impl common::abstraction::motor::MotorGroup + '_ {
                 embassy_stm32::bind_interrupts!(struct Irqs {
                     $dma_irq => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::$dma_periph>;
                 });

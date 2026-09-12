@@ -1,4 +1,4 @@
-use common::hw_abstraction::MotorGroup;
+use common::abstraction::motor::MotorGroup;
 use common::nalgebra::SMatrix;
 use common::nalgebra::SVector;
 use common::types::measurements::ViconData;
@@ -14,7 +14,7 @@ use rand_distr::Normal;
 pub mod imu_reader {
     use common::{
         ImuIndex,
-        abstraction::imu::{AccelGyro, ImuInitialize},
+        abstraction::imu::{Imu, ImuInitialize},
         errors::SensorError,
         tasks::imu_reader::ImuReader,
         types::measurements::Imu6DofData,
@@ -24,13 +24,13 @@ pub mod imu_reader {
 
     #[embassy_executor::task]
     pub async fn main(imu: SimulatedImu) {
-        struct Imu<'a>(&'a mut SimulatedImu);
+        struct SimImu<'a>(&'a mut SimulatedImu);
 
-        impl ImuInitialize for Imu<'_> {
+        impl ImuInitialize for SimImu<'_> {
             type Config = ();
             type Interface = SimulatedImu;
             type Sensor<'a>
-                = Imu<'a>
+                = SimImu<'a>
             where
                 Self: 'a;
 
@@ -41,11 +41,11 @@ pub mod imu_reader {
             where
                 Self: 'a,
             {
-                Ok(Imu(interface))
+                Ok(SimImu(interface))
             }
         }
 
-        impl AccelGyro for Imu<'_> {
+        impl Imu for SimImu<'_> {
             fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], SensorError>> {
                 async { Ok(self.0.read_sim_acc()) }
             }
@@ -66,7 +66,7 @@ pub mod imu_reader {
         }
 
         let trigger = Ticker::every(Duration::from_hz(crate::SIM_FREQUENCY));
-        ImuReader::entry::<Imu<'_>>(ImuIndex::Imu0, imu, (), trigger).await
+        ImuReader::entry::<SimImu<'_>>(ImuIndex::Imu0, imu, (), trigger).await
     }
 }
 

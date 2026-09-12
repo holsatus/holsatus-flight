@@ -463,7 +463,7 @@ impl Eskf<'_> {
                 // `z = 0` is.
                 self.baro_offset_m = self.filter.position.z;
                 info!(
-                    "[eskf] Initialised barometric altitude at {:.0} Pa (origin offset {:.2} m)",
+                    "[eskf] Initialised barometric altitude at {} Pa (origin offset {} m)",
                     pressure_pa, self.baro_offset_m
                 );
                 self.baro_reference_pa = Some(pressure_pa);
@@ -592,7 +592,7 @@ mod gnss_fusion {
                 None => {
                     let origin_altitude_msl = altitude_msl + filter.position.z;
                     info!(
-                        "[eskf] Local origin MSL altitude: {:.1} m",
+                        "[eskf] Local origin MSL altitude: {} m",
                         origin_altitude_msl
                     );
                     self.origin_altitude_msl = Some(origin_altitude_msl);

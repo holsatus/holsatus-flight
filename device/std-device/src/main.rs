@@ -1,6 +1,7 @@
 use std::sync::atomic::Ordering;
 
 use clap::Parser;
+use common::multicopter::flight_mode::Kind;
 
 mod rerun_logger;
 mod resources;
@@ -57,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // level_1_spawner.spawn(common::tasks::gnss_reader::main("serial2").unwrap()); // TODO Emulate GNSS?
     level_1_spawner.spawn(common::tasks::commander::main().unwrap());
     level_1_spawner.spawn(common::tasks::att_estimator::main().unwrap());
-    level_1_spawner.spawn(common::multicopter::flight_mode::entry().unwrap());
+    level_1_spawner.spawn(common::multicopter::flight_mode::main().unwrap());
 
     // ------------------- Low-priority tasks -------------------
 
@@ -80,7 +81,8 @@ async fn simulated_rc() -> ! {
 
     // Throttle slightly above hover; sticks centered.
     let rc = RcAnalog::new(0.0, 0.0, 0.0, 0.44);
-    let mut ticker = common::embassy_time::Ticker::every(common::embassy_time::Duration::from_hz(100));
+    let mut ticker =
+        common::embassy_time::Ticker::every(common::embassy_time::Duration::from_hz(100));
     loop {
         common::signals::RC_ANALOG_UNIT.send(rc);
         ticker.next().await;
@@ -110,14 +112,14 @@ async fn hover_hold_demo() {
     // Engage stabilized (angle) mode so the vehicle levels and holds altitude.
     PROCEDURE
         .send(Request {
-            command: Command::SetControlMode(ControlMode::Angle),
+            command: Command::SetFlightMode(Kind::RcStabilized),
             origin: Origin::Automatic,
         })
         .await;
 
     let mut rcv_current_mode = common::multicopter::flight_mode::CURRENT_MODE.receiver();
     rcv_current_mode
-        .get_and(|mode| *mode == common::multicopter::flight_mode::ModeKind::Stabilized)
+        .get_and(|mode| *mode == common::multicopter::flight_mode::Kind::RcStabilized)
         .await;
 
     // Hold the hover for the duration of the simulation.
