@@ -4,7 +4,7 @@ use embassy_time::Duration;
 use nalgebra::UnitQuaternion;
 
 use crate::{
-    NUM_IMU, NUM_MAG,
+    IMU_COUNT, NUM_MAG,
     calibration::Calibrate,
     errors::HolsatusError,
     health::redundancy::Mode,
@@ -78,18 +78,6 @@ pub static ESKF_ESTIMATE: Watch<EskfEstimate> = Watch::new();
 pub struct ThrottleCommand(pub f32);
 pub static THROTTLE_COMMAND: Watch<ThrottleCommand> = Watch::new();
 
-pub static TRUE_VELOCITY_SP: Watch<[f32; 3]> = Watch::new();
-pub static TRUE_ATTITUDE_Q_SP: Watch<UnitQuaternion<f32>> = Watch::new();
-pub static TRUE_RATE_SP: Watch<[f32; 3]> = Watch::new();
-pub static SLEW_RATE_SP: Watch<[f32; 3]> = Watch::new();
-pub static FF_PRED_GYR: Watch<[f32; 3]> = Watch::new();
-
-// Setpoint outputs, to be routed by the signal_router task
-pub static POS_TO_VEL_SP: Watch<[f32; 3]> = Watch::new();
-pub static VEL_TO_ANGLE_SP: Watch<UnitQuaternion<f32>> = Watch::new();
-pub static ANGLE_TO_RATE_SP: Watch<[f32; 3]> = Watch::new();
-pub static RC_AXES_SP: Watch<[f32; 3]> = Watch::new();
-
 // Data received from an RC controller
 pub static RC_CHANNELS_RAW: Watch<Option<[u16; 16]>> = Watch::new();
 pub static RC_ANALOG_UNIT: Watch<RcAnalog> = Watch::new();
@@ -120,7 +108,6 @@ pub static USB_CONNECTED: Watch<bool> = Watch::new();
 pub static CALIBRATOR_STATE: Watch<CalibratorState> = Watch::new();
 
 // Commander signals
-pub static CMD_ARM_MOTORS: Watch<(bool, bool)> = Watch::new();
 pub static CMD_CALIBRATE: Watch<Calibrate> = Watch::new();
 
 // The event bus is mainly meant for aggerating system events
@@ -148,13 +135,13 @@ macro_rules! get_ctrl_freq {
     };
 }
 
-multi_watch!(RAW_MULTI_IMU_DATA, Imu6DofData<f32>, NUM_IMU, 2);
-multi_watch!(CAL_MULTI_IMU_DATA, Imu6DofData<f32>, NUM_IMU, 2);
+multi_watch!(RAW_MULTI_IMU_DATA, Imu6DofData<f32>, IMU_COUNT, 2);
+multi_watch!(CAL_MULTI_IMU_DATA, Imu6DofData<f32>, IMU_COUNT, 2);
 
 multi_watch!(RAW_MULTI_MAG_DATA, [f32; 3], NUM_MAG, 2);
 multi_watch!(CAL_MULTI_MAG_DATA, [f32; 3], NUM_MAG, 2);
 
-pub static IMU_MODES: Watch<[Mode; NUM_IMU]> = Watch::new();
+pub static IMU_MODES: Watch<[Mode; IMU_COUNT]> = Watch::new();
 
 #[cfg(feature = "mavlink")]
 pub use crate::mavlink::Message;

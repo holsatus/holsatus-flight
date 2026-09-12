@@ -1,7 +1,10 @@
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use nalgebra::{SMatrix, SVector, SVectorView, SVectorViewMut, UnitQuaternion, matrix, vector};
-use tinympc_rs::{AntiSphere, ProjectMulti, ProjectMultiExt as _, ProjectSingleExt as _, Solver, Sphere, policy::FixedPolicy};
+use tinympc_rs::{
+    AntiSphere, ProjectMulti, ProjectMultiExt as _, ProjectSingleExt as _, Solver, Sphere,
+    policy::FixedPolicy,
+};
 
 use crate::{
     consts::GRAVITY,
@@ -77,7 +80,7 @@ pub enum Message {
 pub static CHANNEL: Channel<Message, 2> = Channel::new();
 
 mod params {
-    use crate::tasks::param_storage::Table;
+    use crate::params::ParamTable;
 
     #[derive(Debug, Clone, mav_param::Tree)]
     pub struct Parameters {
@@ -113,9 +116,8 @@ mod params {
         }
     );
 
-    pub static TABLE: Table<Parameters> = Table::default("mpc");
+    pub static TABLE: ParamTable<Parameters> = ParamTable::default("mpc");
 }
-
 
 /// Shifts all columns such that `column[i] <- column[i + 1]` with the last two being identical.
 #[inline(always)]
@@ -172,7 +174,8 @@ pub async fn main() -> ! {
     let x_projector_speed = Sphere {
         center: vector![0.0, 0.0, 0.0],
         radius: 10.0,
-    }.dim_lift::<NX>([ax::VEL_X, ax::VEL_Y, ax::VEL_Z]);
+    }
+    .dim_lift::<NX>([ax::VEL_X, ax::VEL_Y, ax::VEL_Z]);
 
     let x_projector_accel = (
         Sphere {
@@ -181,16 +184,16 @@ pub async fn main() -> ! {
         },
         AntiSphere {
             center: vector![0.0, 0.0, GRAVITY],
-            radius: 1.0
-        }
-    ).dim_lift::<NX>([ax::ACC_X, ax::ACC_Y, ax::ACC_Z]);
-    
-    // Combine projectors and extend throughout entire horizon
-    let x_projector_bundle = (
-        (x_projector_speed, &x_projector_accel).time_fixed(),
-    );
+            radius: 1.0,
+        },
+    )
+        .dim_lift::<NX>([ax::ACC_X, ax::ACC_Y, ax::ACC_Z]);
 
-    let mut x_con: [tinympc_rs::Constraint<f32, _, NX, HX>; 1] = [x_projector_bundle.constraint_owned()];
+    // Combine projectors and extend throughout entire horizon
+    let x_projector_bundle = ((x_projector_speed, &x_projector_accel).time_fixed(),);
+
+    let mut x_con: [tinympc_rs::Constraint<f32, _, NX, HX>; 1] =
+        [x_projector_bundle.constraint_owned()];
 
     let u_projector_sphere = Sphere {
         center: vector![0.0, 0.0, 0.0],
@@ -198,7 +201,8 @@ pub async fn main() -> ! {
     };
 
     let u_projector_bundle = (u_projector_sphere,).time_fixed();
-    let mut u_con: [tinympc_rs::Constraint<f32, _, NU, HU>; 1] = [u_projector_bundle.constraint_owned()];
+    let mut u_con: [tinympc_rs::Constraint<f32, _, NU, HU>; 1] =
+        [u_projector_bundle.constraint_owned()];
 
     let gravity_vector = SVector::z() * GRAVITY;
     let mut control_sig = SVector::zeros();
@@ -224,7 +228,7 @@ pub async fn main() -> ! {
                     for i in from..HX {
                         position_ref.set_column(i, &SVector::from(position));
                     }
-                },
+                }
             }
 
             // Ensure channel is depleted before next tick

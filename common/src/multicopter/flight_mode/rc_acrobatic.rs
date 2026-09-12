@@ -10,9 +10,9 @@ use crate::{
 };
 
 pub mod params {
-    use crate::tasks::{
-        param_storage::Table,
-        rc_binder::rates::{Actual, Linear, Rates},
+    use crate::{
+        params::ParamTable,
+        tasks::rc_binder::rates::{Actual, Linear, Rates},
     };
 
     #[derive(Clone, Debug, mav_param::Tree)]
@@ -30,7 +30,7 @@ pub mod params {
         }
     );
 
-    pub static TABLE: Table<Params> = Table::new("acro", Params::const_default());
+    pub static TABLE: ParamTable<Params> = ParamTable::default("acro");
 }
 
 /// Acro mode. RC sticks are mapped to angular-rate setpoints.

@@ -1,5 +1,6 @@
 use core::marker::PhantomData;
 
+use common::embassy_time::{self, Duration};
 ///! Dshot driver for the stm32f405 using a timer-backed PWM
 use dshot_encoder;
 
@@ -12,6 +13,7 @@ use embassy_stm32::{
 };
 
 use common::hw_abstraction::OutputGroup;
+use static_cell::ConstStaticCell;
 
 const TRANSMIT_SIZE: usize = 24;
 
@@ -108,11 +110,15 @@ where
     }
 
     async fn set_motor_speeds_min(&mut self) {
-        self.transmit([dshot_encoder::throttle_minimum(false); 4])
+        self.transmit([dshot_encoder::command(dshot_encoder::DshotCmdT::DigitalCmdMotorStop); 4])
             .await
     }
 
-    async fn make_beep(&mut self) {}
+    async fn make_beep(&mut self) {
+        self.transmit([dshot_encoder::command(dshot_encoder::DshotCmdT::DigitalCmdBeep1); 4])
+            .await;
+        embassy_time::Timer::after_millis(260).await;
+    }
 }
 
 pub trait WaveformGenerator {
@@ -133,6 +139,7 @@ where
     dma: Peri<'d, DMA>,
     irq: BIND,
     _p: PhantomData<T>,
+    dmabuf: &'static mut [u16; 96],
 }
 
 impl<'d, T, DMA, BIND> UpDmaWaveform<'d, T, DMA, BIND>
@@ -142,10 +149,13 @@ where
     BIND: Binding<DMA::Interrupt, embassy_stm32::dma::InterruptHandler<DMA>>,
 {
     pub fn new(dma: Peri<'d, DMA>, irq: BIND) -> Self {
+        #[unsafe(link_section = ".ram_d3")]
+        static BUFFER: ConstStaticCell<[u16; 96]> = ConstStaticCell::new([0u16; 96]);
         Self {
             dma,
             irq,
             _p: PhantomData,
+            dmabuf: BUFFER.take(),
         }
     }
 }
@@ -158,12 +168,11 @@ where
 {
     type Timer = T;
     async fn run_waveform(&mut self, pwm: &mut SimplePwm<'_, T>, cmd: &[[u16; TRANSMIT_SIZE]; 4]) {
-        let mut interleaved = [0u16; TRANSMIT_SIZE * 4];
         for i in 0..TRANSMIT_SIZE {
-            interleaved[i * 4 + 0] = cmd[0][i];
-            interleaved[i * 4 + 1] = cmd[1][i];
-            interleaved[i * 4 + 2] = cmd[2][i];
-            interleaved[i * 4 + 3] = cmd[3][i];
+            self.dmabuf[i * 4 + 0] = cmd[0][i];
+            self.dmabuf[i * 4 + 1] = cmd[1][i];
+            self.dmabuf[i * 4 + 2] = cmd[2][i];
+            self.dmabuf[i * 4 + 3] = cmd[3][i];
         }
 
         use embassy_stm32::timer::Channel;
@@ -172,7 +181,7 @@ where
             self.irq,
             Channel::Ch1,
             Channel::Ch4,
-            &interleaved,
+            self.dmabuf,
         )
         .await;
     }

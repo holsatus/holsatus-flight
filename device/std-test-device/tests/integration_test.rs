@@ -2,5 +2,5 @@
 
 #[test]
 fn flight_pattern() {
-    std_device::test_entry(60, "integration-test-flight-pattern").unwrap()
+    std_device::test_entry(600, "integration-test-flight-pattern").unwrap()
 }

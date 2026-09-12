@@ -26,12 +26,10 @@ pub enum Command {
     SetActuatorOverride {
         active: bool,
     },
-    SetFlightMode(FlightMode),
+    SetFlightMode(crate::vehicle::FlightModeKind),
     RunArmChecks,
     EskfResetOrigin,
 }
-
-type FlightMode = crate::vehicle::FlightMode;
 
 /// A request to the [`Commander`](crate::commander::Commander)
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -83,6 +81,7 @@ pub enum Response {
     Failed,
 }
 
+/// Describes the origin of a command in the system
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Origin {

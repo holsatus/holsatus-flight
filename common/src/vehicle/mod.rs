@@ -1,9 +1,10 @@
-pub trait VehicleDefinition: 'static {
-    type FlightMode;
-    fn set_flight_mode(mode: Self::FlightMode);
+
+pub trait SetFlightMode {
+    type FlightModeKind;
+    fn set_flight_mode(mode: Self::FlightModeKind);
 }
 
 #[cfg(feature = "multicopter")]
 pub use crate::multicopter::Multicopter as Vehicle;
 
-pub type FlightMode = <Vehicle as VehicleDefinition>::FlightMode;
+pub type FlightModeKind = <Vehicle as SetFlightMode>::FlightModeKind;

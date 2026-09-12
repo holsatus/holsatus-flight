@@ -40,8 +40,8 @@ assign_resources! {
     },
     usart_1: Usart1 {
         periph: USART1,
-        rx_pin: PB15,
-        tx_pin: PB14,
+        rx_pin: PA10,
+        tx_pin: PA9,
         rx_dma: DMA2_CH6,
         tx_dma: DMA2_CH7,
     },

@@ -14,13 +14,17 @@ use futures::TryFutureExt;
 use crate::{
     multicopter::attitude_control::{ATTITUDE_COMMAND, AttitudeCommand},
     signals::{THROTTLE_COMMAND, ThrottleCommand},
-    sync::watch::{Receiver, Sender, Watch},
+    sync::{
+        procedure::Procedure,
+        watch::{Receiver, Sender, Watch},
+    },
+    tasks::rc_binder::params::digital::Event,
 };
 
 macro_rules! flight_modes {
     (
         $(
-            $mode:ident($ty:ty) $(= $index:literal)?
+            $vehicle_mode:ident => $mode:ident($ty:ty) $(= $index:literal)?
         ),* $(,)?
     ) => {
         /// A flight mode that can be selected as the active mode.
@@ -74,6 +78,32 @@ macro_rules! flight_modes {
                 }
             }
         }
+
+        impl TryFrom<Event> for Kind {
+            type Error = ();
+
+            fn try_from(value: Event) -> Result<Self, Self::Error> {
+                let kind = match value {
+                    $(
+                        Event::$vehicle_mode => Kind::$mode,
+                    )*
+                    _ => return Err(()),
+                };
+
+                Ok(kind)
+            }
+        }
+
+        impl From<Kind> for Event {
+            fn from(value: Kind) -> Self {
+                match value {
+                    Kind::None => Event::None,
+                    $(
+                        Kind::$mode => Event::$vehicle_mode,
+                    )*
+                }
+            }
+        }
     };
 }
 
@@ -112,11 +142,11 @@ mod rc_stabilized;
 mod stabilized;
 
 flight_modes! {
-    Descend(descend::Descend),
-    PositionHold(position_hold::PositionHold),
-    RcAcrobatic(rc_acrobatic::RcAcrobatic),
-    RcStabilized(rc_stabilized::RcStabilized),
-    Stabilized(stabilized::Stabilized),
+    FlightMode0 => Descend(descend::Descend),
+    FlightMode1 => PositionHold(position_hold::PositionHold),
+    FlightMode2 => RcAcrobatic(rc_acrobatic::RcAcrobatic),
+    FlightMode3 => RcStabilized(rc_stabilized::RcStabilized),
+    FlightMode4 => Stabilized(stabilized::Stabilized),
 }
 
 /// A precondition that must be met for a mode to be entered.
@@ -192,8 +222,10 @@ pub static CURRENT_MODE: Watch<Kind> = Watch::new();
 /// The desired (requested) flight mode.
 pub static REQUEST_MODE: Watch<Kind> = Watch::new();
 
+pub static REQUEST_MODE_PROC: Procedure<Kind, bool, 1> = Procedure::new();
+
 pub mod params {
-    use crate::tasks::param_storage::Table;
+    use crate::params::ParamTable;
 
     #[derive(Clone, Debug, mav_param::Tree)]
     pub struct Params {}
@@ -202,7 +234,7 @@ pub mod params {
         Params => Params {}
     );
 
-    pub static TABLE: Table<Params> = Table::new("fm", Params::const_default());
+    pub static TABLE: ParamTable<Params> = ParamTable::default("flm");
 }
 
 /// The single flight mode manager task.
@@ -231,16 +263,17 @@ impl FlightModeRunner<'_> {
     pub async fn run(&mut self) -> ! {
         loop {
             let prev_kind = self.current_mode.kind();
+
             let result = select(self.recv_request.changed(), self.current_mode.step()).await;
             match result {
                 Either::First(new_kind) => {
                     if let Err(error) = self.transition(new_kind).await {
-                        error!("[mc::flight_mode] {:?}", error);
+                        error!("[mc/flight_mode] {:?}", error);
                     }
                 }
                 Either::Second(action) => {
                     if let Err(error) = self.handle_action(action).await {
-                        error!("[mc::flight_mode] {:?}", error);
+                        error!("[mc/flight_mode] {:?}", error);
                     }
                 }
             }
@@ -248,7 +281,7 @@ impl FlightModeRunner<'_> {
             // Publish if the flight mode changed
             let curr_kind = self.current_mode.kind();
             if prev_kind != curr_kind {
-                info!("[mc::flight_mode] Entered flight mode {:?}", curr_kind);
+                info!("[mc/flight_mode] Entered flight mode {:?}", curr_kind);
                 self.send_current.send(curr_kind);
             }
         }

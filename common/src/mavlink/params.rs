@@ -1,7 +1,7 @@
 use embassy_time::Duration;
 use mavio::{prelude::MaybeVersioned, protocol::Frame};
 
-use crate::{mavlink::messages::Generator, tasks::param_storage::Table};
+use crate::{mavlink::messages::Generator, params::ParamTable};
 
 #[derive(mav_param::Tree, Clone)]
 pub struct Parameters {
@@ -70,9 +70,9 @@ pub struct Identity {
 
 impl Identity {
     /// Returns `true` if the identity of `self` is the target of `msg_target`
-    /// 
+    ///
     /// This includes both a total match, i.e. `self == msg_target` but also if
-    /// the `msg_target` is a broadcast address. 
+    /// the `msg_target` is a broadcast address.
     pub fn is_target_of(&self, msg_target: Identity) -> bool {
         let sys_match = (msg_target.sys == 0) || (msg_target.sys == self.sys);
         let com_match = (msg_target.com == 0) || (msg_target.com == self.com);
@@ -112,4 +112,4 @@ impl Parameters {
     }
 }
 
-pub static TABLE: Table<Parameters> = Table::default("mav");
+pub static TABLE: ParamTable<Parameters> = ParamTable::default("mav");

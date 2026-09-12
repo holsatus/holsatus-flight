@@ -5,8 +5,8 @@ use crate::{
     utils::u_types::{UBuffer, UFloat},
 };
 use embedded_cli::{
-    arguments::{FromArgument, FromArgumentError},
     Command,
+    arguments::{FromArgument, FromArgumentError},
 };
 use embedded_io_async::{Read, Write};
 use ufmt::{uWrite, uwrite};
@@ -120,18 +120,18 @@ impl super::CommandHandler for ParamCommand {
         &self,
         mut serial: impl Read<Error = EmbeddedIoError> + Write<Error = EmbeddedIoError>,
     ) -> Result<(), EmbeddedIoError> {
-        use crate::tasks::param_storage::TABLES;
+        use crate::params::PARAM_REGISTRY;
         match self {
             ParamCommand::List => {
                 serial
                     .write_all(b"Enumerating all system parameters..\n\r")
                     .await?;
 
-                let tables = TABLES.tables.with_lock(|t| t.clone());
+                let tables = PARAM_REGISTRY.tables.with_lock(|t| t.clone());
 
                 for table in tables {
-                    let read = table.params.read().await;
-                    for maybe_param in mav_param::param_iter_named(&*read, table.name) {
+                    let read = table.pure_read().await;
+                    for maybe_param in mav_param::param_iter_named(&*read, table.name()) {
                         match maybe_param {
                             Ok(param) => {
                                 let mut buffer = UBuffer::<48>::new();
@@ -158,12 +158,12 @@ impl super::CommandHandler for ParamCommand {
                     return Ok(());
                 };
 
-                let Some(table) = TABLES.get_table(module) else {
+                let Some(table) = PARAM_REGISTRY.get_table(module) else {
                     serial.write_all(b"[warn] No such table exists\n\r").await?;
                     return Ok(());
                 };
 
-                let table = table.params.read().await;
+                let table = table.pure_read().await;
 
                 let Some(table_value) = mav_param::get_value(&*table, param) else {
                     serial
@@ -187,12 +187,12 @@ impl super::CommandHandler for ParamCommand {
                     return Ok(());
                 };
 
-                let Some(table) = TABLES.get_table(module) else {
+                let Some(table) = PARAM_REGISTRY.get_table(module) else {
                     serial.write_all(b"[warn] No such table exists\n\r").await?;
                     return Ok(());
                 };
 
-                let mut table = table.params.write().await;
+                let mut table = table.pure_write().await;
 
                 let Some(table_value) = mav_param::get_value(&*table, param) else {
                     serial
@@ -246,7 +246,7 @@ impl super::CommandHandler for ParamCommand {
                 }
             }
             ParamCommand::Save { ident } => {
-                use crate::tasks::param_storage::{request, Request, Response};
+                use crate::params::{Request, Response, request};
                 let ident = mav_param::Ident::from_str_truncated(&ident.string);
                 match request(Request::SaveParam(ident)).await {
                     Some(Response::Success) => {
@@ -267,8 +267,8 @@ impl super::CommandHandler for ParamCommand {
                 }
             }
             ParamCommand::SaveAll => {
-                use crate::tasks::param_storage::{request, Request, Response};
-                match request(Request::SaveAllTables).await {
+                use crate::params::{Request, Response, request};
+                match request(Request::SaveAll).await {
                     Some(Response::Success) => {
                         serial
                             .write_all(b"[info] All parameters succesfully saved\n\r")

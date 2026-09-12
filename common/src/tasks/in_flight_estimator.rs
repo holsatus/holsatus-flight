@@ -3,6 +3,9 @@ use embassy_time::Timer;
 
 use crate::{consts::GRAVITY, filters::Lowpass, get_ctrl_freq};
 
+const LOW_GRAVITY: f32 = GRAVITY * 0.8;
+const HIGH_GRAVITY: f32 = GRAVITY * 1.2;
+
 #[embassy_executor::task]
 pub async fn main() -> ! {
     static STR_ID: &str = "if_estimator";
@@ -18,21 +21,16 @@ pub async fn main() -> ! {
 
     loop {
         rcv_motors_state.get_and(|state| state.is_armed()).await;
-        debug!("[if_estimator] Vehicle is armed, continuing");
 
         let force_target = rcv_motors_mixed.changed().await;
         let imu_data = rcv_imu_data.get().await;
 
         let accel = imu_data.acc[2].abs();
         let accel = acc_z_filter.update(accel);
-        
+
         let force = force_target.iter().sum::<f32>();
 
-        debug!("[if_estimator] Accel {}, force: {}", accel, force);
-
-        let low_gravity = GRAVITY * 0.8;
-
-        if force.abs() > VEHICLE_MASS * low_gravity && accel > low_gravity {
+        if force.abs() > VEHICLE_MASS * LOW_GRAVITY && accel > HIGH_GRAVITY {
             debug!("[if_estimator] Vehicle detected as being IN FLIGHT!");
             crate::signals::IN_FLIGHT.store(true, Ordering::Relaxed);
             crate::signals::ATTITUDE_INT_EN.send(true);

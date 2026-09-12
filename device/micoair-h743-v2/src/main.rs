@@ -33,10 +33,10 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     level_t_spawner.spawn(flash::param_storage(r.flash, config::flash()).unwrap());
 
     // Give special priority to the serial port used as primary input
-    level_0_spawner.spawn(usart::run_usart1(r.usart_1, config::usart1(), "usart1").unwrap()); // CRSF
-    level_1_spawner.spawn(usart::run_usart2(r.usart_2, config::usart2(), "usart2").unwrap()); // UNUSED
-    level_1_spawner.spawn(usart::run_usart3(r.usart_3, config::usart3(), "usart3").unwrap()); // MAVLINK
-    level_1_spawner.spawn(usart::run_usart6(r.usart_6, config::usart6(), "usart6").unwrap()); // GNSS
+    level_0_spawner.spawn(usart::run_usart1(r.usart_1, config::usart1(), "usart1").unwrap());
+    level_1_spawner.spawn(usart::run_usart2(r.usart_2, config::usart2(), "usart2").unwrap());
+    level_1_spawner.spawn(usart::run_usart3(r.usart_3, config::usart3(), "usart3").unwrap());
+    level_1_spawner.spawn(usart::run_usart6(r.usart_6, config::usart6(), "usart6").unwrap());
 
     common::embassy_time::Timer::after_millis(10).await;
 
@@ -59,10 +59,9 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     // These take direct ownership of their hardware to avoid additional complexity
     level_0_spawner.spawn(spi::bmi088_reader(r.spi_2, r.spi_2_extra).unwrap());
     level_0_spawner.spawn(spi::bmi270_reader(r.spi_3, r.spi_3_extra).unwrap());
-    // level_0_spawner.spawn(i2c::imu_reader(r.i2c_2, config::i2c1(), config::imu()).unwrap());
     level_0_spawner.spawn(motors::motor_governor(r.motors, config::motor()).unwrap());
 
-    level_0_spawner.spawn(common::tasks::rc_reader::main("usart1").unwrap());
+    // level_0_spawner.spawn(common::tasks::rc_reader::main("usart6").unwrap());
     level_0_spawner.spawn(common::tasks::rc_binder::main().unwrap());
     level_0_spawner.spawn(common::multicopter::attitude_control::main().unwrap());
 
@@ -71,20 +70,16 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
     // #[cfg(feature = "gnss")]
     // level_1_spawner.spawn(common::tasks::gnss_reader::main("usart6").unwrap());
     level_1_spawner.spawn(common::tasks::commander::main().unwrap());
-    level_1_spawner.spawn(common::multicopter::flight_mode::entry().unwrap());
-
-    // ------------------- Low-priority tasks -------------------
+    level_1_spawner.spawn(common::multicopter::flight_mode::main().unwrap());
 
     #[cfg(feature = "mavlink")]
-    level_t_spawner.spawn(common::mavlink::main("usart3").unwrap());
+    level_1_spawner.spawn(common::mavlink::main("usart6").unwrap());
+
+    // ------------------- Low-priority tasks -------------------
 
     level_t_spawner.spawn(common::tasks::calibrator::main().unwrap());
     level_t_spawner.spawn(common::tasks::arm_blocker::main().unwrap());
     level_t_spawner.spawn(common::tasks::eskf::main().unwrap());
-
-    #[cfg(feature = "mpc")]
-    level_t_spawner.spawn(common::tasks::controller_mpc::main().unwrap());
-
     level_t_spawner.spawn(common::tasks::in_flight_estimator::main().unwrap());
 
     // -------------------------- fin ---------------------------

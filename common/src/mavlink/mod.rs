@@ -7,14 +7,14 @@ use crate::errors::Debounce;
 use crate::mavlink::handler::Handler;
 use crate::sync::channel::Channel;
 use crate::{errors::adapter::embedded_io::EmbeddedIoError, mavlink::messages::Generator};
-use embassy_futures::select::{select, select3, select_array, Either, Either3};
+use embassy_futures::select::{Either, Either3, select, select_array, select3};
 use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::{Read, Write};
 use heapless::Vec;
 use mavio::{
-    prelude::{Versioned, V2},
-    protocol::FrameParser,
     Frame,
+    prelude::{V2, Versioned},
+    protocol::FrameParser,
 };
 
 use params::{Identity, Parameters};
@@ -408,6 +408,7 @@ impl MavlinkServer {
 
     async fn run(&mut self) -> ! {
         let mut debounce = Debounce::new(Duration::from_secs(1));
+        info!("[mavlink] Task started");
         loop {
             if let Err(_error) = self.run_inner().await {
                 if let Some(_) = debounce.evaluate(0u8) {
@@ -467,7 +468,6 @@ impl MavlinkServer {
                 self.send_mav_message(&message, target).await?;
             }
             Message::StreamGenerator { .. } => {
-
                 /* There are several cases that need to be handled here.
                 - If there is already a task streaming the message_id, update it
                 - If there is an inactive streamer task, run it
@@ -588,6 +588,35 @@ impl MavlinkServer {
                 crate::signals::VICON_POSITION_ESTIMATE.send(vicon_data);
             }
 
+            m::RcChannelsOverride::ID => {
+                let msg = frame.decode_message::<m::RcChannelsOverride>()?;
+
+                let channels = [
+                    msg.chan1_raw,
+                    msg.chan2_raw,
+                    msg.chan3_raw,
+                    msg.chan4_raw,
+                    msg.chan5_raw,
+                    msg.chan6_raw,
+                    msg.chan7_raw,
+                    msg.chan8_raw,
+                    msg.chan9_raw,
+                    msg.chan10_raw,
+                    msg.chan11_raw,
+                    msg.chan12_raw,
+                    msg.chan13_raw,
+                    msg.chan14_raw,
+                    msg.chan15_raw,
+                    msg.chan16_raw,
+                ];
+
+                crate::signals::RC_CHANNELS_RAW.send(Some(channels));
+            }
+
+            m::RadioStatus::ID => {
+                let _msg = frame.decode_message::<m::RadioStatus>()?;
+            }
+
             id => {
                 warn!("[mavlink] Cannot handle unsupported message id: {}", id);
                 return Err(Error::UnsupportedMsg { id });
@@ -642,33 +671,27 @@ impl MavlinkServer {
             error!("[mavlink] Invalid link ID: {:?}", stream_id);
         }
 
-        if self.next_peer_timeout.is_some_and(|(peer, _)| peer == frame_identity) {
+        if self
+            .next_peer_timeout
+            .is_some_and(|(peer, _)| peer == frame_identity)
+        {
             self.update_next_peer_timeout();
         } else if self.next_peer_timeout.is_none() {
-            self.next_peer_timeout = Some((
-                frame_identity,
-                frame_seen + self.param.timeout()
-            ))
+            self.next_peer_timeout = Some((frame_identity, frame_seen + self.param.timeout()))
         }
 
         match self.next_peer_timeout {
             Some((id, _)) if id == frame_identity => {
                 self.update_next_peer_timeout();
-            },
+            }
             None => {
-                self.next_peer_timeout = Some((
-                    frame_identity,
-                    frame_seen + self.param.timeout()
-                ))
-            },
-            _ => ()
+                self.next_peer_timeout = Some((frame_identity, frame_seen + self.param.timeout()))
+            }
+            _ => (),
         }
 
         if self.next_peer_timeout.is_none() {
-            self.next_peer_timeout = Some((
-                frame_identity,
-                frame_seen + self.param.timeout()
-            ));
+            self.next_peer_timeout = Some((frame_identity, frame_seen + self.param.timeout()));
         }
 
         Ok(())

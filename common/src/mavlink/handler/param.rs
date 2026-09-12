@@ -1,14 +1,14 @@
 use mav_param::Value;
 use mavio::{
+    Frame,
     default_dialect::{
         enums::MavParamType,
         messages::{ParamRequestList, ParamRequestRead, ParamSet, ParamValue},
     },
     prelude::MaybeVersioned,
-    Frame,
 };
 
-use crate::mavlink::{params::Identity, MavlinkServer};
+use crate::mavlink::{MavlinkServer, params::Identity};
 
 pub fn value_from_mav_bytewise(param_value: f32, param_type: MavParamType) -> Option<Value> {
     use mav_param::value::from_bytewise;
@@ -39,21 +39,26 @@ pub fn value_into_mav_bytewise(value: Value) -> (f32, MavParamType) {
     }
 }
 
-async fn send_parameter_value(server: &mut MavlinkServer, target: Identity, value: mav_param::Value, raw_ident: &[u8; 16]) -> Result<(), crate::mavlink::Error> {
-        let param_id = raw_ident.clone();
-        let (param_value, param_type) = value_into_mav_bytewise(value);
+async fn send_parameter_value(
+    server: &mut MavlinkServer,
+    target: Identity,
+    value: mav_param::Value,
+    raw_ident: &[u8; 16],
+) -> Result<(), crate::mavlink::Error> {
+    let param_id = raw_ident.clone();
+    let (param_value, param_type) = value_into_mav_bytewise(value);
 
-        let message = ParamValue {
-            param_id,
-            param_value,
-            param_type,
-            param_count: u16::MAX,
-            param_index: u16::MAX,
-        };
+    let message = ParamValue {
+        param_id,
+        param_value,
+        param_type,
+        param_count: u16::MAX,
+        param_index: u16::MAX,
+    };
 
-        server.send_mav_message(&message, target.into()).await?;
+    server.send_mav_message(&message, target.into()).await?;
 
-        Ok(())
+    Ok(())
 }
 
 impl<V: MaybeVersioned> super::Handler<V> for ParamRequestRead {
@@ -62,8 +67,7 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamRequestRead {
         server: &mut MavlinkServer,
         frame: Frame<V>,
     ) -> Result<(), crate::mavlink::Error> {
-
-       let target = Identity {
+        let target = Identity {
             sys: self.target_system,
             com: self.target_component,
         };
@@ -72,19 +76,23 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamRequestRead {
             return Ok(());
         }
 
-        match crate::tasks::param_storage::TABLES
+        match crate::params::PARAM_REGISTRY
             .get_param(&self.param_id)
             .await
         {
             Ok(value) => {
                 send_parameter_value(server, Identity::from(&frame), value, &self.param_id).await?;
             }
-            Err(error) => {
-                match core::str::from_utf8(&self.param_id) {
-                    Ok(ident) => error!("[mavlink] Could not get the parameter: {:?} utf8({})", error, ident),
-                    _ => error!("[mavlink] Could not get the parameter: {:?} raw({:?})", error, self.param_id),
-                }
-            }
+            Err(error) => match core::str::from_utf8(&self.param_id) {
+                Ok(ident) => error!(
+                    "[mavlink] Could not get the parameter: {:?} utf8({})",
+                    error, ident
+                ),
+                _ => error!(
+                    "[mavlink] Could not get the parameter: {:?} raw({:?})",
+                    error, self.param_id
+                ),
+            },
         }
 
         Ok(())
@@ -97,7 +105,6 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamRequestList {
         server: &mut MavlinkServer,
         frame: Frame<V>,
     ) -> Result<(), crate::mavlink::Error> {
-
         let target = Identity {
             sys: self.target_system,
             com: self.target_component,
@@ -108,21 +115,21 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamRequestList {
         }
 
         // Get a copy of the parameter tables (references)
-        let tables = crate::tasks::param_storage::TABLES
+        let tables = crate::params::PARAM_REGISTRY
             .tables
             .with_lock(|t| t.clone());
 
         // Not super nice to iterate through the tables twice
         let mut param_count = 0;
         for table in tables.iter().cloned() {
-            param_count += table.num_values().await as u16;
+            param_count += table.size_hint().await as u16;
         }
 
         // Construct a message for each parameter
         let mut param_index = 0;
         for table in tables {
-            let read = table.params.read().await;
-            for maybe_param in mav_param::param_iter_named(&*read, table.name) {
+            let read = table.pure_read().await;
+            for maybe_param in mav_param::param_iter_named(&*read, table.name()) {
                 match maybe_param {
                     Ok(param) => {
                         let param_id = param.ident.as_raw().clone();
@@ -160,7 +167,6 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamSet {
         server: &mut MavlinkServer,
         frame: Frame<V>,
     ) -> Result<(), crate::mavlink::Error> {
-
         let target_id = Identity {
             sys: self.target_system,
             com: self.target_component,
@@ -176,7 +182,7 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamSet {
             return Ok(());
         };
 
-        match crate::tasks::param_storage::TABLES
+        match crate::params::PARAM_REGISTRY
             .set_param(&self.param_id, value)
             .await
         {
@@ -189,11 +195,11 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamSet {
             }
             Err(error) => {
                 error!("[mavlink] Could not set the parameter: {:?}", error,);
-                return Err(crate::mavlink::Error::MaxNumberPorts) // TODO Correct error?
+                return Err(crate::mavlink::Error::MaxNumberPorts); // TODO Correct error?
             }
         }
 
-        match crate::tasks::param_storage::TABLES
+        match crate::params::PARAM_REGISTRY
             .get_param(&self.param_id)
             .await
         {
@@ -202,7 +208,7 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamSet {
             }
             Err(error) => {
                 error!("[mavlink] Could not get the parameter: {:?}", error,);
-                return Err(crate::mavlink::Error::MaxNumberPorts) // TODO Correct error?
+                return Err(crate::mavlink::Error::MaxNumberPorts); // TODO Correct error?
             }
         }
 

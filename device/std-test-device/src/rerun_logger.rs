@@ -143,27 +143,6 @@ impl RerunLogger {
             )?;
         }
 
-        if let Some(rate_sp) = common::signals::TRUE_RATE_SP.try_get() {
-            self.rec
-                .log("sim/firmware/rate_sp", &Scalars::new(rate_sp))?;
-        }
-
-        if let Some(attitude_q_sp) = common::signals::TRUE_ATTITUDE_Q_SP.try_get() {
-            let (roll, pitch, yaw) = attitude_q_sp.euler_angles();
-            self.rec
-                .log("sim/firmware/angl_sp", &Scalars::new([roll, pitch, yaw]))?;
-        }
-
-        if let Some(rate_sp) = common::signals::SLEW_RATE_SP.try_get() {
-            self.rec
-                .log("sim/firmware/slew_rate_sp", &Scalars::new(rate_sp))?;
-        }
-
-        if let Some(rate_sp) = common::signals::FF_PRED_GYR.try_get() {
-            self.rec
-                .log("sim/firmware/gyro_ff_pred", &Scalars::new(rate_sp))?;
-        }
-
         if let Some(rate_sp) = common::signals::AHRS_ATTITUDE.try_get() {
             self.rec
                 .log("sim/firmware/ahrs_attitude", &Scalars::new(rate_sp))?;

@@ -1,6 +1,6 @@
-use crate::{serial::StreamId, tasks::param_storage::Table};
+use crate::{params::ParamTable, serial::StreamId};
 
-#[derive(mav_param::Tree, Default, Clone)]
+#[derive(mav_param::Tree, Clone)]
 pub struct Parameters {
     pub assign: [Option<Assigned>; super::MAX_IO_STREAMS],
 }
@@ -27,21 +27,15 @@ pub struct TaskName(pub &'static str);
 
 impl TaskId {
     pub const fn new(name: &str) -> TaskId {
-        let hash = fnv1a_hash(name);
-        let hash_u32 = ((hash >> 32) ^ hash & 0xFFFFFFFF) as u32;
-        TaskId(hash_u32)
+        TaskId(fnv1a_hash_u32(name))
     }
 }
 
-impl Parameters {
-    pub const fn const_default() -> Parameters {
-        Parameters {
-            assign: [const { None }; super::MAX_IO_STREAMS],
-        }
-    }
-}
+crate::const_default!(Parameters => {
+    assign: [const { None }; super::MAX_IO_STREAMS],
+});
 
-pub static TABLE: Table<Parameters> = Table::new("io", Parameters::const_default());
+pub static TABLE: ParamTable<Parameters> = ParamTable::default("io");
 
 pub const fn fnv1a_hash_u32(s: &str) -> u32 {
     let hash = fnv1a_hash(s);

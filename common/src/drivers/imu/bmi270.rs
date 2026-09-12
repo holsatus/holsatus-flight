@@ -9,28 +9,33 @@ use embedded_hal_async::{i2c, spi};
 use futures::TryFutureExt as _;
 
 use crate::{
-    drivers::{imu::{ImuInitialize, ImuSensor, map_deg_to_rad, map_g_to_mpss}, wrapped::{WrappedI2c, WrappedSpi}}, errors::ImuError, types::measurements::Imu6DofData,
+    abstraction::imu::{AccelGyro, ImuInitialize},
+    errors::SensorError,
+    types::measurements::Imu6DofData,
+    wrapped::{i2c::WrappedI2c, spi::WrappedSpi},
 };
 
-impl<I> ImuSensor for Bmi270<I>
+use super::{map_deg_to_rad, map_g_to_mpss};
+
+impl<I> AccelGyro for Bmi270<I>
 where
-    ImuError: From<<I as RegisterInterfaceBase>::Error>,
+    SensorError: From<<I as RegisterInterfaceBase>::Error>,
     I: AsyncRegisterInterface<AddressType = u8>,
     I: AsyncBufferInterface<AddressType = u8, Error = <I as RegisterInterfaceBase>::Error>,
 {
-    fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+    fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], SensorError>> {
         self.read_acc_scaled()
             .map_ok(map_g_to_mpss)
             .map_err(|e| e.into())
     }
 
-    fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+    fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], SensorError>> {
         self.read_gyr_scaled()
             .map_ok(map_deg_to_rad)
             .map_err(|e| e.into())
     }
 
-    fn read_acc_gyr(&mut self) -> impl Future<Output = Result<Imu6DofData<f32>, ImuError>> {
+    fn read_acc_gyr(&mut self) -> impl Future<Output = Result<Imu6DofData<f32>, SensorError>> {
         self.read_acc_gyr_scaled()
             .map_ok(|(acc, gyr)| Imu6DofData {
                 timestamp_us: Instant::now().as_micros(),
@@ -41,27 +46,27 @@ where
     }
 }
 
-fn map_spi_error<E: spi::Error>(error: Error<E>, whoami: u8) -> ImuError {
+fn map_spi_error<E: spi::Error>(error: Error<E>, whoami: u8) -> SensorError {
     match error {
-        Error::Transport(t) => ImuError::SpiInterface(t.kind().into()),
-        Error::ChipId(actual) => ImuError::WhoAmI {
+        Error::Transport(t) => SensorError::SpiInterface(t.kind().into()),
+        Error::ChipId(actual) => SensorError::WhoAmI {
             expected: whoami,
             actual: actual,
         },
-        Error::BadInit => ImuError::InitFailure,
-        Error::CmdTimeout => ImuError::Timeout,
+        Error::BadInit => SensorError::InitFailure,
+        Error::CmdTimeout => SensorError::Timeout,
     }
 }
 
-fn map_i2c_error<E: i2c::Error>(error: Error<E>, whoami: u8) -> ImuError {
+fn map_i2c_error<E: i2c::Error>(error: Error<E>, whoami: u8) -> SensorError {
     match error {
-        Error::Transport(t) => ImuError::I2cInterface(t.kind().into()),
-        Error::ChipId(actual) => ImuError::WhoAmI {
+        Error::Transport(t) => SensorError::I2cInterface(t.kind().into()),
+        Error::ChipId(actual) => SensorError::WhoAmI {
             expected: whoami,
             actual: actual,
         },
-        Error::BadInit => ImuError::InitFailure,
-        Error::CmdTimeout => ImuError::Timeout,
+        Error::BadInit => SensorError::InitFailure,
+        Error::CmdTimeout => SensorError::Timeout,
     }
 }
 
@@ -74,9 +79,9 @@ pub struct Bmi270Config {
 async fn configure<I: AsyncRegisterInterface<AddressType = u8>>(
     imu: &mut Bmi270<I>,
     config: &Bmi270Config,
-) -> Result<(), ImuError>
+) -> Result<(), SensorError>
 where
-    ImuError: From<I::Error>,
+    SensorError: From<I::Error>,
 {
     if config.pin_1_int_data_ready {
         imu.map_int1(false, false, true, false).await?;
@@ -107,7 +112,7 @@ where
     async fn initialize<'a>(
         interface: &'a mut Self::Interface,
         config: &Self::Config,
-    ) -> Result<Self::Sensor<'a>, ImuError>
+    ) -> Result<Self::Sensor<'a>, SensorError>
     where
         Self: 'a,
     {
@@ -137,7 +142,7 @@ where
     async fn initialize<'a>(
         interface: &'a mut Self::Interface,
         config: &Self::Config,
-    ) -> Result<Self::Sensor<'a>, ImuError>
+    ) -> Result<Self::Sensor<'a>, SensorError>
     where
         Self: 'a,
     {

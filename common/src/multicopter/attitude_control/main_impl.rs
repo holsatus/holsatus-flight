@@ -191,18 +191,18 @@ impl Controller<'_> {
             angle_axes: [
                 AngleAxis {
                     pid: Pid::new(
-                        params.angl.z.kp,
-                        params.angl.z.ki,
-                        params.angl.z.kd,
+                        params.angl.x.kp,
+                        params.angl.x.ki,
+                        params.angl.x.kd,
                         true,
                         dt,
                     ),
                 },
                 AngleAxis {
                     pid: Pid::new(
-                        params.angl.z.kp,
-                        params.angl.z.ki,
-                        params.angl.z.kd,
+                        params.angl.y.kp,
+                        params.angl.y.ki,
+                        params.angl.y.kd,
                         true,
                         dt,
                     ),
@@ -225,7 +225,6 @@ impl Controller<'_> {
             thrust_lp: NthOrderLowpass::new(params.ref_lp, dt * 100.),
             leak_tc: params.att_leak_tc,
             dt: dt,
-
             mixing_matrix: DEV_QUAD_MOTOR_SETUP.into_mixing_matrix().unwrap(),
             throttle: 0.0,
         };

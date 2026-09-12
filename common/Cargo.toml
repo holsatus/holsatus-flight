@@ -10,13 +10,13 @@ default = [
     "mavlink",
     "gnss",
     "usb",
+    "std",
 ]
 
 multicopter = []
 fixedwing = []
 
-imu_count_0 = []
-imu_count_1 = ["imu_count_0"]
+imu_count_1 = []
 imu_count_2 = ["imu_count_1"]
 imu_count_3 = ["imu_count_2"]
 imu_count_4 = ["imu_count_3"]

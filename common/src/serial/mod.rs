@@ -1,7 +1,7 @@
 use embedded_io::ReadExactError;
 use grantable_io::{Reader, Writer};
 use heapless::String;
-use maitake_sync::{blocking, Mutex, MutexGuard};
+use maitake_sync::{Mutex, MutexGuard, blocking};
 
 pub mod params;
 use params::fnv1a_hash_u32;
@@ -9,7 +9,7 @@ use params::fnv1a_hash_u32;
 use heapless::Vec;
 
 use crate::{
-    errors::adapter::embedded_io::EmbeddedIoError, utils::buf_read_ext::BufReadExt, MAX_IO_STREAMS,
+    MAX_IO_STREAMS, errors::adapter::embedded_io::EmbeddedIoError, utils::buf_read_ext::BufReadExt,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +88,7 @@ impl IoStreamList {
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
     #[error("Stream {0:?} already exists in the list")]
     AlreadyInserted(StreamId),

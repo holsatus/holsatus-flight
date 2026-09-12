@@ -72,7 +72,7 @@ impl Default for Params {
 
 /// Control loop period. The attitude inner loops run at the IMU rate; the
 /// position/velocity cascade is intentionally slower.
-const CONTROL_PERIOD: Duration = Duration::from_millis(100);
+const CONTROL_PERIOD: Duration = Duration::from_millis(10);
 
 impl FlightMode for PositionHold {
     async fn enter(controls: &Controls) -> Result<Self, EnterError> {

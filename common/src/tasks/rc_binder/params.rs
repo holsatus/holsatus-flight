@@ -1,4 +1,4 @@
-use crate::tasks::param_storage::Table;
+use crate::params::ParamTable;
 
 pub const NUM_CHANNELS: usize = 16;
 pub const NUM_DIGITALS: usize = 4;
@@ -11,7 +11,7 @@ pub struct Parameters {
 
 crate::const_default!(
     Parameters => {
-        channel_binding: Bindings::const_default()
+        channel_binding: Bindings::const_default(),
     }
 );
 
@@ -21,12 +21,12 @@ pub struct Bindings(pub(super) [Binding; NUM_CHANNELS]);
 
 crate::const_default!(
     Bindings => Bindings({
-        const POS_1: u16 = 191;
-        const POS_2: u16 = 997;
-        const POS_3: u16 = 1792;
+        const POS_1: u16 = 886;
+        const POS_2: u16 = 1500;
+        const POS_3: u16 = 2114;
 
-        const A_MIN: u16 = 174;
-        const A_MAX: u16 = 1811;
+        const A_MIN: u16 = 886;
+        const A_MAX: u16 = 2114;
 
         bindings(&[
             Binding::Analog(analog::Binding {
@@ -61,14 +61,14 @@ crate::const_default!(
                 (POS_3, digital::Event::DoAccCalibrate),
             ]),
             digital_binds(&[ // Switch B
-                (POS_1, digital::Event::SetModeMcAcrobatic),
-                (POS_2, digital::Event::SetModeMcStabilize),
-                (POS_3, digital::Event::SetModeMcPositionHold),
+                (POS_1, digital::Event::FlightMode1),
+                (POS_2, digital::Event::FlightMode2),
+                (POS_3, digital::Event::FlightMode3),
             ]),
             digital_binds(&[ // Switch C
                 (POS_1, digital::Event::DisarmVehicle),
                 (POS_2, digital::Event::ArmVehicle),
-                (POS_3, digital::Event::ArmVehicle),
+                (POS_3, digital::Event::ForceArmVehicle),
             ]),
             digital_binds(&[ // Button D
                 (POS_3, digital::Event::DoGyrCalibrate),
@@ -130,7 +130,7 @@ pub(super) enum Binding {
 }
 
 /// The parameter table for the angular rate controller
-pub static TABLE: Table<Parameters> = Table::new("rc", Parameters::const_default());
+pub static TABLE: ParamTable<Parameters> = ParamTable::default("rc");
 
 pub mod analog {
 
@@ -242,8 +242,6 @@ pub mod analog {
 }
 
 pub mod digital {
-    #[cfg(feature = "multicopter")]
-    use crate::multicopter;
 
     #[derive(mav_param::Tree, Debug, Default, Clone, Copy)]
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -272,19 +270,16 @@ pub mod digital {
         DoGyrCalibrate,
         DoMagCalibrate,
 
-        #[cfg(feature = "multicopter")]
-        SetModeMcAcrobatic = 300,
-        #[cfg(feature = "multicopter")]
-        SetModeMcStabilize,
-        #[cfg(feature = "multicopter")]
-        SetModeMcPositionHold,
-
-        #[cfg(feature = "fixedwing")]
-        SetModeFwManual = 400,
-        #[cfg(feature = "fixedwing")]
-        SetModeFwAcrobatic,
-        #[cfg(feature = "fixedwing")]
-        SetModeFwStabilized,
+        FlightMode0 = 10000,
+        FlightMode1 = 10001,
+        FlightMode2 = 10002,
+        FlightMode3 = 10003,
+        FlightMode4 = 10004,
+        FlightMode5 = 10005,
+        FlightMode6 = 10006,
+        FlightMode7 = 10007,
+        FlightMode8 = 10008,
+        FlightMode9 = 10009,
     }
 
     impl TryFrom<Event> for crate::tasks::commander::message::Command {
@@ -310,6 +305,7 @@ pub mod digital {
                     arm: false,
                     force: true,
                 },
+                Event::EskfResetOrigin => Command::EskfResetOrigin,
                 Event::DoAccCalibrate => Command::DoCalibration {
                     sensor_id: None,
                     sensor_type: SensorType::Accelerometer,
@@ -323,25 +319,15 @@ pub mod digital {
                     sensor_type: SensorType::Magnetometer,
                 },
 
-                #[cfg(feature = "multicopter")]
-                Event::SetModeMcAcrobatic => {
-                    Command::SetFlightMode(multicopter::flight_mode::Kind::RcAcrobatic)
-                }
-                #[cfg(feature = "multicopter")]
-                Event::SetModeMcStabilize => {
-                    Command::SetFlightMode(multicopter::flight_mode::Kind::RcStabilized)
-                }
-                #[cfg(feature = "multicopter")]
-                Event::SetModeMcPositionHold => {
-                    Command::SetFlightMode(multicopter::flight_mode::Kind::PositionHold)
+                // Use the vehicle-specified try_from implementation for any
+                event if (10000..11000u16).contains(&(event as u16)) => {
+                    Command::SetFlightMode(TryFrom::try_from(value)?)
                 }
 
-                #[cfg(feature = "fixedwing")]
-                SetModeFwManual | SetModeFwAcrobatic | SetModeFwStabilized => {
-                    todo!("Fixed wing flight modes not yet implemented")
+                event => {
+                    warn!("[rc_binder] {:?} does not map to a command", event);
+                    return Err(());
                 }
-
-                Event::EskfResetOrigin => Command::EskfResetOrigin,
             };
 
             Ok(command)

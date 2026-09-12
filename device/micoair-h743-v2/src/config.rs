@@ -29,7 +29,7 @@ pub(crate) fn usart3() -> UartConfig {
 }
 
 pub(crate) fn usart6() -> UartConfig {
-    UartConfig { baud: 115_200 }
+    UartConfig { baud: 460_800 }
 }
 
 #[cfg(feature = "sdmmc")]

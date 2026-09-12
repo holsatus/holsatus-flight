@@ -1,10 +1,10 @@
 use core::array::from_fn;
 
-use embassy_futures::select::{select, select_array, Either};
+use embassy_futures::select::{Either, select, select_array};
 use embassy_time::{Duration, Ticker, Timer};
 
 use crate::health::redundancy::{Mode, SensorEvaluator};
-use crate::{get_ctrl_freq, multi_receiver, signals as s, NUM_IMU};
+use crate::{IMU_COUNT, get_ctrl_freq, multi_receiver, signals as s};
 
 #[embassy_executor::task]
 pub async fn main() -> ! {
@@ -12,7 +12,7 @@ pub async fn main() -> ! {
     info!("{}: Task started", ID);
 
     // Task inputs
-    let mut rcv_multi_imu_data = multi_receiver!(s::CAL_MULTI_IMU_DATA, NUM_IMU);
+    let mut rcv_multi_imu_data = multi_receiver!(s::CAL_MULTI_IMU_DATA, IMU_COUNT);
 
     // Task outputs
     let snd_main_imu_data = s::CAL_IMU_DATA.sender();
@@ -24,11 +24,11 @@ pub async fn main() -> ! {
     let hz = get_ctrl_freq!();
 
     // Create array of sensor evaluators
-    let mut _acc_eval: [_; NUM_IMU] = from_fn(|_| SensorEvaluator::<10>::new());
-    let mut gyr_eval: [_; NUM_IMU] = from_fn(|_| SensorEvaluator::<10>::new());
+    let mut _acc_eval: [_; IMU_COUNT] = from_fn(|_| SensorEvaluator::<10>::new());
+    let mut gyr_eval: [_; IMU_COUNT] = from_fn(|_| SensorEvaluator::<10>::new());
 
     // Tell the IMUs to start in active mode
-    let mut imu_modes: [_; NUM_IMU] = [Mode::Active; NUM_IMU];
+    let mut imu_modes: [_; IMU_COUNT] = [Mode::Active; IMU_COUNT];
     snd_imu_modes.send(imu_modes);
 
     {
@@ -84,7 +84,7 @@ pub async fn main() -> ! {
                 }
             }
             Either::Second(_) => {
-                let idx = loop_counter as usize % NUM_IMU;
+                let idx = loop_counter as usize % IMU_COUNT;
                 if gyr_eval[idx].detect_stall() {
                     warn!("{}: IMU {} is stalled", ID, idx);
                     continue;

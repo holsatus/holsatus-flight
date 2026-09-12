@@ -5,12 +5,8 @@ pub mod blackbox_fat;
 pub mod calibrator;
 pub mod commander;
 pub mod eskf;
-pub mod ez_logger;
 pub mod imu_manager;
 pub mod imu_reader;
-pub mod motor_governor;
-pub mod motor_test;
-pub mod param_storage;
 pub mod rc_binder;
 pub mod rc_reader;
 

@@ -1,4 +1,4 @@
-use common::hw_abstraction::OutputGroup;
+use common::hw_abstraction::MotorGroup;
 use common::nalgebra::SMatrix;
 use common::nalgebra::SVector;
 use common::types::measurements::ViconData;
@@ -13,8 +13,9 @@ use rand_distr::Normal;
 
 pub mod imu_reader {
     use common::{
-        drivers::imu::{ImuInitialize, ImuSensor},
-        errors::ImuError,
+        ImuIndex,
+        abstraction::imu::{AccelGyro, ImuInitialize},
+        errors::SensorError,
         tasks::imu_reader::ImuReader,
         types::measurements::Imu6DofData,
     };
@@ -36,7 +37,7 @@ pub mod imu_reader {
             async fn initialize<'a>(
                 interface: &'a mut Self::Interface,
                 _config: &Self::Config,
-            ) -> Result<Self::Sensor<'a>, ImuError>
+            ) -> Result<Self::Sensor<'a>, SensorError>
             where
                 Self: 'a,
             {
@@ -44,14 +45,16 @@ pub mod imu_reader {
             }
         }
 
-        impl ImuSensor for Imu<'_> {
-            fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+        impl AccelGyro for Imu<'_> {
+            fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], SensorError>> {
                 async { Ok(self.0.read_sim_acc()) }
             }
-            fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+            fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], SensorError>> {
                 async { Ok(self.0.read_sim_gyr()) }
             }
-            fn read_acc_gyr(&mut self) -> impl Future<Output = Result<Imu6DofData<f32>, ImuError>> {
+            fn read_acc_gyr(
+                &mut self,
+            ) -> impl Future<Output = Result<Imu6DofData<f32>, SensorError>> {
                 async {
                     Ok(Imu6DofData {
                         timestamp_us: Instant::now().as_micros(),
@@ -63,7 +66,7 @@ pub mod imu_reader {
         }
 
         let trigger = Ticker::every(Duration::from_hz(crate::SIM_FREQUENCY));
-        ImuReader::entry::<Imu<'_>>(imu, (), trigger).await
+        ImuReader::entry::<Imu<'_>>(ImuIndex::Imu0, imu, (), trigger).await
     }
 }
 
@@ -71,7 +74,7 @@ pub mod imu_reader {
 pub async fn motor_governor(motors: SimulatedMotors) {
     struct Motors(SimulatedMotors);
 
-    impl OutputGroup for Motors {
+    impl MotorGroup for Motors {
         async fn set_motor_speeds(&mut self, speeds: [u16; 4]) {
             self.0.set_motor_speeds(speeds)
         }
@@ -88,7 +91,7 @@ pub async fn motor_governor(motors: SimulatedMotors) {
 
     let motors = Motors(motors);
 
-    common::tasks::motor_governor::main(motors).await
+    common::actuators::motor_governor::main(motors).await
 }
 
 #[embassy_executor::task]
@@ -127,5 +130,5 @@ pub async fn simulated_vicon(handle: SimHandle) {
 #[embassy_executor::task]
 pub async fn param_storage(flash: SimulatedFlash) {
     let range = flash.range_u32();
-    common::tasks::param_storage::entry(flash, range).await
+    common::params::entry(flash, range).await
 }

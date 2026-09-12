@@ -1,4 +1,4 @@
-use crate::tasks::param_storage::Table;
+use crate::params::ParamTable;
 
 #[derive(Clone, Debug, mav_param::Tree)]
 pub struct Params {
@@ -130,12 +130,12 @@ crate::const_default!(
         },
         angl: AngleParameters {
             x: AngleAxisParameters {
-                kp: 25.,
+                kp: 10.,
                 ki: 0.,
                 kd: 0.,
             },
             y: AngleAxisParameters {
-                kp: 25.,
+                kp: 10.,
                 ki: 0.,
                 kd: 0.,
             },
@@ -153,4 +153,4 @@ crate::const_default!(
     }
 );
 
-pub static TABLE: Table<Params> = Table::default("att");
+pub static TABLE: ParamTable<Params> = ParamTable::default("att");

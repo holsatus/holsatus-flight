@@ -67,7 +67,6 @@ macro_rules! impl_usart_setup {
                 // Provide a static buffer for the ring buffer.
                 use ::static_cell::ConstStaticCell;
 
-                #[link_section = ".ram_d3"]
                 static USART_BUFFER: ConstStaticCell<[u8; $rb_size]> = ConstStaticCell::new([0; $rb_size]);
                 let rx = rx.into_ring_buffered(USART_BUFFER.take());
 
