@@ -24,6 +24,7 @@ use crate::{
 macro_rules! flight_modes {
     (
         $(
+            $(#[$attr:meta])*
             $vehicle_mode:ident => $mode:ident($ty:ty) $(= $index:literal)?
         ),* $(,)?
     ) => {
@@ -33,21 +34,30 @@ macro_rules! flight_modes {
         #[repr(u8)]
         pub enum Kind {
             None = 0,
-            $( $mode $( = $index)?,  )*
+            $(
+                $(#[$attr])*
+                $mode $( = $index)?,
+            )*
         }
 
         /// The active flight mode and its state.
         #[repr(u8)]
         pub enum State {
             None,
-            $( $mode($ty) $( = $index)?, )*
+            $(
+                $(#[$attr])*
+                $mode($ty) $( = $index)?,
+            )*
         }
 
         impl State {
             pub const fn kind(&self) -> Kind {
                 match self {
                     State::None => Kind::None,
-                    $( State::$mode(..) => Kind::$mode, )*
+                    $(
+                        $(#[$attr])*
+                        State::$mode(..) => Kind::$mode,
+                    )*
                 }
             }
 
@@ -61,10 +71,13 @@ macro_rules! flight_modes {
 
                 let state = match kind {
                     Kind::None => State::None,
-                    $( Kind::$mode => {
-                        let mode = <$ty>::enter(&CONTROLS).map_err(map_err).await?;
-                        State::$mode(mode)
-                    } )*
+                    $(
+                        $(#[$attr])*
+                            Kind::$mode => {
+                            let mode = <$ty>::enter(&CONTROLS).map_err(map_err).await?;
+                            State::$mode(mode)
+                        }
+                    )*
                 };
 
                 Ok(state)
@@ -74,7 +87,10 @@ macro_rules! flight_modes {
             pub async fn step(&mut self) -> Action {
                 match self {
                     State::None => core::future::pending().await,
-                    $( State::$mode(mode) => mode.step().await, )*
+                    $(
+                        $(#[$attr])*
+                        State::$mode(mode) => mode.step().await,
+                    )*
                 }
             }
         }
@@ -85,6 +101,7 @@ macro_rules! flight_modes {
             fn try_from(value: Event) -> Result<Self, Self::Error> {
                 let kind = match value {
                     $(
+                        $(#[$attr])*
                         Event::$vehicle_mode => Kind::$mode,
                     )*
                     _ => return Err(()),
@@ -99,6 +116,7 @@ macro_rules! flight_modes {
                 match value {
                     Kind::None => Event::None,
                     $(
+                        $(#[$attr])*
                         Kind::$mode => Event::$vehicle_mode,
                     )*
                 }
@@ -134,12 +152,16 @@ pub trait FlightMode: Sized {
     fn step(&mut self) -> impl Future<Output = Action>;
 }
 
+pub use position_hold::POSITION_SP;
+
 mod descend;
 mod position_hold;
-pub use position_hold::POSITION_SP;
 mod rc_acrobatic;
 mod rc_stabilized;
 mod stabilized;
+
+#[cfg(feature = "mpc")]
+pub mod mpc_autonomous;
 
 flight_modes! {
     FlightMode0 => Descend(descend::Descend),
@@ -147,6 +169,9 @@ flight_modes! {
     FlightMode2 => RcAcrobatic(rc_acrobatic::RcAcrobatic),
     FlightMode3 => RcStabilized(rc_stabilized::RcStabilized),
     FlightMode4 => Stabilized(stabilized::Stabilized),
+
+    #[cfg(feature = "mpc")]
+    FlightMode5 => MpcAutonomous(mpc_autonomous::MpcAutonomous)
 }
 
 /// A precondition that must be met for a mode to be entered.

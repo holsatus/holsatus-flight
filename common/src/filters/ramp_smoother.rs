@@ -45,7 +45,7 @@ where
         self.count = 0;
     }
 
-    /// Get the output value of the filter
+    /// Get the next output value of the filter
     /// Note, this updates the state of the filter
     pub fn get(&mut self) -> T {
         self.count += 1;

@@ -3,8 +3,8 @@ use embassy_time::Timer;
 
 use crate::{consts::GRAVITY, filters::Lowpass, get_ctrl_freq};
 
-const LOW_GRAVITY: f32 = GRAVITY * 0.8;
-const HIGH_GRAVITY: f32 = GRAVITY * 1.2;
+const LOW_GRAVITY: f32 = GRAVITY * 0.9;
+const HIGH_GRAVITY: f32 = GRAVITY * 1.1;
 
 #[embassy_executor::task]
 pub async fn main() -> ! {

@@ -7,10 +7,7 @@ use std::{
 };
 
 use clap::Parser;
-use common::{
-    multicopter::flight_mode::POSITION_SP, signals::RC_ANALOG_UNIT, types::control::RcAnalog,
-    vehicle::FlightModeKind,
-};
+use common::multicopter::flight_mode::Kind;
 use embassy_executor::Spawner;
 use embassy_time::{Instant, Timer};
 use holsatus_sim::{Resources, Sim, SimHandle};
@@ -107,109 +104,28 @@ fn firmware_entry(spawner: Spawner, r: Resources, sim: SimHandle) {
 
     // ------------------- Low-priority tasks -------------------
 
+    spawner.spawn(common::tasks::in_flight_estimator::main().unwrap());
     spawner.spawn(common::tasks::calibrator::main().unwrap());
     spawner.spawn(common::tasks::arm_blocker::main().unwrap());
     spawner.spawn(common::tasks::eskf::main().unwrap());
 
-    spawner.spawn(rate_control_task().unwrap());
+    spawner.spawn(flight_test_task().unwrap());
     spawner.spawn(simulated_vicon(sim).unwrap());
 }
 
 #[embassy_executor::task]
-async fn rate_control_task() {
-    use common::tasks::commander::*;
-
-    Timer::after_secs(1).await;
-
-    log::warn!("Sending arming command");
-    PROCEDURE
-        .send(Request {
-            command: Command::ArmDisarm {
-                arm: true,
-                force: true,
-            }
-            .into(),
-            origin: Origin::Automatic,
-        })
-        .await;
-
-    log::debug!("================================================");
-    log::debug!("============= Starting flight test =============");
-    log::debug!("================================================");
-
-    let mut rcv_motors_state = common::signals::MOTORS_STATE.receiver();
-    rcv_motors_state.get_and(|state| state.is_armed()).await;
-
-    log::warn!("Sending control mode command");
-    PROCEDURE
-        .send(Request {
-            command: Command::SetFlightMode(FlightModeKind::RcAcrobatic),
-            origin: Origin::Automatic,
-        })
-        .await;
-
-    for _ in 0..100 {
-        RC_ANALOG_UNIT.send(RcAnalog::new(0.0, 0.0, 0.0, 0.3));
-        Timer::after_millis(10).await;
-    }
-
-    for _ in 0..80 {
-        RC_ANALOG_UNIT.send(RcAnalog::new(0.0, 0.0, 0.0, 0.8));
-        Timer::after_millis(10).await;
-    }
-
-    for _ in 0..10 {
-        RC_ANALOG_UNIT.send(RcAnalog::new(0.0, 0.0, 0.0, 0.3));
-        Timer::after_millis(10).await;
-    }
-
-    for _ in 0..60 {
-        RC_ANALOG_UNIT.send(RcAnalog::new(1.0, 0.0, 0.0, 0.8));
-        Timer::after_millis(10).await;
-    }
-
-    for i in 0..50 {
-        RC_ANALOG_UNIT.send(RcAnalog::new(1.0 - i as f32 / 50.0, 0.0, 0.0, 0.3));
-        Timer::after_millis(10).await;
-    }
-
-    log::warn!("Sending control mode command");
-    PROCEDURE
-        .send(Request {
-            command: Command::SetFlightMode(FlightModeKind::RcStabilized),
-            origin: Origin::Automatic,
-        })
-        .await;
-
-    for _ in 0..90 {
-        RC_ANALOG_UNIT.send(RcAnalog::new(0.0, 0.0, 0.0, 0.8));
-        Timer::after_millis(10).await;
-    }
-
-    for _ in 0..40 {
-        RC_ANALOG_UNIT.send(RcAnalog::new(0.0, 0.0, 0.0, 0.9));
-        Timer::after_millis(10).await;
-    }
-
-    log::warn!("Sending disarm command");
-    PROCEDURE
-        .send(Request {
-            command: Command::ArmDisarm {
-                arm: false,
-                force: true,
-            }
-            .into(),
-            origin: Origin::Automatic,
-        })
-        .await;
-
-    Timer::after_secs(10).await;
-    RUNNING.store(false, Ordering::Relaxed);
-}
-
-#[embassy_executor::task]
 async fn flight_test_task() {
+    use common::multicopter::flight_mode::mpc_autonomous::{CHANNEL, Message};
+    use common::nalgebra::SVector;
     use common::tasks::commander::*;
+
+    fn millis_in_future(millis: u64) -> common::embassy_time::Instant {
+        let now = common::embassy_time::Instant::now();
+        now + common::embassy_time::Duration::from_millis(millis)
+    }
+
+    let mut rcv_eskf_estimate = common::signals::ESKF_ESTIMATE.receiver();
+    let mut rcv_motors_state = common::signals::MOTORS_STATE.receiver();
 
     Timer::after_secs(1).await;
 
@@ -225,10 +141,12 @@ async fn flight_test_task() {
         })
         .await;
 
+    rcv_motors_state.get_and(|state| state.is_armed()).await;
+
     log::warn!("Sending control mode command");
     PROCEDURE
         .send(Request {
-            command: Command::SetFlightMode(FlightModeKind::PositionHold),
+            command: Command::SetFlightMode(Kind::MpcAutonomous),
             origin: Origin::Automatic,
         })
         .await;
@@ -237,54 +155,95 @@ async fn flight_test_task() {
     log::debug!("============= Starting flight test =============");
     log::debug!("================================================");
 
-    let mut rcv_motors_state = common::signals::MOTORS_STATE.receiver();
-    rcv_motors_state.get_and(|state| state.is_armed()).await;
-
-    log::info!("Stepping to 1 meter in 3 seconds");
+    log::info!("Stepping to 1 meter in 0.5 seconds");
     let position_setpoint = [0.0, 0.0, -1.0];
-    POSITION_SP.send(position_setpoint);
+    CHANNEL
+        .send(Message::SetPositionAt(
+            position_setpoint,
+            millis_in_future(500),
+        ))
+        .await;
 
-    Timer::after_secs(15).await;
+    Timer::after_secs(6).await;
+    assert!(
+        (rcv_eskf_estimate.get().await.pos - SVector::from(position_setpoint)).norm() < 0.5,
+        "Failed to get close to target setpoint"
+    );
     log::debug!("Reached setpoint: {position_setpoint:?}");
 
     log::info!("Stepping to 10 meters in 3 seconds");
     let position_setpoint = [0.0, 0.0, -10.0];
-    POSITION_SP.send(position_setpoint);
+    CHANNEL
+        .send(Message::SetPositionAt(
+            position_setpoint,
+            millis_in_future(3000),
+        ))
+        .await;
 
     Timer::after_secs(6).await;
+    assert!(
+        (rcv_eskf_estimate.get().await.pos - SVector::from(position_setpoint)).norm() < 0.5,
+        "Failed to get close to target setpoint"
+    );
     log::debug!("Reached setpoint: {position_setpoint:?}");
 
     log::info!("Initiating flight pattern");
-    for i in 0..2000 {
-        let (sin, cos) = ((i as f32 / 400.0) * PI).sin_cos();
-        let height = -((i as f32 / 200.0) * PI).cos();
+    for i in 0..200 {
+        let (sin, cos) = ((i as f32 / 40.0) * PI).sin_cos();
+        let height = -((i as f32 / 20.0) * PI).cos();
+        CHANNEL
+            .send(Message::SetPositionAt(
+                [
+                    cos * 5.0,
+                    (sin * 15.0).clamp(-10.0, 10.0),
+                    height * 2.5 - 10.0,
+                ],
+                millis_in_future(5000),
+            ))
+            .await;
 
-        POSITION_SP.send([
-            cos * 5.0,
-            (sin * 15.0).clamp(-10.0, 10.0),
-            height * 2.5 - 10.0,
-        ]);
-
-        Timer::after_millis(10).await;
+        Timer::after_millis(100).await;
     }
 
     log::info!("Stepping to 10 meters in 5 seconds");
     let position_setpoint = [0.0, 0.0, -10.0];
-    POSITION_SP.send(position_setpoint);
+    CHANNEL
+        .send(Message::SetPositionAt(
+            position_setpoint,
+            millis_in_future(5000),
+        ))
+        .await;
 
     Timer::after_secs(7).await;
+    assert!(
+        (rcv_eskf_estimate.get().await.pos - SVector::from(position_setpoint)).norm() < 0.5,
+        "Failed to get close to target setpoint"
+    );
     log::debug!("Reached setpoint: {position_setpoint:?}");
 
     log::info!("Stepping down to 2 meters in 2 seconds");
     let position_setpoint = [0.0, 0.0, -2.0];
-    POSITION_SP.send(position_setpoint);
+    CHANNEL
+        .send(Message::SetPositionAt(
+            position_setpoint,
+            millis_in_future(2000),
+        ))
+        .await;
 
     Timer::after_secs(4).await;
+    assert!(
+        (rcv_eskf_estimate.get().await.pos - SVector::from(position_setpoint)).norm() < 0.5,
+        "Failed to get close to target setpoint"
+    );
     log::debug!("Reached setpoint: {position_setpoint:?}");
 
     log::info!("Stepping down to 2 meters in 2 seconds");
-    let position_setpoint = [0.0, 0.0, -0.2];
-    POSITION_SP.send(position_setpoint);
+    CHANNEL
+        .send(Message::SetPositionAt(
+            [0.0, 0.0, -0.2],
+            millis_in_future(2000),
+        ))
+        .await;
 
     Timer::after_secs(8).await;
 

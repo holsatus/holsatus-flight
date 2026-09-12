@@ -270,11 +270,13 @@ impl<T: Float> IntegratingHighpass<T> {
 
     /// Set the cross-over frequency of the filter with a time-constant `tau`
     pub fn set_dt(&mut self, dt: T) {
+        self.dt = dt;
         self.alpha = dt / (self.tau + dt);
     }
 
     /// Set the cross-over frequency of the filter with a time-constant `tau`
     pub fn set_tau(&mut self, tau: T) {
+        self.tau = tau;
         self.alpha = self.dt / (tau + self.dt);
     }
 }
@@ -318,11 +320,13 @@ impl<T: Float> IntegratingComplementary<T> {
 
     /// Set the cross-over frequency of the filter with a time-constant `tau`
     pub fn set_dt(&mut self, dt: T) {
+        self.dt = dt;
         self.alpha = dt / (self.tau + dt);
     }
 
     /// Set the cross-over frequency of the filter with a time-constant `tau`
     pub fn set_tau(&mut self, tau: T) {
+        self.tau = tau;
         self.alpha = self.dt / (tau + self.dt);
     }
 }

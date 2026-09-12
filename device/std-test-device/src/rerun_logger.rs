@@ -95,6 +95,11 @@ impl RerunLogger {
             )?;
 
             self.rec.log(
+                "sim/firmware/eskf/pos3d",
+                &Points3D::new([estimate.pos.map(|x| x as f64).data.0[0]]).with_radii([0.05]),
+            )?;
+
+            self.rec.log(
                 "sim/firmware/eskf/vel",
                 &Scalars::new(estimate.vel.map(|x| x as f64).iter().cloned()),
             )?;
@@ -116,7 +121,9 @@ impl RerunLogger {
             )?;
         }
 
-        if let Some(mpc_reference) = common::tasks::controller_mpc::MPC_REFERENCE.try_get() {
+        if let Some(mpc_reference) =
+            common::multicopter::flight_mode::mpc_autonomous::MPC_REFERENCE.try_get()
+        {
             let reference =
                 mpc_reference.fixed_view::<3, { common::tasks::controller_mpc::HX }>(0, 0);
             let slices = reference
@@ -132,7 +139,9 @@ impl RerunLogger {
                 .log("sim/firmware/mpc_reference", &LineStrips3D::new([slices]))?;
         }
 
-        if let Some(mpc_pos_pred) = common::tasks::controller_mpc::MPC_POS_PRED.try_get() {
+        if let Some(mpc_pos_pred) =
+            common::multicopter::flight_mode::mpc_autonomous::MPC_POS_PRED.try_get()
+        {
             let slices = mpc_pos_pred
                 .column_iter()
                 .map(|col| col.clone_owned().data.0[0]);
@@ -221,7 +230,9 @@ impl RerunLogger {
 
         // Note: do not place this in the 'drone/' path since that will also apply
         // the drones rotation to this vector.
-        if let Some(mpc_acc_target) = common::tasks::controller_mpc::MPC_TARGET_ACC.try_get() {
+        if let Some(mpc_acc_target) =
+            common::multicopter::flight_mode::mpc_autonomous::MPC_TARGET_ACC.try_get()
+        {
             let short_acc_target = mpc_acc_target.map(|x| x / 10.0);
             self.rec.log(
                 "mpc_target_acc",

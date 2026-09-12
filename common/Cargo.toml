@@ -11,6 +11,7 @@ default = [
     "gnss",
     "usb",
     "std",
+    "mpc"
 ]
 
 multicopter = []
