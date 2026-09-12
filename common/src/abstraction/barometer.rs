@@ -1,10 +1,5 @@
-use crate::errors::SensorError;
+use crate::{errors::SensorError, types::measurements::BarometerData};
 
 pub trait Barometer {
-    fn read_pressure(&mut self) -> impl Future<Output = Result<Pressure, SensorError>>;
-    fn read_temperature(&mut self) -> impl Future<Output = Result<Temperature, SensorError>>;
-    fn read_pressure_and_temperature(
-        &mut self,
-    ) -> impl Future<Output = Result<(Pressure, Temperature), SensorError>>;
+    fn read_data(&mut self) -> impl Future<Output = Result<BarometerData, SensorError>>;
 }
-

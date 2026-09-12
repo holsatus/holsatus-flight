@@ -14,7 +14,7 @@ use params::Reverse;
 
 use crate::sync::watch::Receiver;
 use crate::{
-    hw_abstraction::MotorGroup,
+    abstraction::motor::MotorGroup,
     types::actuators::{DisarmReason, MotorsState},
 };
 
