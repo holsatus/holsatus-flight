@@ -5,7 +5,6 @@ use crate::signals as s;
 #[allow(unused)]
 use crate::vehicle::SetFlightMode as _;
 
-use crate::types::control;
 use crate::{
     signals::{CALIBRATOR_STATE, CMD_CALIBRATE},
     sync::{procedure::Procedure, watch::Watch},
@@ -332,9 +331,6 @@ pub static STATUS_ON_GROUND: Watch<bool> = Watch::new();
 /// Whether the vehicle is on the ground or airborne
 pub static CMD_RATE_REF: Watch<&'static Watch<[f32; 4]>> = Watch::new();
 pub static IMU_PRIM_CAL: Watch<&'static Watch<[f32; 3]>> = Watch::new();
-
-/// Select the currently active control mode
-pub static CMD_CONTROL_MODE: Watch<control::ControlMode> = Watch::new();
 
 const NUM_OUT_GROUPS: usize = 4;
 pub static CMD_ACTUATOR_OVERRIDE: [Watch<Option<[f32; 4]>>; NUM_OUT_GROUPS] = {

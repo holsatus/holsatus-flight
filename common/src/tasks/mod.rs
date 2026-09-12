@@ -5,7 +5,6 @@ pub mod blackbox_fat;
 pub mod calibrator;
 pub mod commander;
 pub mod eskf;
-pub mod imu_manager;
 pub mod imu_reader;
 pub mod rc_binder;
 pub mod rc_reader;

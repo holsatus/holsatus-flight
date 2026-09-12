@@ -1,48 +1,15 @@
 use core::ops::DerefMut;
 
 use commands::CommandHandler;
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+use embassy_sync::mutex::Mutex;
 use embassy_time::Timer;
-use embedded_cli::{cli::CliBuilder, Command};
-use embedded_io::{ErrorType, Write as SyncWrite};
+use embedded_cli::{Command, cli::CliBuilder};
 use embedded_io_async::{Read, Write};
 
 use crate::{errors::adapter::embedded_io::EmbeddedIoError, serial::IoStream};
 
 mod commands;
-
-/// Wrapper to allow the CLI to own a synchronous writer. This is a bit of a
-/// hack since embedded-cli does not support async (and takes ownership of the
-/// writer..)
-struct SyncWriter<'a, W: Write<Error = E>, E: embedded_io::Error> {
-    writer: &'a Mutex<NoopRawMutex, W>,
-}
-
-impl<'a, W: Write<Error = E>, E: embedded_io::Error> SyncWriter<'a, W, E> {
-    pub fn new(writer: &'a Mutex<NoopRawMutex, W>) -> Self {
-        Self { writer }
-    }
-}
-
-impl<'a, W: Write<Error = E>, E: embedded_io::Error> ErrorType for SyncWriter<'a, W, E> {
-    type Error = E;
-}
-
-impl<'a, W: Write<Error = E>, E: embedded_io::Error> SyncWrite for SyncWriter<'a, W, E> {
-    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        // The mutex is expected to never be locked, since the CLI is evaluated
-        // before anything else in the loop
-        let mut writer = self.writer.try_lock().expect("Failed to lock writer");
-        embassy_futures::block_on(writer.write(buf))
-    }
-
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        // The mutex is expected to never be locked, since the CLI is evaluated
-        // before anything else in the loop
-        let mut writer = self.writer.try_lock().expect("Failed to lock writer");
-        embassy_futures::block_on(writer.flush())
-    }
-}
+mod sync_writer;
 
 #[embassy_executor::task]
 pub async fn main(serial_id: &'static str) -> ! {
@@ -78,7 +45,7 @@ pub async fn run_cli(serial: &mut IoStream) -> Result<(), EmbeddedIoError> {
         m_serial.write_all(HOLSATUS_GRAPHIC).await?;
     }
 
-    let mut sync_writer =  SyncWriter::new(&mutexed_serial);
+    let mut sync_writer = sync_writer::SyncWriter::new(&mutexed_serial);
     let mut cli = CliBuilder::default()
         .writer(&mut sync_writer)
         .command_buffer(command_buffer.as_mut_slice())
@@ -147,7 +114,7 @@ const INTERRUPT: &u8 = &0x03;
 const HOLSATUS_GRAPHIC: &[u8] = b"\x1B[32m
 \r   _   _       _           _
 \r  | | | |     | |         | |
-\r  | |_| | ___ | |___  __ _| |_ _   _ ___ 
+\r  | |_| | ___ | |___  __ _| |_ _   _ ___
 \r  |  _  |/ _ \\| / __|/ _` | __| | | / __|
 \r  | | | | (_) | \\__ \\ (_| | |_| |_| \\__ \\
 \r  \\_| |_/\\___/|_|___/\\__,_|\\__|\\__,_|___/

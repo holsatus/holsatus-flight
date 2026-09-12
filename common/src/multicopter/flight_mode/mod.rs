@@ -154,7 +154,6 @@ pub trait FlightMode: Sized {
 
 pub use position_hold::POSITION_SP;
 
-mod descend;
 mod position_hold;
 mod rc_acrobatic;
 mod rc_stabilized;
@@ -164,14 +163,13 @@ mod stabilized;
 pub mod mpc_autonomous;
 
 flight_modes! {
-    FlightMode0 => Descend(descend::Descend),
-    FlightMode1 => PositionHold(position_hold::PositionHold),
-    FlightMode2 => RcAcrobatic(rc_acrobatic::RcAcrobatic),
-    FlightMode3 => RcStabilized(rc_stabilized::RcStabilized),
-    FlightMode4 => Stabilized(stabilized::Stabilized),
+    FlightMode0 => RcAcrobatic(rc_acrobatic::RcAcrobatic),
+    FlightMode1 => RcStabilized(rc_stabilized::RcStabilized),
+    FlightMode2 => Stabilized(stabilized::Stabilized),
+    FlightMode3 => PositionHold(position_hold::PositionHold),
 
     #[cfg(feature = "mpc")]
-    FlightMode5 => MpcAutonomous(mpc_autonomous::MpcAutonomous)
+    FlightMode4 => MpcAutonomous(mpc_autonomous::MpcAutonomous)
 }
 
 /// A precondition that must be met for a mode to be entered.
