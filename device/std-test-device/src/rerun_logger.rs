@@ -124,8 +124,8 @@ impl RerunLogger {
         if let Some(mpc_reference) =
             common::multicopter::flight_mode::mpc_autonomous::MPC_REFERENCE.try_get()
         {
-            let reference =
-                mpc_reference.fixed_view::<3, { common::tasks::controller_mpc::HX }>(0, 0);
+            let reference = mpc_reference
+                .fixed_view::<3, { common::multicopter::flight_mode::mpc_autonomous::HX }>(0, 0);
             let slices = reference
                 .column_iter()
                 .map(|col| col.clone_owned().data.0[0]);

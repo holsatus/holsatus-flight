@@ -15,8 +15,5 @@ pub mod in_flight_estimator;
 #[cfg(feature = "usb")]
 pub mod usb_manager;
 
-#[cfg(feature = "mpc")]
-pub mod controller_mpc;
-
 #[cfg(feature = "gnss")]
 pub mod gnss_reader;
