@@ -1,4 +1,4 @@
-use maitake_sync::{blocking::DefaultMutex, WaitQueue};
+use maitake_sync::{WaitQueue, blocking::DefaultMutex};
 use mutex::{BlockingMutex, ConstInit, ScopedRawMutex};
 
 pub struct Watch<T, M: ScopedRawMutex = DefaultMutex> {
@@ -47,7 +47,7 @@ impl<T: Clone, M: ScopedRawMutex> Watch<T, M> {
     }
 
     /// Do a PartialEq comparison with the inner value.
-    /// 
+    ///
     /// If no value has been sent, this will return false.
     pub fn partial_eq(&self, other: &T) -> bool
     where
@@ -220,12 +220,26 @@ pub struct Sender<'a, T, M: ScopedRawMutex = DefaultMutex> {
     watch: &'a Watch<T, M>,
 }
 
+impl<T, M: ScopedRawMutex> core::fmt::Debug for Sender<'_, T, M> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Sender").finish_non_exhaustive()
+    }
+}
+
+impl<T, M: ScopedRawMutex> Clone for Sender<'_, T, M> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T, M: ScopedRawMutex> Copy for Sender<'_, T, M> {}
+
 impl<T: Clone, M: ScopedRawMutex> Sender<'_, T, M> {
-    pub fn send(&mut self, value: T) {
+    pub fn send(&self, value: T) {
         self.watch.send(value);
     }
 
-    pub fn modify(&mut self, value: impl FnOnce(&mut T)) {
+    pub fn modify(&self, value: impl FnOnce(&mut T)) {
         self.watch.modify(value);
     }
 }
@@ -296,7 +310,7 @@ mod tests {
         spawner
             .spawner()
             .spawn(async {
-                let mut sender = WATCH.sender();
+                let sender = WATCH.sender();
 
                 for number in TEST_NUMBERS {
                     sender.send(*number);
@@ -332,7 +346,7 @@ mod tests {
         spawner
             .spawner()
             .spawn(async {
-                let mut sender = WATCH.sender();
+                let sender = WATCH.sender();
 
                 for number in TEST_NUMBERS {
                     sender.send(*number);
@@ -378,7 +392,7 @@ mod tests {
     fn test_various() {
         static WATCH: Watch<i32, CriticalSectionRawMutex> = Watch::new();
 
-        let mut sender = WATCH.sender();
+        let sender = WATCH.sender();
         let mut receiver = WATCH.receiver();
 
         assert_eq!(receiver.try_changed(), None);
@@ -412,7 +426,7 @@ mod tests {
     fn test_overflowing() {
         static WATCH: Watch<i32, CriticalSectionRawMutex> = Watch::new();
 
-        let mut sender = WATCH.sender();
+        let sender = WATCH.sender();
         let mut receiver = WATCH.receiver();
 
         // Send an initial value

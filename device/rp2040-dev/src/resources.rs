@@ -1,7 +1,7 @@
 use common::{
+    abstraction::motor::MotorGroup,
     embedded_io,
     errors::adapter::embedded_io::EmbeddedIoError,
-    hw_abstraction::OutputGroup,
     serial::IoStreamRaw,
     types::config::{DshotConfig, I2cConfig, UartConfig},
 };
@@ -89,6 +89,7 @@ pub mod imu_reader {
         embassy_time::{Duration, Ticker},
         tasks::imu_reader::ImuReader,
         types::config::I2cConfig,
+        ImuIndex,
     };
 
     #[embassy_executor::task]
@@ -107,7 +108,8 @@ pub mod imu_reader {
         };
 
         let trigger = Ticker::every(Duration::from_hz(1125));
-        ImuReader::entry::<(Icm209486DofI2c, _)>(i2c, (0x69, imu_cfg), trigger).await
+        ImuReader::entry::<(Icm209486DofI2c, _)>(ImuIndex::Imu0, i2c, (0x69, imu_cfg), trigger)
+            .await
     }
 }
 
@@ -128,7 +130,7 @@ impl Flash {
 #[embassy_executor::task]
 pub(crate) async fn param_storage(flash: Flash) -> ! {
     let flash = flash.setup();
-    common::tasks::param_storage::entry(flash, 0..{ 2 * 1024 * 1024 }).await
+    common::params::entry(flash, 0..{ 2 * 1024 * 1024 }).await
 }
 
 // ----------------------------------------------------------
@@ -139,7 +141,7 @@ struct PioMotors<'a, PIO: embassy_rp::pio::Instance> {
     inner: crate::dshot_pio::DshotPio<'a, 4, PIO>,
 }
 
-impl<'a, PIO: embassy_rp::pio::Instance> OutputGroup for PioMotors<'a, PIO> {
+impl<'a, PIO: embassy_rp::pio::Instance> MotorGroup for PioMotors<'a, PIO> {
     async fn set_motor_speeds(&mut self, speeds: [u16; 4]) {
         self.inner
             .command(speeds.map(|speed| dshot_encoder::throttle_clamp(speed, false)));
@@ -161,7 +163,7 @@ impl<'a, PIO: embassy_rp::pio::Instance> OutputGroup for PioMotors<'a, PIO> {
 }
 
 impl MotorDriver {
-    pub fn setup(self, _dshot: DshotConfig) -> impl OutputGroup {
+    pub fn setup(self, _dshot: DshotConfig) -> impl MotorGroup {
         bind_interrupts!( struct Pio0Irqs {
             PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<peripherals::PIO0>;
         });
@@ -183,7 +185,7 @@ impl MotorDriver {
 #[embassy_executor::task]
 pub(crate) async fn motor_governor(motors: MotorDriver, dshot_cfg: DshotConfig) -> ! {
     let motors = motors.setup(dshot_cfg);
-    common::tasks::motor_governor::main(motors).await
+    common::actuators::motor_governor::main(motors).await
 }
 
 // ----------------------------------------------------------

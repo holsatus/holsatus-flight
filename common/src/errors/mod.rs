@@ -11,8 +11,6 @@ use adapter::{
 #[derive(serde::Serialize, serde::Deserialize, Error, Debug, Clone, Copy, Eq, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum HolsatusError {
-    #[error("Embedded-HAL {0}")]
-    EmbBus(#[from] DeviceError),
     #[error("Embedded-IO error: {0}")]
     EmbIo(#[from] EmbeddedIoError),
     #[error("Embedded-HAL I2C error: {0}")]
@@ -39,28 +37,13 @@ pub enum HolsatusError {
     Storage(#[from] StorageError),
 
     #[error("IMU sensorerror: {0}")]
-    Imu(#[from] ImuError),
+    Sensor(#[from] SensorError),
 }
 
-#[non_exhaustive]
+// TODO: Attach sensor ID and kind
 #[derive(Error, Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum DeviceError {
-    #[error("The device is not responding after {millis} ms.")]
-    Timeout { millis: u64 },
-    #[error("The device was not identified correctly.")]
-    IdentificationError,
-    #[error("An external interrupt tied ot this device failed.")]
-    ExtInterruptError,
-    #[error("I2c error: {0}")]
-    I2c(#[from] EmbeddedI2cError),
-    #[error("Spi error: {0}")]
-    Spi(#[from] EmbeddedSpiError),
-}
-
-#[derive(Error, Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ImuError {
+pub enum SensorError {
     #[error("I2c error: {0}")]
     I2cInterface(#[from] EmbeddedI2cError),
     #[error("Spi error: {0}")]
@@ -81,14 +64,14 @@ pub enum ImuError {
     Unknown,
 }
 
-impl From<embedded_hal::spi::ErrorKind> for ImuError {
+impl From<embedded_hal::spi::ErrorKind> for SensorError {
     fn from(value: embedded_hal::spi::ErrorKind) -> Self {
-        ImuError::SpiInterface(value.into())
+        SensorError::SpiInterface(value.into())
     }
 }
-impl From<embedded_hal::i2c::ErrorKind> for ImuError {
+impl From<embedded_hal::i2c::ErrorKind> for SensorError {
     fn from(value: embedded_hal::i2c::ErrorKind) -> Self {
-        ImuError::I2cInterface(value.into())
+        SensorError::I2cInterface(value.into())
     }
 }
 

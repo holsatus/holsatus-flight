@@ -57,6 +57,7 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
 
     // Might as well start the parameter storage module to get things loaded
     level_t_spawner.spawn(resources::param_storage(r.flash).unwrap());
+    common::params::load_all().await;
 
     // Give special priority to the serial port used as primary RC input
     level_0_spawner.spawn(resources::run_uart0(r.uart_0, config::uart0(), "uart0").unwrap());
@@ -79,15 +80,14 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
 
     level_0_spawner.spawn(common::tasks::rc_reader::main("uart0").unwrap());
     level_0_spawner.spawn(common::tasks::rc_binder::main().unwrap());
-    level_0_spawner.spawn(common::tasks::signal_router::main().unwrap());
-    level_0_spawner.spawn(common::tasks::controller_rate::main().unwrap());
+    level_0_spawner.spawn(common::multicopter::attitude_control::main().unwrap());
 
     // ----------------- medium-priority tasks ------------------
 
     #[cfg(feature = "gnss")]
     level_1_spawner.spawn(common::tasks::gnss_reader::main("uart1").unwrap());
     level_1_spawner.spawn(common::tasks::commander::main().unwrap());
-    level_1_spawner.spawn(common::tasks::controller_angle::main().unwrap());
+    level_1_spawner.spawn(common::multicopter::flight_mode::main().unwrap());
 
     // ------------------- Low-priority tasks -------------------
 

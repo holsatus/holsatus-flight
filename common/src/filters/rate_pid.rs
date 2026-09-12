@@ -91,14 +91,14 @@ impl RatePid {
         // not carry over integration which occured for large references
         // (velocities) where air resistance and other strange dynamics likely
         // played a larger role than at a low reference.
-        if self.integral_en 
-        && measurement_lp.abs() < CALM_THRESHOLD 
-        && reference.abs() < CALM_THRESHOLD {
+        if self.integral_en
+            && measurement_lp.abs() < CALM_THRESHOLD
+            && reference.abs() < CALM_THRESHOLD
+        {
             let model_error = prediction - measurement;
             let damping = 1.0 + self.lowpass.update(meas_derivative.abs());
             self.integral += self.ki * model_error * self.dt / damping;
             self.integral = self.integral.clamp(-self.max_integral, self.max_integral);
-
         }
 
         self.terms = PidTerms {

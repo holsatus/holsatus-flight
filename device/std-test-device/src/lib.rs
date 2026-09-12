@@ -7,6 +7,7 @@ use std::{
 };
 
 use clap::Parser;
+use common::multicopter::flight_mode::Kind;
 use embassy_executor::Spawner;
 use embassy_time::{Instant, Timer};
 use holsatus_sim::{Resources, Sim, SimHandle};
@@ -85,6 +86,7 @@ fn firmware_entry(spawner: Spawner, r: Resources, sim: SimHandle) {
 
     // Might as well start the parameter storage module to get things loaded
     spawner.spawn(resources::param_storage(r.flash).unwrap());
+    spawner.spawn(common::params::load_all_task().unwrap());
 
     // ------------------ high-priority tasks -------------------
 
@@ -93,36 +95,38 @@ fn firmware_entry(spawner: Spawner, r: Resources, sim: SimHandle) {
     spawner.spawn(resources::motor_governor(r.motors).unwrap());
 
     spawner.spawn(common::tasks::rc_binder::main().unwrap());
-    spawner.spawn(common::tasks::signal_router::main().unwrap());
-    spawner.spawn(common::tasks::controller_rate::main().unwrap());
+    spawner.spawn(common::multicopter::attitude_control::main().unwrap());
 
     // ----------------- medium-priority tasks ------------------
 
     spawner.spawn(common::tasks::commander::main().unwrap());
     spawner.spawn(common::tasks::att_estimator::main().unwrap());
-    spawner.spawn(common::tasks::controller_angle::main().unwrap());
+    spawner.spawn(common::multicopter::flight_mode::main().unwrap());
 
     // ------------------- Low-priority tasks -------------------
 
+    spawner.spawn(common::tasks::in_flight_estimator::main().unwrap());
     spawner.spawn(common::tasks::calibrator::main().unwrap());
     spawner.spawn(common::tasks::arm_blocker::main().unwrap());
     spawner.spawn(common::tasks::eskf::main().unwrap());
-    spawner.spawn(common::tasks::controller_mpc::main().unwrap());
 
     spawner.spawn(flight_test_task().unwrap());
     spawner.spawn(simulated_vicon(sim).unwrap());
 }
 
-fn millis_in_future(millis: u64) -> common::embassy_time::Instant {
-    let now = common::embassy_time::Instant::now();
-    now + common::embassy_time::Duration::from_millis(millis)
-}
-
 #[embassy_executor::task]
 async fn flight_test_task() {
+    use common::multicopter::flight_mode::mpc_autonomous::{CHANNEL, Message};
     use common::nalgebra::SVector;
     use common::tasks::commander::*;
-    use common::tasks::controller_mpc::{CHANNEL, Message};
+
+    fn millis_in_future(millis: u64) -> common::embassy_time::Instant {
+        let now = common::embassy_time::Instant::now();
+        now + common::embassy_time::Duration::from_millis(millis)
+    }
+
+    let mut rcv_eskf_estimate = common::signals::ESKF_ESTIMATE.receiver();
+    let mut rcv_motors_state = common::signals::MOTORS_STATE.receiver();
 
     Timer::after_secs(1).await;
 
@@ -138,10 +142,12 @@ async fn flight_test_task() {
         })
         .await;
 
+    rcv_motors_state.get_and(|state| state.is_armed()).await;
+
     log::warn!("Sending control mode command");
     PROCEDURE
         .send(Request {
-            command: Command::SetControlMode(ControlMode::Autonomous),
+            command: Command::SetFlightMode(Kind::MpcAutonomous),
             origin: Origin::Automatic,
         })
         .await;
@@ -150,16 +156,12 @@ async fn flight_test_task() {
     log::debug!("============= Starting flight test =============");
     log::debug!("================================================");
 
-    let mut rcv_eskf_estimate = common::signals::ESKF_ESTIMATE.receiver();
-    let mut rcv_motors_state = common::signals::MOTORS_STATE.receiver();
-    rcv_motors_state.get_and(|state| state.is_armed()).await;
-
-    log::info!("Stepping to 1 meter in 3 seconds");
+    log::info!("Stepping to 1 meter in 0.5 seconds");
     let position_setpoint = [0.0, 0.0, -1.0];
     CHANNEL
         .send(Message::SetPositionAt(
             position_setpoint,
-            millis_in_future(3000),
+            millis_in_future(500),
         ))
         .await;
 

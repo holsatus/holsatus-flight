@@ -20,6 +20,7 @@ panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 
 common = { path = "../../common", default-features = false, features = [
     "imu_count_1",
+    "multicopter",
     "mavlink",
     "defmt",
     "gnss",

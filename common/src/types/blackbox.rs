@@ -141,7 +141,7 @@ pub fn get_rate_log() -> Option<RateLog> {
     use crate::signals as s;
     Some(RateLog {
         timestamp_us: Instant::now().as_micros(),
-        setpoint: s::TRUE_ATTITUDE_Q_SP
+        setpoint: s::AHRS_ATTITUDE_Q
             .try_get()?
             .as_vector()
             .clone_owned()
@@ -168,7 +168,7 @@ pub fn get_angle_log() -> Option<AngleLog> {
     use crate::signals as s;
     Some(AngleLog {
         timestamp_us: Instant::now().as_micros(),
-        setpoint: s::TRUE_ATTITUDE_Q_SP
+        setpoint: s::AHRS_ATTITUDE_Q // TODO - Note the setpoint
             .try_get()?
             .as_vector()
             .clone_owned()

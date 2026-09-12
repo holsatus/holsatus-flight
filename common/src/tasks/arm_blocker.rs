@@ -49,7 +49,7 @@ pub async fn main() -> ! {
     // let mut rcv_landed_state = s::LANDED_STATE.receiver();
 
     // Output channels
-    let mut snd_arm_blocker = s::ARMING_BLOCKER.sender();
+    let snd_arm_blocker = s::ARMING_BLOCKER.sender();
 
     // Initialize the arm blocker flag as all high
     let mut local_arm_blocker_flag = ArmingBlocker::all();
@@ -90,7 +90,9 @@ pub async fn main() -> ! {
 
         // Check if the active accelerometer and gyroscope is calibrated
         // TODO: This is a terrible way to do it, at least we should use Option
-        let params = crate::tasks::imu_reader::params::TABLE0.read().await;
+        let params = crate::tasks::imu_reader::params::TABLES[0]
+            .pure_read()
+            .await;
         local_arm_blocker_flag.set(
             ArmingBlocker::NO_ACC_CALIB,
             params.acc_cal == Calib3D::const_default(),
@@ -133,7 +135,7 @@ pub async fn main() -> ! {
         // Mask out the ignored flags
         let masked_flag = local_arm_blocker_flag.difference(config.ignore_mask);
 
-        // Transmit changes to the arm blocker flag
+        // Publish changes to the arm blocker flag
         snd_arm_blocker.send(masked_flag);
     }
 }

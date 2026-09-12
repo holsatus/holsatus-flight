@@ -1,7 +1,7 @@
 use num_traits::Num;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ViconData {
     pub timestamp_us: u64,
@@ -11,7 +11,7 @@ pub struct ViconData {
     pub att_var: [[f32; 3]; 3],
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Imu6DofData<T: Num> {
     pub timestamp_us: u64,
@@ -19,7 +19,7 @@ pub struct Imu6DofData<T: Num> {
     pub acc: [T; 3],
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Imu9DofData<T: Num> {
     pub timestamp_us: u64,
@@ -38,7 +38,7 @@ impl<T: Num> From<Imu9DofData<T>> for Imu6DofData<T> {
     }
 }
 
-#[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct GnssTime {
     pub year: u16,
@@ -49,7 +49,7 @@ pub struct GnssTime {
     pub sec: u8,
 }
 
-#[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct GnssData {
     /// The device-local time of when the packet was parsed.
@@ -92,7 +92,7 @@ pub struct GnssData {
     pub mag_declination: f32,
 }
 
-#[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum GnssFix {
@@ -147,4 +147,15 @@ impl<'a> From<ublox::packets::nav_pvt::proto23::NavPvtRef<'a>> for GnssData {
             mag_declination: pvt.magnetic_declination() as f32,
         }
     }
+}
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct BarometerData {
+    /// The device-local time of when the packet was parsed.
+    pub timestamp_us: u64,
+    /// Temperature of the sensor (deg C)
+    pub temperature_c: f32,
+    /// Comensated pressure reading from sensor (Pa)
+    pub pressure_pa: f32,
 }

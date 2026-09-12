@@ -1,15 +1,13 @@
 use embassy_futures::select::{Either, select};
 
 use crate::{
-    calibration::Feedback,
     calibration::{
-        Calibrate,
+        Calibrate, Feedback,
         acc_routine::calibrate_acc,
         gyr_routine::calibrate_gyr_bias,
         mag_routine::{MagCalState, calibrate_mag},
     },
     signals::{self as s, register_error},
-    tasks::param_storage,
 };
 
 #[derive(Debug, PartialEq, Clone)]
@@ -31,7 +29,7 @@ pub enum CalibratorState {
 pub async fn main() -> ! {
     const ID: &str = "calibrator";
     let mut rcv_calibrate = s::CMD_CALIBRATE.receiver();
-    let mut snd_calibrator_state = s::CALIBRATOR_STATE.sender();
+    let snd_calibrator_state = s::CALIBRATOR_STATE.sender();
 
     loop {
         snd_calibrator_state.send(CalibratorState::Idle);
@@ -42,18 +40,19 @@ pub async fn main() -> ! {
                 snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Acc));
                 match calibrate_acc(acc_calib, idx).await {
                     Ok(calibration) => {
-                        use crate::tasks::imu_reader::{CHANNEL, Message, params::TABLE0};
+                        use crate::tasks::imu_reader::{CHANNELS, Message, params::TABLES};
 
                         // TODO: This is hacky. Subsystems should not modify parameter tables directly
-                        let mut table = TABLE0.params.write().await;
-                        table.acc_cal = calibration;
-                        info!("[{}] Setting acc calib: {:?}", ID, table.acc_cal);
-                        drop(table);
+                        if let Some(table) = TABLES.get(idx as usize) {
+                            info!("[{}] Setting acc calib: {:?}", ID, calibration);
+                            table.pure_write().await.acc_cal = calibration;
 
-                        param_storage::send(param_storage::Request::SaveTable(TABLE0.name)).await;
+                            use crate::params::{Request, request};
+                            request(Request::SaveTable(table.name())).await;
 
-                        if let Some(channel) = CHANNEL.get(idx as usize) {
-                            channel.send(Message::ReloadParams).await;
+                            if let Some(channel) = CHANNELS.get(idx as usize) {
+                                channel.send(Message::ReloadParams).await;
+                            }
                         }
                     }
                     Err(error) => {
@@ -68,18 +67,19 @@ pub async fn main() -> ! {
                 snd_calibrator_state.send(CalibratorState::Calibrating(Sensor::Gyr));
                 match calibrate_gyr_bias(gyr_calib, idx).await {
                     Ok(calibration_bias) => {
-                        use crate::tasks::imu_reader::{CHANNEL, Message, params::TABLE0};
+                        use crate::tasks::imu_reader::{CHANNELS, Message, params::TABLES};
 
-                        // TODO: This is hacky. Subsystems should not modify parameter tables directly
-                        let mut table = TABLE0.params.write().await;
-                        table.gyr_cal.bias = calibration_bias.into();
-                        info!("[{}] Setting gyr calib: {:?}", ID, table.gyr_cal);
-                        drop(table);
+                        if let Some(table) = TABLES.get(idx as usize) {
+                            // TODO: This is hacky. Subsystems should not modify parameter tables directly
+                            info!("[{}] Setting acc calib: {:?}", ID, calibration_bias);
+                            table.pure_write().await.gyr_cal.bias = calibration_bias.into();
 
-                        param_storage::send(param_storage::Request::SaveTable(TABLE0.name)).await;
+                            use crate::params::{Request, request};
+                            request(Request::SaveTable(table.name())).await;
 
-                        if let Some(channel) = CHANNEL.get(idx as usize) {
-                            channel.send(Message::ReloadParams).await;
+                            if let Some(channel) = CHANNELS.get(idx as usize) {
+                                channel.send(Message::ReloadParams).await;
+                            }
                         }
                     }
                     Err(error) => {

@@ -67,7 +67,6 @@ macro_rules! impl_usart_setup {
                 // Provide a static buffer for the ring buffer.
                 use ::static_cell::ConstStaticCell;
 
-                #[link_section = ".ram_d3"]
                 static USART_BUFFER: ConstStaticCell<[u8; $rb_size]> = ConstStaticCell::new([0; $rb_size]);
                 let rx = rx.into_ring_buffered(USART_BUFFER.take());
 
@@ -273,7 +272,7 @@ macro_rules! impl_up_dma_dshot_setup {
         $(,)?
     ) => {
         impl $MotorDriver {
-            pub fn setup(&mut self, dshot: common::types::config::DshotConfig) -> impl common::hw_abstraction::OutputGroup + '_ {
+            pub fn setup(&mut self, dshot: common::types::config::DshotConfig) -> impl common::abstraction::motor::MotorGroup + '_ {
                 embassy_stm32::bind_interrupts!(struct Irqs {
                     $dma_irq => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::$dma_periph>;
                 });
@@ -300,7 +299,7 @@ macro_rules! impl_qs_dshot_setup {
         $(,)?
     ) => {
         impl $MotorDriver {
-            pub fn setup(&mut self, dshot: common::types::config::DshotConfig) -> impl common::hw_abstraction::OutputGroup + '_ {
+            pub fn setup(&mut self, dshot: common::types::config::DshotConfig) -> impl common::abstraction::motor::MotorGroup + '_ {
                 embassy_stm32::bind_interrupts!(struct Irqs {
                     $dma_irq => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::$dma_periph>;
                 });

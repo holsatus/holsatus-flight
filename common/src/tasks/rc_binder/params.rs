@@ -1,5 +1,3 @@
- use crate::tasks::param_storage::Table;
-
 pub const NUM_CHANNELS: usize = 16;
 pub const NUM_DIGITALS: usize = 4;
 
@@ -11,7 +9,7 @@ pub struct Parameters {
 
 crate::const_default!(
     Parameters => {
-        channel_binding: Bindings::const_default()
+        channel_binding: Bindings::const_default(),
     }
 );
 
@@ -21,12 +19,12 @@ pub struct Bindings(pub(super) [Binding; NUM_CHANNELS]);
 
 crate::const_default!(
     Bindings => Bindings({
-        const POS_1: u16 = 191;
-        const POS_2: u16 = 997;
-        const POS_3: u16 = 1792;
+        const POS_1: u16 = 886;
+        const POS_2: u16 = 1500;
+        const POS_3: u16 = 2114;
 
-        const A_MIN: u16 = 174;
-        const A_MAX: u16 = 1811;
+        const A_MIN: u16 = 886;
+        const A_MAX: u16 = 2114;
 
         bindings(&[
             Binding::Analog(analog::Binding {
@@ -61,21 +59,21 @@ crate::const_default!(
                 (POS_3, digital::Event::DoAccCalibrate),
             ]),
             digital_binds(&[ // Switch B
-                (POS_1, digital::Event::SetModeRate),
-                (POS_2, digital::Event::SetModeAngle),
-                (POS_3, digital::Event::SetModeAutonomous),
+                (POS_1, digital::Event::FlightMode1),
+                (POS_2, digital::Event::FlightMode2),
+                (POS_3, digital::Event::FlightMode3),
             ]),
             digital_binds(&[ // Switch C
                 (POS_1, digital::Event::DisarmVehicle),
                 (POS_2, digital::Event::ArmVehicle),
-                (POS_3, digital::Event::ArmVehicle),
+                (POS_3, digital::Event::ForceArmVehicle),
             ]),
             digital_binds(&[ // Button D
                 (POS_3, digital::Event::DoGyrCalibrate),
             ]),
 
             digital_binds(&[ /* Button E */ ]),
-            digital_binds(&[ /* Button F */ 
+            digital_binds(&[ /* Button F */
                 (POS_3, digital::Event::EskfResetOrigin),
             ]),
         ])
@@ -129,9 +127,10 @@ pub(super) enum Binding {
     Digital([digital::Binding; NUM_DIGITALS]),
 }
 
-
-/// The parameter table for the angular rate controller
-pub static TABLE: Table<Parameters> = Table::new("rc", Parameters::const_default());
+crate::param_table!(
+    /// The parameter table for the angular rate controller
+    pub static TABLE = "rc" for Parameters
+);
 
 pub mod analog {
 
@@ -271,9 +270,16 @@ pub mod digital {
         DoGyrCalibrate,
         DoMagCalibrate,
 
-        SetModeRate = 300,
-        SetModeAngle,
-        SetModeAutonomous,
+        FlightMode0 = 10000,
+        FlightMode1 = 10001,
+        FlightMode2 = 10002,
+        FlightMode3 = 10003,
+        FlightMode4 = 10004,
+        FlightMode5 = 10005,
+        FlightMode6 = 10006,
+        FlightMode7 = 10007,
+        FlightMode8 = 10008,
+        FlightMode9 = 10009,
     }
 
     impl TryFrom<Event> for crate::tasks::commander::message::Command {
@@ -299,6 +305,7 @@ pub mod digital {
                     arm: false,
                     force: true,
                 },
+                Event::EskfResetOrigin => Command::EskfResetOrigin,
                 Event::DoAccCalibrate => Command::DoCalibration {
                     sensor_id: None,
                     sensor_type: SensorType::Accelerometer,
@@ -311,10 +318,16 @@ pub mod digital {
                     sensor_id: None,
                     sensor_type: SensorType::Magnetometer,
                 },
-                Event::SetModeRate => Command::SetControlMode(ControlMode::Rate),
-                Event::SetModeAngle => Command::SetControlMode(ControlMode::Angle),
-                Event::SetModeAutonomous => Command::SetControlMode(ControlMode::Autonomous),
-                Event::EskfResetOrigin => Command::EskfResetOrigin,
+
+                // Use the vehicle-specified try_from implementation for any
+                event if (10000..11000u16).contains(&(event as u16)) => {
+                    Command::SetFlightMode(TryFrom::try_from(value)?)
+                }
+
+                event => {
+                    warn!("[rc_binder] {:?} does not map to a command", event);
+                    return Err(());
+                }
             };
 
             Ok(command)

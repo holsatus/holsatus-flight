@@ -95,7 +95,7 @@ pub async fn main(driver: impl Driver<'static>, info: HardwareInfo) -> ! {
 
 pub(super) async fn connect_runner_future<D: Driver<'static>>(mut usb: UsbDevice<'static, D>) -> ! {
     const ID: &str = "usb_manager";
-    let mut snd_usb_connected = s::USB_CONNECTED.sender();
+    let snd_usb_connected = s::USB_CONNECTED.sender();
 
     usb.disable().await;
 

@@ -1,16 +1,16 @@
 //! Commander module
-//!
-//!
 
 use crate::signals as s;
 
-use crate::types::control;
+#[allow(unused)]
+use crate::vehicle::SetFlightMode as _;
+
 use crate::{
     signals::{CALIBRATOR_STATE, CMD_CALIBRATE},
     sync::{procedure::Procedure, watch::Watch},
     tasks::calibrator::CalibratorState,
 };
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Instant, Ticker};
 
 const CHANNEL_LEN: usize = 4;
@@ -28,26 +28,18 @@ pub use message::*;
 pub static PROCEDURE: Procedure<Request, Response, CHANNEL_LEN> = Procedure::new();
 
 pub mod params {
-    use crate::tasks::param_storage::Table;
-
     #[derive(mav_param::Tree, Clone)]
     pub struct Params {
-        #[param(rename = "grace_ms")]
-        pub rearm_grace_ms: u16,
-        #[param(rename = "tick_ms")]
+        pub arm_grace_ms: u16,
         pub periodics_ms: u16,
     }
 
-    impl Params {
-        pub const fn const_default() -> Self {
-            Params { 
-                rearm_grace_ms: 5000,
-                periodics_ms: 500,
-            }
-        }
-    }
+    crate::const_default!(Params => {
+        arm_grace_ms: 5000,
+        periodics_ms: 500,
+    });
 
-    pub static TABLE: Table<Params> = Table::new("cmd", Params::const_default());
+    crate::param_table!(pub static TABLE = "cmd" for Params);
 }
 
 /// The main commander task
@@ -55,7 +47,7 @@ struct Commander {
     name: &'static str,
     periodics_ticker: Ticker,
     disarm_info: DisarmInfo,
-    rearm_grace_period: Duration,
+    arm_grace_period: Duration,
     actuator_override_active: bool,
 }
 
@@ -66,7 +58,7 @@ struct DisarmInfo {
 }
 
 impl Commander {
-    fn new(params: params::Params) -> Self {
+    fn new(params: &params::Params) -> Self {
         Self {
             name: "commander",
             periodics_ticker: Ticker::every(Duration::from_millis(params.periodics_ms as u64)),
@@ -74,15 +66,9 @@ impl Commander {
                 time: Instant::MIN,
                 origin: Origin::Unspecified,
             },
-            rearm_grace_period: Duration::from_millis(params.rearm_grace_ms as u64),
+            arm_grace_period: Duration::from_millis(params.arm_grace_ms as u64),
             actuator_override_active: false,
         }
-    }
-}
-
-impl Default for Commander {
-    fn default() -> Self {
-        Self::new(params::Params::const_default())
     }
 }
 
@@ -93,11 +79,10 @@ pub async fn main() -> ! {
 
 pub async fn commander_entry() -> ! {
     let params = params::TABLE.read().await;
-
-    let mut commander = Commander::new(params.clone());
-    COMMAD_ARM_VEHICLE.send(false);
-
+    let mut commander = Commander::new(&params);
     drop(params);
+
+    COMMAD_ARM_VEHICLE.send(false);
 
     commander.main_loop().await
 }
@@ -122,7 +107,7 @@ impl Commander {
     /// hold up the commander. If some action takes time, it should be
     /// delegated to another task, and if some action is temporarily
     /// rejected, this should just be reflected in the response.
-    /// 
+    ///
     /// Maybe this will be relaxed in the future with an async timeout?
     fn handle_command(&mut self, request: Request) -> Response {
         trace!("[{}] Handling command: {:?}", self.name, request);
@@ -131,7 +116,10 @@ impl Commander {
                 true => self.arm_vehicle(force),
                 false => self.disarm_vehicle(force, request.origin),
             },
-            Command::DoCalibration { sensor_id, sensor_type }=> {
+            Command::DoCalibration {
+                sensor_id,
+                sensor_type,
+            } => {
                 use crate::calibration::{AccCalib, Calibrate, GyrCalib};
 
                 if COMMAD_ARM_VEHICLE.partial_eq(&true) {
@@ -197,27 +185,13 @@ impl Commander {
                 true => Response::Accepted,
                 false => Response::Rejected,
             },
-            Command::SetControlMode(requested_mode) => {
-                let mode = match requested_mode {
-                    message::ControlMode::Rate => control::ControlMode::Rate,
-                    message::ControlMode::Angle => control::ControlMode::Angle,
-                    message::ControlMode::Velocity => {
-                        // TODO Ensure valid velocity estimate
-                        control::ControlMode::Velocity
-                    }
-                    message::ControlMode::Autonomous => {
-                        // TODO Ensure valid position estimate
-                        control::ControlMode::Autonomous
-                    }
-                };
-
-                CMD_CONTROL_MODE.send(mode);
-
+            Command::SetFlightMode(requested_mode) => {
+                crate::vehicle::Vehicle::set_flight_mode(requested_mode);
                 Response::Accepted
-            },
+            }
             #[cfg(feature = "gnss")]
             Command::EskfResetOrigin => {
-                use crate::tasks::eskf::{Message, CHANNEL};
+                use crate::tasks::eskf::{CHANNEL, Message};
                 if CHANNEL.try_send(Message::GnssResetOrigin).is_ok() {
                     Response::Accepted
                 } else {
@@ -225,9 +199,7 @@ impl Commander {
                 }
             }
             #[cfg(not(feature = "gnss"))]
-            Command::EskfResetOrigin => {
-                Response::Unsupported
-            }
+            Command::EskfResetOrigin => Response::Unsupported,
         }
     }
 
@@ -293,7 +265,7 @@ impl Commander {
     /// e.g. if re-arming within a grace period
     fn arm_skip_condition(&self) -> bool {
         // Skip checks if manually disarmed within last 5 seconds
-        if self.disarm_info.time.elapsed() < self.rearm_grace_period
+        if self.disarm_info.time.elapsed() < self.arm_grace_period
 
             // TODO: Maybe the grace should be irrespective of the disarm origin?
             // Otherwise a bugged GCS could prevent a manual RC recovery.
@@ -331,7 +303,7 @@ impl Commander {
     }
 
     /// Execute a disarming check
-    /// 
+    ///
     /// Currently this always returns true
     fn disarm_checks(&self) -> bool {
         trace!("[{}] Running disarm checks", self.name);
@@ -357,9 +329,6 @@ pub static STATUS_ON_GROUND: Watch<bool> = Watch::new();
 /// Whether the vehicle is on the ground or airborne
 pub static CMD_RATE_REF: Watch<&'static Watch<[f32; 4]>> = Watch::new();
 pub static IMU_PRIM_CAL: Watch<&'static Watch<[f32; 3]>> = Watch::new();
-
-/// Select the currently active control mode
-pub static CMD_CONTROL_MODE: Watch<control::ControlMode> = Watch::new();
 
 const NUM_OUT_GROUPS: usize = 4;
 pub static CMD_ACTUATOR_OVERRIDE: [Watch<Option<[f32; 4]>>; NUM_OUT_GROUPS] = {
@@ -395,7 +364,7 @@ mod tests {
     #[test]
     fn arming_rejected() {
         let params = params::Params::const_default();
-        let mut commander = Commander::new(params);
+        let mut commander = Commander::new(&params);
 
         COMMAD_ARM_VEHICLE.send(false); // Disarmed
         STATUS_ON_GROUND.send(false); // In air
@@ -406,7 +375,8 @@ mod tests {
                 force: false,
             },
             Origin::Unspecified,
-        ).into();
+        )
+            .into();
 
         let response = commander.handle_command(request);
         assert_eq!(response, Response::Rejected);
@@ -415,7 +385,7 @@ mod tests {
     #[test]
     fn arming_unchanged() {
         let params = params::Params::const_default();
-        let mut commander = Commander::new(params);
+        let mut commander = Commander::new(&params);
 
         COMMAD_ARM_VEHICLE.send(true);
         STATUS_ON_GROUND.send(false);
@@ -426,7 +396,8 @@ mod tests {
                 force: false,
             },
             Origin::RemoteControl,
-        ).into();
+        )
+            .into();
 
         let response = commander.handle_command(request);
         assert_eq!(response, Response::Unchanged);

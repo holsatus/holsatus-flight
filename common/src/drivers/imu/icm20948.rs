@@ -9,7 +9,10 @@ use icm20948_async::{
 pub use icm20948_async::{AccDlp, AccRange, AccUnit, Config, GyrDlp, GyrRange, GyrUnit};
 
 use crate::{
-    drivers::{imu::{ImuInitialize, ImuSensor}, wrapped::{WrappedI2c, WrappedSpi}}, errors::ImuError, types::measurements::Imu6DofData,
+    abstraction::imu::{Imu, ImuInitialize},
+    errors::SensorError,
+    types::measurements::Imu6DofData,
+    wrapped::{i2c::WrappedI2c, spi::WrappedSpi},
 };
 
 pub struct Icm20948Sensor<TRANSPORT> {
@@ -22,20 +25,20 @@ impl<TRANSPORT> Icm20948Sensor<TRANSPORT> {
     }
 }
 
-impl<BUS: Transport> ImuSensor for Icm20948Sensor<BUS>
+impl<BUS: Transport> Imu for Icm20948Sensor<BUS>
 where
-    ImuError: From<BUS::Error>,
+    SensorError: From<BUS::Error>,
 {
-    fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
-        self.sensor.read_acc().map_err(ImuError::from)
+    fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], SensorError>> {
+        self.sensor.read_acc().map_err(SensorError::from)
     }
 
-    fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
-        self.sensor.read_gyr().map_err(ImuError::from)
+    fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], SensorError>> {
+        self.sensor.read_gyr().map_err(SensorError::from)
     }
 
-    async fn read_acc_gyr(&mut self) -> Result<Imu6DofData<f32>, ImuError> {
-        let raw = self.sensor.read_6dof().await.map_err(ImuError::from)?;
+    async fn read_acc_gyr(&mut self) -> Result<Imu6DofData<f32>, SensorError> {
+        let raw = self.sensor.read_6dof().await.map_err(SensorError::from)?;
         Ok(Imu6DofData {
             timestamp_us: Instant::now().as_micros(),
             gyr: raw.gyr,
@@ -46,28 +49,28 @@ where
 
 // --- Error mapping
 
-fn map_setup_err_i2c<E: i2c::Error>(error: SetupError<E>) -> ImuError {
+fn map_setup_err_i2c<E: i2c::Error>(error: SetupError<E>) -> SensorError {
     match error {
-        SetupError::Transport(e) => ImuError::I2cInterface(e.into()),
-        SetupError::ImuWhoAmI(actual) => ImuError::WhoAmI {
+        SetupError::Transport(e) => SensorError::I2cInterface(e.into()),
+        SetupError::ImuWhoAmI(actual) => SensorError::WhoAmI {
             expected: 0xEA,
             actual,
         },
-        SetupError::MagWhoAmI(actual) => ImuError::WhoAmI {
+        SetupError::MagWhoAmI(actual) => SensorError::WhoAmI {
             expected: 0x09,
             actual,
         },
     }
 }
 
-fn map_setup_err_spi<E: spi::Error>(error: SetupError<E>) -> ImuError {
+fn map_setup_err_spi<E: spi::Error>(error: SetupError<E>) -> SensorError {
     match error {
-        SetupError::Transport(e) => ImuError::SpiInterface(e.into()),
-        SetupError::ImuWhoAmI(actual) => ImuError::WhoAmI {
+        SetupError::Transport(e) => SensorError::SpiInterface(e.into()),
+        SetupError::ImuWhoAmI(actual) => SensorError::WhoAmI {
             expected: 0xEA,
             actual,
         },
-        SetupError::MagWhoAmI(actual) => ImuError::WhoAmI {
+        SetupError::MagWhoAmI(actual) => SensorError::WhoAmI {
             expected: 0x09,
             actual,
         },
@@ -92,7 +95,7 @@ where
     fn initialize<'a>(
         interface: &'a mut Self::Interface,
         config: &Self::Config,
-    ) -> impl Future<Output = Result<Self::Sensor<'a>, ImuError>>
+    ) -> impl Future<Output = Result<Self::Sensor<'a>, SensorError>>
     where
         Self: 'a,
     {
@@ -127,7 +130,7 @@ where
     fn initialize<'a>(
         interface: &'a mut Self::Interface,
         config: &Self::Config,
-    ) -> impl Future<Output = Result<Self::Sensor<'a>, ImuError>>
+    ) -> impl Future<Output = Result<Self::Sensor<'a>, SensorError>>
     where
         Self: 'a,
     {

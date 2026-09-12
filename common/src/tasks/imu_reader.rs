@@ -1,27 +1,22 @@
+use embassy_executor::SendSpawner;
 use embassy_futures::select::select;
 use embassy_time::Timer;
 use futures::TryFutureExt;
-use mutex::raw_impls::cs::CriticalSectionRawMutex;
-use portable_atomic::{AtomicUsize, Ordering};
 
+use crate::abstraction::imu::{Imu, ImuInitialize};
+use crate::abstraction::trigger::Trigger;
 use crate::calibration::sens3d::Calib3D;
-use crate::drivers::imu::trigger::Trigger;
-use crate::drivers::imu::{ImuInitialize, ImuSensor};
-use crate::errors::ImuError;
-use crate::sync::channel::{Channel, Receiver};
-use crate::sync::watch::Sender;
-use crate::tasks::imu_reader::params::Params;
-use crate::tasks::param_storage::Table;
+use crate::errors::SensorError;
+use crate::params::ParamTable;
+use crate::sync::channel::Channel;
+use crate::sync::{channel, watch};
 use crate::types::measurements::Imu6DofData;
 use crate::utils::rot_matrix::Rotation;
-use crate::{NUM_IMU, signals as s};
-
-static SENSOR_ID: AtomicUsize = AtomicUsize::new(0);
+use crate::{IMU_COUNT, ImuIndex, signals as s};
 
 pub mod params {
-    use crate::{
-        calibration::sens3d::Calib3D, tasks::param_storage::Table, utils::rot_matrix::Rotation,
-    };
+    use crate::params::ParamTable;
+    use crate::{calibration::sens3d::Calib3D, utils::rot_matrix::Rotation};
 
     #[derive(Clone, Debug, mav_param::Tree)]
     pub struct Params {
@@ -40,55 +35,62 @@ pub mod params {
         }
     );
 
-    #[cfg(feature = "imu_count_1")]
-    pub static TABLE0: Table<Params> = Table::new("imu0", Params::const_default());
+    crate::param_table!(
+        #[cfg(feature = "imu_count_1")]
+        pub static IMU0 = "imu0" for Params
+    );
+    crate::param_table!(
+        #[cfg(feature = "imu_count_2")]
+        pub static IMU1 = "imu1" for Params
+    );
+    crate::param_table!(
+        #[cfg(feature = "imu_count_3")]
+        pub static IMU2 = "imu2" for Params
+    );
+    crate::param_table!(
+        #[cfg(feature = "imu_count_4")]
+        pub static IMU3 = "imu3" for Params
+    );
 
-    #[cfg(feature = "imu_count_2")]
-    pub static TABLE1: Table<Params> = Table::new("imu1", Params::const_default());
+    pub static TABLES: [&'static ParamTable<Params>; crate::IMU_COUNT] = [
+        #[cfg(feature = "imu_count_1")]
+        &IMU0,
+        #[cfg(feature = "imu_count_2")]
+        &IMU1,
+        #[cfg(feature = "imu_count_3")]
+        &IMU2,
+        #[cfg(feature = "imu_count_4")]
+        &IMU3,
+    ];
+}
 
-    #[cfg(feature = "imu_count_3")]
-    pub static TABLE2: Table<Params> = Table::new("imu2", Params::const_default());
-
-    #[cfg(feature = "imu_count_4")]
-    pub static TABLE3: Table<Params> = Table::new("imu3", Params::const_default());
-
-    pub fn get_table_ref(index: usize) -> Option<&'static Table<Params>> {
-        let table = match index {
-            #[cfg(feature = "imu_count_1")]
-            0 => &TABLE0,
-            #[cfg(feature = "imu_count_2")]
-            1 => &TABLE1,
-            #[cfg(feature = "imu_count_3")]
-            2 => &TABLE2,
-            #[cfg(feature = "imu_count_4")]
-            3 => &TABLE3,
-            _ => return None,
-        };
-
-        Some(table)
-    }
+#[embassy_executor::task(pool_size = IMU_COUNT)]
+async fn params_notifier(imu_index: crate::ImuIndex) -> ! {
+    params::TABLES[imu_index as usize]
+        .run_notifier(|| CHANNELS[imu_index as usize].send(Message::ReloadParams))
+        .await
 }
 
 pub enum Message {
     ReloadParams,
 }
 
-pub static CHANNEL: [Channel<Message, 1, CriticalSectionRawMutex>; NUM_IMU] =
-    [const { Channel::new() }; NUM_IMU];
+pub static CHANNELS: [Channel<Message, 1>; IMU_COUNT] = [const { Channel::new() }; IMU_COUNT];
 
+/// The number of consecutive errors before trying a reinitialization of the IMU.
 const MAX_CONSECUTIVE_ERRORS: usize = 10;
 
-pub struct ImuReader<T> {
-    sensor_id: usize,
+pub struct ImuReader<'a, T> {
+    imu_index: ImuIndex,
     trigger: T,
+    stats: Stats,
     acc_calib: Calib3D,
     gyr_calib: Calib3D,
     rotation: Rotation,
-    stats: Stats,
-    param_table: &'static Table<Params>,
-    receiver: Receiver<'static, Message, 1, CriticalSectionRawMutex>,
-    snd_raw_imu_data: Sender<'static, Imu6DofData<f32>>,
-    snd_cal_imu_data: Sender<'static, Imu6DofData<f32>>,
+    recv_channel: channel::Receiver<'a, Message, 1>,
+    snd_raw_imu_data: watch::Sender<'a, Imu6DofData<f32>>,
+    snd_cal_imu_data: watch::Sender<'a, Imu6DofData<f32>>,
+    param_table: &'static ParamTable<params::Params>,
 }
 
 #[derive(Default)]
@@ -98,27 +100,28 @@ struct Stats {
     consecutive_errors: usize,
 }
 
-impl<T: Trigger> ImuReader<T> {
+impl<T: Trigger> ImuReader<'_, T> {
     pub async fn entry<I: ImuInitialize>(
+        imu_index: crate::ImuIndex,
         mut interface: I::Interface,
         config: I::Config,
         trigger: T,
     ) -> ! {
-        let idx = SENSOR_ID.fetch_add(1, Ordering::AcqRel);
-
-        let param_table = params::get_table_ref(idx).expect("Invalid IMU index");
+        if let Ok(task) = params_notifier(imu_index) {
+            SendSpawner::for_current_executor().await.spawn(task);
+        }
 
         let mut runner = ImuReader {
-            sensor_id: idx,
+            imu_index,
             trigger,
+            stats: Stats::default(),
             acc_calib: Calib3D::const_default(),
             gyr_calib: Calib3D::const_default(),
             rotation: Rotation::const_default(),
-            stats: Stats::default(),
-            param_table,
-            receiver: CHANNEL[idx].receiver(),
-            snd_raw_imu_data: s::RAW_MULTI_IMU_DATA[idx].sender(),
-            snd_cal_imu_data: s::CAL_MULTI_IMU_DATA[idx].sender(),
+            param_table: params::TABLES[imu_index as usize],
+            recv_channel: CHANNELS[imu_index as usize].receiver(),
+            snd_raw_imu_data: s::RAW_MULTI_IMU_DATA[imu_index as usize].sender(),
+            snd_cal_imu_data: s::CAL_MULTI_IMU_DATA[imu_index as usize].sender(),
         };
 
         'setup: loop {
@@ -127,7 +130,7 @@ impl<T: Trigger> ImuReader<T> {
                 Err(error) => {
                     error!(
                         "[imu_reader:{}] Error during initialization: {:?}",
-                        runner.sensor_id, error
+                        runner.imu_index as u8, error
                     );
 
                     // TODO: Register error globally
@@ -146,10 +149,10 @@ impl<T: Trigger> ImuReader<T> {
     }
 }
 
-impl<T: Trigger> ImuReader<T> {
-    async fn run_inner<S: ImuSensor>(&mut self, sensor: &mut S) {
+impl<T: Trigger> ImuReader<'_, T> {
+    async fn run_inner<S: Imu>(&mut self, sensor: &mut S) {
         loop {
-            match select(self.receiver.receive(), self.trigger.next_trigger()).await {
+            match select(self.recv_channel.receive(), self.trigger.next_trigger()).await {
                 embassy_futures::select::Either::First(message) => match message {
                     Message::ReloadParams => self.reload_parameters().await,
                 },
@@ -157,7 +160,7 @@ impl<T: Trigger> ImuReader<T> {
                     if let Err(error) = self.on_trigger(sensor).await {
                         debug!(
                             "[imu_reader:{}] Too many consecutive errors, reinitializing sensor: {:?}",
-                            self.sensor_id, error
+                            self.imu_index as u8, error
                         );
                         return;
                     }
@@ -166,14 +169,14 @@ impl<T: Trigger> ImuReader<T> {
         }
     }
 
-    async fn on_trigger<S: ImuSensor>(&mut self, sensor: &mut S) -> Result<(), ()> {
+    async fn on_trigger<S: Imu>(&mut self, sensor: &mut S) -> Result<(), ()> {
         match self.read_sensor(sensor).await {
             Ok(_) => {
                 self.stats.consecutive_errors = 0;
                 Ok(())
             }
             Err(error) => {
-                debug!("[imu_reader:{}] Error: {:?}", self.sensor_id, error);
+                debug!("[imu_reader:{}] Error: {:?}", self.imu_index as u8, error);
                 self.stats.total_errors += 1;
                 if self.stats.consecutive_errors < MAX_CONSECUTIVE_ERRORS {
                     self.stats.consecutive_errors += 1;
@@ -186,18 +189,18 @@ impl<T: Trigger> ImuReader<T> {
     }
 
     async fn reload_parameters(&mut self) {
-        debug!("[imu_reader:{}] Reloading parameters", self.sensor_id);
-        let intrinsics = self.param_table.read().await;
+        debug!("[imu_reader:{}] Reloading parameters", self.imu_index as u8);
+        let params = self.param_table.read().await;
 
-        self.acc_calib = intrinsics.acc_cal;
-        self.gyr_calib = intrinsics.gyr_cal;
-        self.rotation = intrinsics.rot;
+        self.acc_calib = params.acc_cal;
+        self.gyr_calib = params.gyr_cal;
+        self.rotation = params.rot;
     }
 
-    fn read_sensor<S: ImuSensor>(
+    fn read_sensor<S: Imu>(
         &mut self,
         sensor: &mut S,
-    ) -> impl Future<Output = Result<(), ImuError>> {
+    ) -> impl Future<Output = Result<(), SensorError>> {
         sensor
             .read_acc_gyr()
             .map_ok(|raw_imu_data| self.on_imu_data(raw_imu_data))

@@ -2,7 +2,7 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Command {
-    ArmDisarm{
+    ArmDisarm {
         arm: bool,
         force: bool,
     },
@@ -26,18 +26,9 @@ pub enum Command {
     SetActuatorOverride {
         active: bool,
     },
-    SetControlMode(ControlMode),
+    SetFlightMode(crate::vehicle::FlightModeKind),
     RunArmChecks,
     EskfResetOrigin,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ControlMode {
-    Rate,
-    Angle,
-    Velocity,
-    Autonomous,
 }
 
 /// A request to the [`Commander`](crate::commander::Commander)
@@ -90,6 +81,7 @@ pub enum Response {
     Failed,
 }
 
+/// Describes the origin of a command in the system
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Origin {
