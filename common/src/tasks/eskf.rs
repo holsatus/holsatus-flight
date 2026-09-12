@@ -112,8 +112,6 @@ pub async fn gnss_helper() -> ! {
 }
 
 mod params {
-    use crate::params::ParamTable;
-
     #[derive(Debug, Clone, mav_param::Tree)]
     pub struct Parameters {
         #[param(rename = "acc_noise")]
@@ -141,7 +139,7 @@ mod params {
         }
     );
 
-    pub(crate) static TABLE: ParamTable<Parameters> = ParamTable::default("eskf");
+    crate::param_table!(pub(crate) static TABLE = "eskf" for Parameters);
 }
 
 /// Barometric pressure to altitude conversion using the International Standard

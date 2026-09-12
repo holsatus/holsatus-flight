@@ -10,10 +10,7 @@ use crate::{
 };
 
 pub mod params {
-    use crate::{
-        params::ParamTable,
-        tasks::rc_binder::rates::{Actual, Linear, Rates},
-    };
+    use crate::tasks::rc_binder::rates::{Actual, Linear, Rates};
 
     #[derive(Clone, Debug, mav_param::Tree)]
     pub struct Params {
@@ -30,7 +27,7 @@ pub mod params {
         }
     );
 
-    pub static TABLE: ParamTable<Params> = ParamTable::default("acro");
+    crate::param_table!(pub static TABLE = "acro" for Params);
 }
 
 /// Acro mode. RC sticks are mapped to angular-rate setpoints.
@@ -95,7 +92,4 @@ impl FlightMode for RcAcrobatic {
 
         Action::None
     }
-
-    const PARAMS: Option<&'static crate::params::ParamTable<dyn mav_param::Node>> =
-        Some(&params::TABLE);
 }

@@ -70,6 +70,9 @@ embedded-io-async-061 = { package = "embedded-io-async", version = "0.6.1" }
 static_cell = "2"
 static_assertions = "1.1.0"
 
+# Link-time collection of parameter tables into a single distributed slice.
+linkme = "0.3"
+
 num-traits = { version = "0.2.19", default-features = false, features = [
     "libm",
 ] }

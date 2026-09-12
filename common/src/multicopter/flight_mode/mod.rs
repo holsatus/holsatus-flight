@@ -13,7 +13,6 @@ use futures::TryFutureExt;
 
 use crate::{
     multicopter::attitude_control::{ATTITUDE_COMMAND, AttitudeCommand},
-    params::ParamTable,
     signals::{THROTTLE_COMMAND, ThrottleCommand},
     sync::{
         procedure::Procedure,
@@ -96,12 +95,6 @@ macro_rules! flight_modes {
             }
         }
 
-        const PARAM_TABLES: &'static [Option<&'static ParamTable<dyn mav_param::Node>>] = &[
-            $(
-                <$ty>::PARAMS,
-            )*
-        ];
-
         impl TryFrom<Event> for Kind {
             type Error = ();
 
@@ -157,11 +150,6 @@ pub trait FlightMode: Sized {
     ///
     /// Must be cancel-safe and complete within [`STEP_TIMEOUT`] to avoid triggering a failsafe.
     fn step(&mut self) -> impl Future<Output = Action>;
-
-    /// Get the the parameter table to this flight mode
-    ///
-    /// This will be used to eagerly register its parameters globally.
-    const PARAMS: Option<&'static ParamTable<dyn mav_param::Node>> = None;
 }
 
 pub mod position_hold;
@@ -258,8 +246,6 @@ pub static REQUEST_MODE: Watch<Kind> = Watch::new();
 pub static REQUEST_MODE_PROC: Procedure<Kind, bool, 1> = Procedure::new();
 
 pub mod params {
-    use crate::params::ParamTable;
-
     #[derive(Clone, Debug, mav_param::Tree)]
     pub struct Params {}
 
@@ -267,7 +253,7 @@ pub mod params {
         Params => Params {}
     );
 
-    pub static TABLE: ParamTable<Params> = ParamTable::default("flm");
+    crate::param_table!(pub static TABLE = "flm" for Params);
 }
 
 /// The single flight mode manager task.
@@ -284,15 +270,6 @@ pub async fn main() -> ! {
 
 impl FlightModeRunner<'_> {
     pub async fn new() -> Self {
-        let _ = params::TABLE.read().await;
-
-        for table in PARAM_TABLES.iter().flatten() {
-            use crate::params::{PARAM_REGISTRY, Registration};
-            if PARAM_REGISTRY.register(table) == Registration::Full {
-                error!("[mc/flight_mode] Unable to register table {}", table.name())
-            }
-        }
-
         Self {
             current_mode: State::None,
             recv_request: REQUEST_MODE.receiver(),

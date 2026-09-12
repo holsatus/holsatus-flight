@@ -31,6 +31,7 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
 
     // Might as well start the parameter storage module to get things loaded
     level_t_spawner.spawn(flash::param_storage(r.flash, config::flash()).unwrap());
+    common::params::load_all().await;
 
     // Give special priority to the serial port used as primary input
     level_0_spawner.spawn(usart::run_usart1(r.usart_1, config::usart1(), "usart1").unwrap()); // CRSF

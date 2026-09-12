@@ -12,10 +12,7 @@ use crate::{
 };
 
 pub mod params {
-    use crate::{
-        params::ParamTable,
-        tasks::rc_binder::rates::{Linear, Rates},
-    };
+    use crate::tasks::rc_binder::rates::{Linear, Rates};
 
     #[derive(Clone, Debug, mav_param::Tree)]
     pub struct Params {
@@ -35,7 +32,7 @@ pub mod params {
         }
     );
 
-    pub static TABLE: ParamTable<Params> = ParamTable::default("stab");
+    crate::param_table!(pub static TABLE = "stab" for Params);
 }
 
 /// Stabilized mode. RC sticks are mapped to an attitude (angle) setpoint.
@@ -113,7 +110,4 @@ impl FlightMode for RcStabilized {
 
         Action::None
     }
-
-    const PARAMS: Option<&'static crate::params::ParamTable<dyn mav_param::Node>> =
-        Some(&params::TABLE);
 }

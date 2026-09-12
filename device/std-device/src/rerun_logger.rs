@@ -25,7 +25,8 @@ pub(crate) fn rerun_thread(
     const TRAIL_LEN: usize = 1000;
     let mut pos_trail: VecDeque<Vec3D> = VecDeque::with_capacity(TRAIL_LEN);
 
-    let mut mpc_intercept_pos = common::tasks::controller_mpc::MPC_INTERCEPT_POS.receiver();
+    let mut mpc_intercept_pos =
+        common::multicopter::flight_mode::mpc_autonomous::MPC_INTERCEPT_POS.receiver();
 
     loop {
         log_ticker.next();
@@ -113,9 +114,11 @@ pub(crate) fn rerun_thread(
             )?;
         }
 
-        if let Some(mpc_reference) = common::tasks::controller_mpc::MPC_REFERENCE.try_get() {
-            let reference =
-                mpc_reference.fixed_view::<3, { common::tasks::controller_mpc::HX }>(0, 0);
+        if let Some(mpc_reference) =
+            common::multicopter::flight_mode::mpc_autonomous::MPC_REFERENCE.try_get()
+        {
+            let reference = mpc_reference
+                .fixed_view::<3, { common::multicopter::flight_mode::mpc_autonomous::HX }>(0, 0);
             let slices = reference
                 .column_iter()
                 .map(|col| col.clone_owned().data.0[0]);
@@ -128,7 +131,9 @@ pub(crate) fn rerun_thread(
             rec.log("sim/firmware/mpc_reference", &LineStrips3D::new([slices]))?;
         }
 
-        if let Some(mpc_pos_pred) = common::tasks::controller_mpc::MPC_POS_PRED.try_get() {
+        if let Some(mpc_pos_pred) =
+            common::multicopter::flight_mode::mpc_autonomous::MPC_POS_PRED.try_get()
+        {
             let slices = mpc_pos_pred
                 .column_iter()
                 .map(|col| col.clone_owned().data.0[0]);
@@ -245,7 +250,9 @@ pub(crate) fn rerun_thread(
 
         // Note: do not place this in the 'drone/' path since that will also apply
         // the drones rotation to this vector.
-        if let Some(mpc_acc_target) = common::tasks::controller_mpc::MPC_TARGET_ACC.try_get() {
+        if let Some(mpc_acc_target) =
+            common::multicopter::flight_mode::mpc_autonomous::MPC_TARGET_ACC.try_get()
+        {
             let short_acc_target = mpc_acc_target.map(|x| x / 10.0);
             rec.log(
                 "mpc_target_acc",

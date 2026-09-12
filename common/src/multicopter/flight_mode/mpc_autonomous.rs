@@ -105,8 +105,6 @@ pub enum Message {
 pub static CHANNEL: Channel<Message, 2> = Channel::new();
 
 mod params {
-    use crate::params::ParamTable;
-
     /// This should be a parameterized configurable
     const VEHICLE_MASS: f32 = 0.630;
 
@@ -146,7 +144,7 @@ mod params {
         }
     );
 
-    pub static TABLE: ParamTable<Parameters> = ParamTable::default("mpc");
+    crate::param_table!(pub static TABLE = "mpc" for Parameters);
 }
 
 /// Shifts all columns such that `column[i] <- column[i + 1]` with the last two being identical.
@@ -248,9 +246,6 @@ impl FlightMode for MpcAutonomous {
 
         Action::None
     }
-
-    const PARAMS: Option<&'static crate::params::ParamTable<dyn mav_param::Node>> =
-        Some(&params::TABLE);
 }
 
 impl MpcAutonomous {

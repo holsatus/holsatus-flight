@@ -41,6 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Might as well start the parameter storage module to get things loaded
     level_t_spawner.spawn(resources::param_storage(r.flash).unwrap());
+    level_t_spawner.spawn(common::params::load_all_task().unwrap());
 
     // ------------------ high-priority tasks -------------------
 

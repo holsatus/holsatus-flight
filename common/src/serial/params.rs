@@ -1,4 +1,4 @@
-use crate::{params::ParamTable, serial::StreamId};
+use crate::serial::StreamId;
 
 #[derive(mav_param::Tree, Clone)]
 pub struct Parameters {
@@ -35,7 +35,7 @@ crate::const_default!(Parameters => {
     assign: [const { None }; super::MAX_IO_STREAMS],
 });
 
-pub static TABLE: ParamTable<Parameters> = ParamTable::default("io");
+crate::param_table!(pub static TABLE = "io" for Parameters);
 
 pub const fn fnv1a_hash_u32(s: &str) -> u32 {
     let hash = fnv1a_hash(s);

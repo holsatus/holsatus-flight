@@ -1,5 +1,3 @@
-use crate::params::ParamTable;
-
 #[derive(Clone, Debug, mav_param::Tree)]
 pub struct Params {
     /// Roll-axis related parameters
@@ -153,4 +151,4 @@ crate::const_default!(
     }
 );
 
-pub static TABLE: ParamTable<Params> = ParamTable::default("att");
+crate::param_table!(pub static TABLE = "att" for Params);

@@ -127,9 +127,7 @@ impl super::CommandHandler for ParamCommand {
                     .write_all(b"Enumerating all system parameters..\n\r")
                     .await?;
 
-                let tables = PARAM_REGISTRY.tables.with_lock(|t| t.clone());
-
-                for table in tables {
+                for table in PARAM_REGISTRY.iter() {
                     let read = table.pure_read().await;
                     for maybe_param in mav_param::param_iter_named(&*read, table.name()) {
                         match maybe_param {

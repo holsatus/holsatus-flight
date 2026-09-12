@@ -7,12 +7,19 @@ use futures::FutureExt;
 use maitake_sync::{RwLock, RwLockReadGuard, RwLockWriteGuard, WaitQueue};
 use portable_atomic::AtomicU8;
 
-use crate::params::registry::{PARAM_REGISTRY, Registration};
+/// No persisted values have been requested for this table.
+const UNLOADED: u8 = 0;
+/// A load is in progress; other callers should wait for it.
+const LOADING: u8 = 1;
+/// Persisted values have been loaded (or loading failed).
+const LOADED: u8 = 2;
 
 pub struct ParamTable<T: ?Sized> {
     name: &'static str,
     generation: AtomicU8,
     waiters: WaitQueue,
+    load_state: AtomicU8,
+    load_waiters: WaitQueue,
     params: RwLock<T>,
 }
 
@@ -47,6 +54,8 @@ impl<T: mav_param::Node> ParamTable<T> {
             name,
             generation: AtomicU8::new(0),
             waiters: WaitQueue::new(),
+            load_state: AtomicU8::new(UNLOADED),
+            load_waiters: WaitQueue::new(),
             params: RwLock::new(data),
         }
     }
@@ -91,22 +100,12 @@ impl<T: mav_param::Node> ParamTable<T> {
         }
     }
 
-    /// Register this table within the global static registry.
+    /// Obtain a read-only lock on the table, loading persisted values first.
     ///
-    /// This must be called in order to make the table globally available
-    pub async fn ensure_registration(&'static self) {
-        if PARAM_REGISTRY.register(self) == Registration::Inserted {
-            use super::task::{Request, request};
-            request(Request::LoadTable(self.name())).await;
-        }
-    }
-
-    /// Register this table globally and get a lock on its loaded contents.
-    ///
-    /// You only need to call this for the first reading of the table.
-    /// Once it is registered, the table is globally discoverable.
+    /// This only needs to be called for the first reading of the table. Once it
+    /// has loaded, subsequent reads return immediately from RAM.
     pub fn read(&'static self) -> impl Future<Output = TableReadGuard<'static, T>> {
-        ParamTable::ensure_registered(self).then(|_| self.pure_read())
+        self.ensure_loaded().then(|_| self.pure_read())
     }
 }
 
@@ -131,19 +130,37 @@ impl<T: ?Sized> ParamTable<T> {
         self.generation.fetch_add(1, Ordering::Release);
         self.waiters.wake_all();
     }
+
+    /// Ensure that persisted values for this table have been loaded into RAM.
+    ///
+    /// This is idempotent and safe to call concurrently: the first caller
+    /// performs the load, while any others wait for it to complete.
+    pub async fn ensure_loaded(&self) {
+        match self.load_state.compare_exchange(
+            UNLOADED,
+            LOADING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                use super::task::{Request, request};
+                let _ = request(Request::LoadTable(self.name)).await;
+                self.load_state.store(LOADED, Ordering::Release);
+                self.load_waiters.wake_all();
+            }
+            Err(LOADING) => {
+                _ = self
+                    .load_waiters
+                    .wait_for(|| self.load_state.load(Ordering::Acquire) == LOADED)
+                    .await;
+            }
+            // Already loaded (or a previous load failed).
+            Err(_) => {}
+        }
+    }
 }
 
 impl ParamTable<dyn mav_param::Node> {
-    /// Register this table within the global static registry.
-    ///
-    /// This must be called in order to make the table globally available
-    pub async fn ensure_registered(&'static self) {
-        if PARAM_REGISTRY.register(self) == Registration::Inserted {
-            use super::task::{Request, request};
-            request(Request::LoadTable(self.name())).await;
-        }
-    }
-
     /// Get the number of values currently present in this table.
     ///
     /// This does not reflect the maximum number of possible values, but only the current set.

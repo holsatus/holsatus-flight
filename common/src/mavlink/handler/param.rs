@@ -114,20 +114,15 @@ impl<V: MaybeVersioned> super::Handler<V> for ParamRequestList {
             return Ok(());
         }
 
-        // Get a copy of the parameter tables (references)
-        let tables = crate::params::PARAM_REGISTRY
-            .tables
-            .with_lock(|t| t.clone());
-
         // Not super nice to iterate through the tables twice
         let mut param_count = 0;
-        for table in tables.iter().cloned() {
+        for table in crate::params::PARAM_REGISTRY.iter() {
             param_count += table.size_hint().await as u16;
         }
 
         // Construct a message for each parameter
         let mut param_index = 0;
-        for table in tables {
+        for table in crate::params::PARAM_REGISTRY.iter() {
             let read = table.pure_read().await;
             for maybe_param in mav_param::param_iter_named(&*read, table.name()) {
                 match maybe_param {

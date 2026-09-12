@@ -45,6 +45,23 @@ pub async fn request(req: Request) -> Option<Response> {
     PROCEDURE.request(req).await
 }
 
+/// Load persisted values for every registered parameter table into RAM.
+///
+/// This is optional: [`ParamTable::read`] loads a table on first use. Calling
+/// this once shortly after the parameter storage task has been started front-loads
+/// the work so no individual task has to pay for it later.
+pub async fn load_all() {
+    for table in PARAM_REGISTRY.iter() {
+        table.ensure_loaded().await;
+    }
+}
+
+/// [`embassy_executor::task`] wrapper around [`load_all`] for spawner-based startups.
+#[embassy_executor::task]
+pub async fn load_all_task() {
+    load_all().await;
+}
+
 struct StorageTask<F: NorFlash> {
     storage: ParamStorage<F, NoCache, 32>,
 }
@@ -111,13 +128,8 @@ impl<F: NorFlash> StorageTask<F> {
 
     /// Save all parameters in all tables to persistent storage
     pub async fn handle_save_all(&mut self) -> Result<(), Error> {
-        let mut table_iter = 0;
-        while let Some(table) = PARAM_REGISTRY
-            .tables
-            .with_lock(|t| t.get(table_iter).cloned())
-        {
+        for table in PARAM_REGISTRY.iter() {
             self.handle_save_table(table.name()).await?;
-            table_iter += 1;
         }
 
         Ok(())

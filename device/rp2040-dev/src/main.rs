@@ -57,6 +57,7 @@ async fn main(level_t_spawner: embassy_executor::Spawner) {
 
     // Might as well start the parameter storage module to get things loaded
     level_t_spawner.spawn(resources::param_storage(r.flash).unwrap());
+    common::params::load_all().await;
 
     // Give special priority to the serial port used as primary RC input
     level_0_spawner.spawn(resources::run_uart0(r.uart_0, config::uart0(), "uart0").unwrap());

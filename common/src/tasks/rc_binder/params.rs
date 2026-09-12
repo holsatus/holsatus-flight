@@ -1,5 +1,3 @@
-use crate::params::ParamTable;
-
 pub const NUM_CHANNELS: usize = 16;
 pub const NUM_DIGITALS: usize = 4;
 
@@ -129,8 +127,10 @@ pub(super) enum Binding {
     Digital([digital::Binding; NUM_DIGITALS]),
 }
 
-/// The parameter table for the angular rate controller
-pub static TABLE: ParamTable<Parameters> = ParamTable::default("rc");
+crate::param_table!(
+    /// The parameter table for the angular rate controller
+    pub static TABLE = "rc" for Parameters
+);
 
 pub mod analog {
 

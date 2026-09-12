@@ -28,8 +28,6 @@ pub use message::*;
 pub static PROCEDURE: Procedure<Request, Response, CHANNEL_LEN> = Procedure::new();
 
 pub mod params {
-    use crate::params::ParamTable;
-
     #[derive(mav_param::Tree, Clone)]
     pub struct Params {
         pub arm_grace_ms: u16,
@@ -41,7 +39,7 @@ pub mod params {
         periodics_ms: 500,
     });
 
-    pub static TABLE: ParamTable<Params> = ParamTable::default("cmd");
+    crate::param_table!(pub static TABLE = "cmd" for Params);
 }
 
 /// The main commander task

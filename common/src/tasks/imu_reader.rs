@@ -35,15 +35,32 @@ pub mod params {
         }
     );
 
-    pub static TABLES: [ParamTable<Params>; crate::IMU_COUNT] = [
+    crate::param_table!(
         #[cfg(feature = "imu_count_1")]
-        ParamTable::default("imu0"),
+        pub static IMU0 = "imu0" for Params
+    );
+    crate::param_table!(
         #[cfg(feature = "imu_count_2")]
-        ParamTable::default("imu1"),
+        pub static IMU1 = "imu1" for Params
+    );
+    crate::param_table!(
         #[cfg(feature = "imu_count_3")]
-        ParamTable::default("imu2"),
+        pub static IMU2 = "imu2" for Params
+    );
+    crate::param_table!(
         #[cfg(feature = "imu_count_4")]
-        ParamTable::default("imu3"),
+        pub static IMU3 = "imu3" for Params
+    );
+
+    pub static TABLES: [&'static ParamTable<Params>; crate::IMU_COUNT] = [
+        #[cfg(feature = "imu_count_1")]
+        &IMU0,
+        #[cfg(feature = "imu_count_2")]
+        &IMU1,
+        #[cfg(feature = "imu_count_3")]
+        &IMU2,
+        #[cfg(feature = "imu_count_4")]
+        &IMU3,
     ];
 }
 
@@ -101,7 +118,7 @@ impl<T: Trigger> ImuReader<'_, T> {
             acc_calib: Calib3D::const_default(),
             gyr_calib: Calib3D::const_default(),
             rotation: Rotation::const_default(),
-            param_table: &params::TABLES[imu_index as usize],
+            param_table: params::TABLES[imu_index as usize],
             recv_channel: CHANNELS[imu_index as usize].receiver(),
             snd_raw_imu_data: s::RAW_MULTI_IMU_DATA[imu_index as usize].sender(),
             snd_cal_imu_data: s::CAL_MULTI_IMU_DATA[imu_index as usize].sender(),

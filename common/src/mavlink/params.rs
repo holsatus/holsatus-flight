@@ -1,7 +1,7 @@
 use embassy_time::Duration;
 use mavio::{prelude::MaybeVersioned, protocol::Frame};
 
-use crate::{mavlink::messages::Generator, params::ParamTable};
+use crate::mavlink::messages::Generator;
 
 #[derive(mav_param::Tree, Clone)]
 pub struct Parameters {
@@ -112,4 +112,4 @@ impl Parameters {
     }
 }
 
-pub static TABLE: ParamTable<Parameters> = ParamTable::default("mav");
+crate::param_table!(pub static TABLE = "mav" for Parameters);

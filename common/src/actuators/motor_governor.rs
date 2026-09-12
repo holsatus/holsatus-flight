@@ -19,8 +19,6 @@ use crate::{
 };
 
 pub mod params {
-    use crate::params::ParamTable;
-
     #[derive(mav_param::Tree, Clone, Debug)]
     pub struct Params {
         pub rev: Reverse,
@@ -69,7 +67,7 @@ pub mod params {
         }
     );
 
-    pub static TABLE: ParamTable<Params> = ParamTable::default("mtr");
+    crate::param_table!(pub static TABLE = "mtr" for Params);
 }
 
 struct MotorGovernor<'a, O> {

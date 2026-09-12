@@ -1,57 +1,35 @@
-use heapless::Vec;
-use maitake_sync::blocking::Mutex;
+use linkme::distributed_slice;
 use mav_param::{Ident, Value};
 
 use super::{ParamError, table::ParamTable};
 
-pub struct ParamRegistry<'a, const N: usize> {
-    pub tables: Mutex<Vec<&'a ParamTable<dyn mav_param::Node>, N>>,
-}
+/// Every parameter table linked into the firmware.
+///
+/// Tables are added to this slice at link time by the [`crate::param_table!`]
+/// macro, which means there is no runtime registration step, no fixed capacity,
+/// and no need for a subsystem to be executed before its table is discoverable.
+///
+/// A table is only included if the crate defining it is linked into the final
+/// binary, which is exactly the desired behaviour for feature-gated subsystems.
+#[distributed_slice]
+pub static PARAM_TABLES: [&'static ParamTable<dyn mav_param::Node>];
 
-// TODO: I would really like to avoid a fixed-sized registry.
-// Some sort of linked-list with no removal should be doable and iterable
+/// Global view over all linked parameter tables.
+///
+/// This is a zero-sized handle: the tables themselves live in [`PARAM_TABLES`].
+pub struct ParamRegistry;
 
-pub static PARAM_REGISTRY: ParamRegistry<15> = ParamRegistry::new();
+pub static PARAM_REGISTRY: ParamRegistry = ParamRegistry;
 
-#[derive(Debug, PartialEq)]
-pub enum Registration {
-    Full,
-    Inserted,
-    Duplicate,
-}
-
-impl<'a, const N: usize> ParamRegistry<'a, N> {
-    pub const fn new() -> ParamRegistry<'a, N> {
-        ParamRegistry {
-            tables: Mutex::new(Vec::new()),
-        }
+impl ParamRegistry {
+    /// Iterate over every parameter table known to the firmware.
+    pub fn iter(&self) -> impl Iterator<Item = &'static ParamTable<dyn mav_param::Node>> {
+        PARAM_TABLES.iter().copied()
     }
 
-    pub fn get_table(&self, name: &str) -> Option<&'a ParamTable<dyn mav_param::Node>> {
-        self.tables
-            .with_lock(|tables| tables.iter().find(|table| table.name() == name).cloned())
-    }
-
-    /// Insert the given `Table` reference into the `TableSet`.
-    ///
-    /// Returns `true` if the table is inserted, and it is safe to wait for it to be read from storage.
-    #[must_use]
-    pub fn register(&self, table: &'a ParamTable<dyn mav_param::Node>) -> Registration {
-        self.tables.with_lock(|tables| {
-            if tables.iter().any(|t| core::ptr::addr_eq(*t, table)) {
-                return Registration::Duplicate;
-            }
-
-            if tables.push(table).is_ok() {
-                Registration::Inserted
-            } else {
-                error!(
-                    "[param_registry] No more room to add table {}",
-                    table.name()
-                );
-                Registration::Full
-            }
-        })
+    /// Look up a table by its identifier (the fragment before the `.`).
+    pub fn get_table(&self, name: &str) -> Option<&'static ParamTable<dyn mav_param::Node>> {
+        self.iter().find(|table| table.name() == name)
     }
 
     pub async fn get_param(&self, raw_ident: &[u8; 16]) -> Result<Value, ParamError> {
@@ -65,9 +43,7 @@ impl<'a, const N: usize> ParamRegistry<'a, N> {
             .ok_or(ParamError::NoTableFragment)?;
 
         // Find the table matching the 'table_ident' specifier
-        let table = self
-            .get_table(table_ident)
-            .ok_or(ParamError::NoMachingTable)?;
+        let table = self.get_table(table_ident).ok_or(ParamError::NoMachingTable)?;
 
         // Find the parameter 'param_ident' in the table
         let reader = table.pure_read().await;
@@ -88,9 +64,7 @@ impl<'a, const N: usize> ParamRegistry<'a, N> {
             .ok_or(ParamError::NoTableFragment)?;
 
         // Find the table matching the 'table_ident' specifier
-        let table = self
-            .get_table(table_ident)
-            .ok_or(ParamError::NoMachingTable)?;
+        let table = self.get_table(table_ident).ok_or(ParamError::NoMachingTable)?;
 
         // Find the parameter 'param_ident' in the table and set its value
         let mut writer = table.pure_write().await;
@@ -106,10 +80,7 @@ impl<'a, const N: usize> ParamRegistry<'a, N> {
 mod test {
     use mav_param::{Ident, Value};
 
-    use crate::params::{
-        ParamError, ParamTable,
-        registry::{ParamRegistry, Registration},
-    };
+    use crate::params::ParamError;
 
     #[derive(mav_param::Tree)]
     struct Data1 {
@@ -133,19 +104,17 @@ mod test {
         entry2: 420,
     });
 
+    // Each test uses its own table to avoid cross-test interference, since the
+    // distributed slice is shared by the whole test binary.
+    crate::param_table!(static T1 = "t1" for Data1);
+    crate::param_table!(static T2 = "t2" for Data2);
+    crate::param_table!(static T3 = "t3" for Data1);
+
     #[test]
     fn test_expected_outputs() {
-        let table1 = ParamTable::<Data1>::default("t1");
-        let table2 = ParamTable::<Data2>::default("t2");
-
-        let registry = ParamRegistry::<10>::new();
-
-        _ = registry.register(&table1);
-        _ = registry.register(&table2);
-
         futures_executor::block_on(async move {
             let get = async |name: &str| {
-                registry
+                super::PARAM_REGISTRY
                     .get_param(Ident::from_str_truncated(name).as_raw())
                     .await
             };
@@ -164,48 +133,44 @@ mod test {
 
     #[test]
     fn test_set_then_get_param() {
-        let table1 = ParamTable::<Data1>::default("t1");
-        let registry = ParamRegistry::<10>::new();
-        _ = registry.register(&table1);
-
         futures_executor::block_on(async move {
             let set = async |name: &str, value: Value| {
-                registry
+                super::PARAM_REGISTRY
                     .set_param(Ident::from_str_truncated(name).as_raw(), value)
                     .await
             };
 
             let get = async |name: &str| {
-                registry
+                super::PARAM_REGISTRY
                     .get_param(Ident::from_str_truncated(name).as_raw())
                     .await
             };
 
             // Initial values are good
-            assert_eq!(get("t1.entry1").await, Ok(Value::F32(3.14)));
-            assert_eq!(get("t1.entry2").await, Ok(Value::I32(69)));
+            assert_eq!(get("t3.entry1").await, Ok(Value::F32(3.14)));
+            assert_eq!(get("t3.entry2").await, Ok(Value::I32(69)));
 
             // We change some stuff
-            assert!(set("t1.entry1", Value::F32(1.23)).await.is_ok());
-            assert!(set("t1.entry2", Value::I32(9000)).await.is_ok());
+            assert!(set("t3.entry1", Value::F32(1.23)).await.is_ok());
+            assert!(set("t3.entry2", Value::I32(9000)).await.is_ok());
 
             // The change is visible
-            assert_eq!(get("t1.entry1").await, Ok(Value::F32(1.23)));
-            assert_eq!(get("t1.entry2").await, Ok(Value::I32(9000)));
+            assert_eq!(get("t3.entry1").await, Ok(Value::F32(1.23)));
+            assert_eq!(get("t3.entry2").await, Ok(Value::I32(9000)));
         });
     }
 
     #[test]
-    fn test_registry_size_limit() {
-        let table1 = ParamTable::<Data1>::default("t1");
-        let table2 = ParamTable::<Data1>::default("t2");
-        let table3 = ParamTable::<Data1>::default("t3");
-
-        let registry = ParamRegistry::<2>::new();
-
-        assert_eq!(registry.register(&table1), Registration::Inserted);
-        assert_eq!(registry.register(&table1), Registration::Duplicate);
-        assert_eq!(registry.register(&table2), Registration::Inserted);
-        assert_eq!(registry.register(&table3), Registration::Full);
+    fn test_no_duplicate_table_names() {
+        let tables = super::PARAM_TABLES;
+        for (index, table) in tables.iter().enumerate() {
+            for other in tables.iter().skip(index + 1) {
+                assert_ne!(
+                    table.name(),
+                    other.name(),
+                    "duplicate parameter table name linked into the binary"
+                );
+            }
+        }
     }
 }
