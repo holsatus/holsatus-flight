@@ -27,7 +27,7 @@ pub mod params {
         }
     );
 
-    crate::param_table!(pub static TABLE = "acro" for Params);
+    crate::param_table!(pub static TABLE: Params as "acro");
 }
 
 /// Acro mode. RC sticks are mapped to angular-rate setpoints.

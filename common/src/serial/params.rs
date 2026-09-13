@@ -35,7 +35,7 @@ crate::const_default!(Parameters => {
     assign: [const { None }; super::MAX_IO_STREAMS],
 });
 
-crate::param_table!(pub static TABLE = "io" for Parameters);
+crate::param_table!(pub static TABLE: Parameters as "io");
 
 pub const fn fnv1a_hash_u32(s: &str) -> u32 {
     let hash = fnv1a_hash(s);

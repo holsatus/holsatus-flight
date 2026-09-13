@@ -130,21 +130,21 @@ mod params {
             vehicle_mass: VEHICLE_MASS,
             rho: 2.0,
             cost_pos: Vec3 {
-                x: 15.0, y: 15.0, z: 2.0,
+                x: 20.0, y: 20.0, z: 10.0,
             },
             cost_vel: Vec3 {
-                x: 1.5, y: 1.5, z: 0.5,
+                x: 1.0, y: 1.0, z: 0.5,
             },
             cost_act: Vec3 {
-                x: 0.0, y: 0.0, z: 0.0,
+                x: 0.2, y: 0.2, z: 0.1,
             },
             cost_dact: Vec3 {
-                x: 0.5, y: 0.5, z: 0.5,
+                x: 0.2, y: 0.2, z: 1.0,
             }
         }
     );
 
-    crate::param_table!(pub static TABLE = "mpc" for Parameters);
+    crate::param_table!(pub static TABLE: Parameters as "mpc");
 }
 
 /// Shifts all columns such that `column[i] <- column[i + 1]` with the last two being identical.

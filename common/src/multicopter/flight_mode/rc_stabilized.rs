@@ -32,7 +32,7 @@ pub mod params {
         }
     );
 
-    crate::param_table!(pub static TABLE = "stab" for Params);
+    crate::param_table!(pub static TABLE: Params as "stab");
 }
 
 /// Stabilized mode. RC sticks are mapped to an attitude (angle) setpoint.

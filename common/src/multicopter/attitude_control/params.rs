@@ -128,12 +128,12 @@ crate::const_default!(
         },
         angl: AngleParameters {
             x: AngleAxisParameters {
-                kp: 10.,
+                kp: 20.,
                 ki: 0.,
                 kd: 0.,
             },
             y: AngleAxisParameters {
-                kp: 10.,
+                kp: 20.,
                 ki: 0.,
                 kd: 0.,
             },
@@ -151,4 +151,4 @@ crate::const_default!(
     }
 );
 
-crate::param_table!(pub static TABLE = "att" for Params);
+crate::param_table!(pub static TABLE: Params as "att");

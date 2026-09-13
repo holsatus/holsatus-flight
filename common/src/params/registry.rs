@@ -6,11 +6,8 @@ use super::{ParamError, table::ParamTable};
 /// Every parameter table linked into the firmware.
 ///
 /// Tables are added to this slice at link time by the [`crate::param_table!`]
-/// macro, which means there is no runtime registration step, no fixed capacity,
-/// and no need for a subsystem to be executed before its table is discoverable.
 ///
-/// A table is only included if the crate defining it is linked into the final
-/// binary, which is exactly the desired behaviour for feature-gated subsystems.
+/// A table is included if the crate defining it is linked into the final binary.
 #[distributed_slice]
 pub static PARAM_TABLES: [&'static ParamTable<dyn mav_param::Node>];
 
@@ -43,7 +40,9 @@ impl ParamRegistry {
             .ok_or(ParamError::NoTableFragment)?;
 
         // Find the table matching the 'table_ident' specifier
-        let table = self.get_table(table_ident).ok_or(ParamError::NoMachingTable)?;
+        let table = self
+            .get_table(table_ident)
+            .ok_or(ParamError::NoMachingTable)?;
 
         // Find the parameter 'param_ident' in the table
         let reader = table.pure_read().await;
@@ -64,7 +63,9 @@ impl ParamRegistry {
             .ok_or(ParamError::NoTableFragment)?;
 
         // Find the table matching the 'table_ident' specifier
-        let table = self.get_table(table_ident).ok_or(ParamError::NoMachingTable)?;
+        let table = self
+            .get_table(table_ident)
+            .ok_or(ParamError::NoMachingTable)?;
 
         // Find the parameter 'param_ident' in the table and set its value
         let mut writer = table.pure_write().await;
@@ -106,9 +107,9 @@ mod test {
 
     // Each test uses its own table to avoid cross-test interference, since the
     // distributed slice is shared by the whole test binary.
-    crate::param_table!(static T1 = "t1" for Data1);
-    crate::param_table!(static T2 = "t2" for Data2);
-    crate::param_table!(static T3 = "t3" for Data1);
+    crate::param_table!(static T1: Data1 as "t1");
+    crate::param_table!(static T2: Data2 as "t2");
+    crate::param_table!(static T3: Data1 as "t3");
 
     #[test]
     fn test_expected_outputs() {

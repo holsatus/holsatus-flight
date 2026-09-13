@@ -253,7 +253,7 @@ pub mod params {
         Params => Params {}
     );
 
-    crate::param_table!(pub static TABLE = "flm" for Params);
+    crate::param_table!(pub static TABLE: Params as "flm");
 }
 
 /// The single flight mode manager task.

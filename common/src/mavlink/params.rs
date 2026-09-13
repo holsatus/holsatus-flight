@@ -112,4 +112,4 @@ impl Parameters {
     }
 }
 
-crate::param_table!(pub static TABLE = "mav" for Parameters);
+crate::param_table!(pub static TABLE: Parameters as "mav");

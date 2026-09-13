@@ -139,7 +139,7 @@ mod params {
         }
     );
 
-    crate::param_table!(pub(crate) static TABLE = "eskf" for Parameters);
+    crate::param_table!(pub(crate) static TABLE: Parameters as "eskf");
 }
 
 /// Barometric pressure to altitude conversion using the International Standard

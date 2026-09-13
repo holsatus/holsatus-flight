@@ -67,7 +67,7 @@ pub mod params {
         }
     );
 
-    crate::param_table!(pub static TABLE = "mtr" for Params);
+    crate::param_table!(pub static TABLE: Params as "mtr");
 }
 
 struct MotorGovernor<'a, O> {

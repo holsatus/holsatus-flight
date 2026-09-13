@@ -129,7 +129,7 @@ pub(super) enum Binding {
 
 crate::param_table!(
     /// The parameter table for the angular rate controller
-    pub static TABLE = "rc" for Parameters
+    pub static TABLE: Parameters as "rc"
 );
 
 pub mod analog {

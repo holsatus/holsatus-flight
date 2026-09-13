@@ -12,36 +12,37 @@ pub use task::{Request, Response, entry, load_all, load_all_task, request};
 /// Declare a globally discoverable parameter table.
 ///
 /// This creates a [`ParamTable`] static and registers it with the global
-/// [`PARAM_TABLES`] distributed slice at link time. Because registration happens
-/// while linking, the table is discoverable (e.g. through `MAVLink` or the shell)
-/// before any task that owns it has executed.
-///
-/// The optional attributes are applied to both the table and its registration,
-/// which is useful for feature gating:
+/// [`PARAM_TABLES`] distributed slice at link time.
 ///
 /// ```ignore
-/// crate::param_table!(pub static TABLE = "eskf" for Parameters);
+/// crate::param_table!(pub static TABLE: Params as "eskf");
 ///
 /// crate::param_table!(
 ///     #[cfg(feature = "imu_count_2")]
-///     pub static IMU1 = "imu1" for Params
+///     pub static IMU1: Params as "imu1"
 /// );
 /// ```
 #[macro_export]
 macro_rules! param_table {
-    ($(#[$attr:meta])* $vis:vis static $ident:ident = $name:literal for $ty:ty) => {
+    (
+        $(#[$attr:meta])*
+        $vis:vis static $ident:ident: $ty:ty as $name:literal
+    ) => {
         $(#[$attr])*
         $vis static $ident: $crate::params::ParamTable<$ty> =
             $crate::params::ParamTable::default($name);
 
-        // A `const _` block gives each registration its own scope, so the
-        // fixed `REGISTRATION` name cannot collide across tables (unlike a
-        // module-level `static _`, which is not a valid item name).
         $(#[$attr])*
         const _: () = {
+            // Link the table into the global slice of parameter tables
             #[$crate::params::linkme::distributed_slice($crate::params::PARAM_TABLES)]
             static REGISTRATION: &'static $crate::params::ParamTable<dyn ::mav_param::Node> =
                 &$ident;
+
+            // Use the linker to ensure parameter table names never clash.
+            #[used]
+            #[unsafe(export_name = ::core::concat!("__holsatus_param_table__", $name))]
+            static PARAM_TABLE_NAME_GUARD: () = ();
         };
     };
 }

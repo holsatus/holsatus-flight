@@ -39,7 +39,7 @@ pub mod params {
         periodics_ms: 500,
     });
 
-    crate::param_table!(pub static TABLE = "cmd" for Params);
+    crate::param_table!(pub static TABLE: Params as "cmd");
 }
 
 /// The main commander task

@@ -37,19 +37,19 @@ pub mod params {
 
     crate::param_table!(
         #[cfg(feature = "imu_count_1")]
-        pub static IMU0 = "imu0" for Params
+        pub static IMU0: Params as "imu0"
     );
     crate::param_table!(
         #[cfg(feature = "imu_count_2")]
-        pub static IMU1 = "imu1" for Params
+        pub static IMU1: Params as "imu1"
     );
     crate::param_table!(
         #[cfg(feature = "imu_count_3")]
-        pub static IMU2 = "imu2" for Params
+        pub static IMU2: Params as "imu2"
     );
     crate::param_table!(
         #[cfg(feature = "imu_count_4")]
-        pub static IMU3 = "imu3" for Params
+        pub static IMU3: Params as "imu3"
     );
 
     pub static TABLES: [&'static ParamTable<Params>; crate::IMU_COUNT] = [
