@@ -31,14 +31,14 @@ impl<T: Clone, M: ScopedRawMutex> Watch<T, M> {
         }
     }
 
-    pub const fn sender(&self) -> Sender<'_, T, M> {
+    pub fn sender(&self) -> Sender<'_, T, M> {
         Sender { watch: self }
     }
 
-    pub const fn receiver(&self) -> Receiver<'_, T, M> {
+    pub fn receiver(&self) -> Receiver<'_, T, M> {
         Receiver {
             watch: self,
-            msg_id: 0,
+            msg_id: self.get_msg_id(),
         }
     }
 

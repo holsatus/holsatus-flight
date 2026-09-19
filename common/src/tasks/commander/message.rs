@@ -66,7 +66,7 @@ pub enum Response {
     Unsupported,
 
     /// Some necessary resources are not available
-    Unavailble,
+    Unavailable,
 
     /// The command would have no effect on the system
     Unchanged,

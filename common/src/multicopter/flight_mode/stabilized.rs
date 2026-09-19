@@ -23,8 +23,8 @@ impl FlightMode for Stabilized {
         Ok(Self {
             recv_attitude: ATTITUDE_SETPOINT.receiver(),
             recv_throttle: THROTTLE_SETPOINT.receiver(),
-            send_attitude: controls.attitude,
-            send_throttle: controls.throttle,
+            send_attitude: controls.attitude.sender(),
+            send_throttle: controls.throttle.sender(),
         })
     }
 

@@ -14,10 +14,7 @@ use futures::TryFutureExt;
 use crate::{
     multicopter::attitude_control::{ATTITUDE_COMMAND, AttitudeCommand},
     signals::{THROTTLE_COMMAND, ThrottleCommand},
-    sync::{
-        procedure::Procedure,
-        watch::{Receiver, Sender, Watch},
-    },
+    sync::watch::{Receiver, Sender, Watch},
     tasks::rc_binder::params::digital::Event,
 };
 
@@ -128,15 +125,15 @@ macro_rules! flight_modes {
 /// The control outputs a flight mode is allowed to drive.
 ///
 /// This is the only capability a mode is handed.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Controls {
-    pub attitude: Sender<'static, AttitudeCommand>,
-    pub throttle: Sender<'static, ThrottleCommand>,
+    pub attitude: &'static Watch<AttitudeCommand>,
+    pub throttle: &'static Watch<ThrottleCommand>,
 }
 
 pub static CONTROLS: Controls = Controls {
-    attitude: ATTITUDE_COMMAND.sender(),
-    throttle: THROTTLE_COMMAND.sender(),
+    attitude: &ATTITUDE_COMMAND,
+    throttle: &THROTTLE_COMMAND,
 };
 
 /// Contract implemented by every flight mode.
@@ -242,8 +239,6 @@ pub static CURRENT_MODE: Watch<Kind> = Watch::new();
 
 /// The desired (requested) flight mode.
 pub static REQUEST_MODE: Watch<Kind> = Watch::new();
-
-pub static REQUEST_MODE_PROC: Procedure<Kind, bool, 1> = Procedure::new();
 
 pub mod params {
     #[derive(Clone, Debug, mav_param::Tree)]

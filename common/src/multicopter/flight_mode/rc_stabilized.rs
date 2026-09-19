@@ -66,8 +66,8 @@ impl FlightMode for RcStabilized {
 
         Ok(Self {
             recv_rc_analog: sig::RC_ANALOG_UNIT.receiver(),
-            send_attitude: controls.attitude,
-            send_throttle: controls.throttle,
+            send_attitude: controls.attitude.sender(),
+            send_throttle: controls.throttle.sender(),
             yaw_angle_rad: est_yaw_angle_rad,
             prev_step_time: Instant::now(),
             axis_rates: params.axis,

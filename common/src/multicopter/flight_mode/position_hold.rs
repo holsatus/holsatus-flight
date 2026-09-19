@@ -83,8 +83,8 @@ impl FlightMode for PositionHold {
 
         Ok(Self {
             recv_setpoint: POSITION_SP.receiver(),
-            send_attitude: controls.attitude,
-            send_throttle: controls.throttle,
+            send_attitude: controls.attitude.sender(),
+            send_throttle: controls.throttle.sender(),
             // Hold the current position until an external setpoint arrives.
             setpoint: est.pos,
             yaw: est.att.euler_angles().2,

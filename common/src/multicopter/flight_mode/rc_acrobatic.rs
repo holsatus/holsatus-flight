@@ -67,8 +67,8 @@ impl FlightMode for RcAcrobatic {
 
         Ok(Self {
             recv_rc_analog: RC_ANALOG_UNIT.receiver(),
-            send_attitude: controls.attitude,
-            send_throttle: controls.throttle,
+            send_attitude: controls.attitude.sender(),
+            send_throttle: controls.throttle.sender(),
             axis_rates: params.axis,
             throttle_rate: params.thrt,
         })

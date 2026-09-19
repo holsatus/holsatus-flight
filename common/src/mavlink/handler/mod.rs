@@ -1,11 +1,12 @@
 use mavio::{
-    error::SpecError, mavspec::rust::spec::MessageSpecStatic, prelude::MaybeVersioned,
-    protocol::Payload, Frame,
+    Frame, error::SpecError, mavspec::rust::spec::MessageSpecStatic, prelude::MaybeVersioned,
+    protocol::Payload,
 };
 
 use crate::mavlink::MavlinkServer;
 
 pub mod command;
+pub mod control;
 pub mod param;
 pub mod vicon;
 

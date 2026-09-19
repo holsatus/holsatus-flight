@@ -569,6 +569,12 @@ impl MavlinkServer {
                 m::CommandLong::handle(self, frame).await?;
             }
 
+            m::SetAttitudeTarget::ID => {
+                let msg = frame.decode_message::<m::SetAttitudeTarget>()?;
+                enforce_mav_target!(self, msg);
+                m::SetAttitudeTarget::handle(self, frame).await?;
+            }
+
             m::ViconPositionEstimate::ID => {
                 let msg = frame.decode_message::<m::ViconPositionEstimate>()?;
 
