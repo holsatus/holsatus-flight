@@ -1,31 +1,30 @@
-use embassy_futures::select::{Either, Either3, select, select3};
-use embassy_time::{Duration, Ticker, Timer, with_timeout};
+use embassy_executor::SendSpawner;
+use embassy_futures::select::{Either, Either4, select, select4};
+use embassy_time::{Duration, Ticker, with_timeout};
 
 use crate::{
-    filters::{Linear, Lowpass, motor_lin::MotorLin},
+    filters::motor_lin::MotorLin,
     multicopter::attitude_control::MOTORS_MIXED,
     signals::MOTORS_STATE,
-    sync::{channel::Channel, watch::Sender},
+    sync::{channel, watch},
     tasks::commander::COMMAD_ARM_VEHICLE,
-    types::actuators::OutputsRaw,
+    types::actuators::MotorOutputs,
 };
 
 use params::Reverse;
 
-use crate::sync::watch::Receiver;
 use crate::{
-    abstraction::motor::MotorGroup,
+    abstraction::dshot_group::DshotGroup,
     types::actuators::{DisarmReason, MotorsState},
 };
 
 pub mod params {
+
     #[derive(mav_param::Tree, Clone, Debug)]
     pub struct Params {
         pub rev: Reverse,
         pub timeout_ms: u16,
         pub lin: Linearizer,
-        pub out_min: f32,
-        pub out_max: f32,
     }
 
     crate::const_default!(
@@ -33,8 +32,6 @@ pub mod params {
             rev: Reverse::const_default(),
             timeout_ms: 100,
             lin: Linearizer::const_default(),
-            out_min: crate::DSHOT_MIN as f32,
-            out_max: crate::DSHOT_MAX as f32,
         }
     );
 
@@ -67,21 +64,21 @@ pub mod params {
         }
     );
 
-    crate::param_table!(pub static TABLE: Params as "mtr");
+    crate::param_table!(pub static TABLE: Params as "dsht");
 }
 
-struct MotorGovernor<'a, O> {
+struct DshotRunner<'a, O> {
     motors: O,
     reverse: [bool; 4],
     timeout: Duration,
-    unscale: Linear<f32>,
     motor_map: MotorLin<f32>,
-    lowpass: [Lowpass<f32>; 4],
-    recv_arm: Receiver<'a, bool>,
-    recv_motors: Receiver<'a, [f32; 4]>,
-    send_state: Sender<'a, MotorsState>,
+    recv_channel: channel::Receiver<'a, Message, 1>,
+    recv_arm: watch::Receiver<'a, bool>,
+    recv_motors: watch::Receiver<'a, [f32; 4]>,
+    send_state: watch::Sender<'a, MotorsState>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
 enum State {
     Disarmed,
     Armed,
@@ -91,31 +88,45 @@ pub enum Message {
     ReloadParams,
 }
 
-static CHANNEL: Channel<Message, 1> = Channel::new();
+static CHANNEL: channel::Channel<Message, 1> = channel::Channel::new();
 
-pub async fn main(output: impl MotorGroup) -> ! {
-    let mut state = MotorGovernor::new(
+pub async fn main(output: impl DshotGroup) -> ! {
+    let mut state = DshotRunner::new(
         output,
         &*params::TABLE.read().await,
+        CHANNEL.receiver(),
         COMMAD_ARM_VEHICLE.receiver(),
         MOTORS_MIXED.receiver(),
         MOTORS_STATE.sender(),
     );
 
+    // Spawn parameter update notifier
+    let spawner = SendSpawner::for_current_executor().await;
+    if let Ok(task_token) = params_notifier() {
+        spawner.spawn(task_token);
+    }
+
     state.run().await
 }
 
-impl<'a, M: MotorGroup> MotorGovernor<'a, M> {
+#[embassy_executor::task]
+async fn params_notifier() -> ! {
+    params::TABLE
+        .run_notifier(|| CHANNEL.send(Message::ReloadParams))
+        .await
+}
+
+impl<'a, M: DshotGroup> DshotRunner<'a, M> {
     fn new(
         motors: M,
         params: &params::Params,
-        recv_arm: Receiver<'a, bool>,
-        recv_motors: Receiver<'a, [f32; 4]>,
-        send_state: Sender<'a, MotorsState>,
+        recv_channel: channel::Receiver<'a, Message, 1>,
+        recv_arm: watch::Receiver<'a, bool>,
+        recv_motors: watch::Receiver<'a, [f32; 4]>,
+        send_state: watch::Sender<'a, MotorsState>,
     ) -> Self {
         let timeout = Duration::from_millis(params.timeout_ms as u64);
         let motor_map = MotorLin::new(params.lin.a, params.lin.b, 0.05, 1.0);
-        let unscale = Linear::new(0., 1., params.out_min, params.out_max);
 
         let reverse = [
             params.rev.contains(Reverse::MOTOR_1),
@@ -127,20 +138,18 @@ impl<'a, M: MotorGroup> MotorGovernor<'a, M> {
         Self {
             motors,
             reverse,
-            unscale,
             timeout,
             motor_map,
-            lowpass: [Lowpass::new(0.001, 0.001); 4],
+            recv_channel,
             recv_arm,
             recv_motors,
             send_state,
         }
     }
 
-    fn reconfigure(&mut self, params: &params::Params) {
+    fn on_params_reload(&mut self, params: &params::Params) {
         self.timeout = Duration::from_millis(params.timeout_ms as u64);
         self.motor_map = MotorLin::new(params.lin.a, params.lin.b, 0.05, 1.0);
-        self.unscale = Linear::new(0., 1., params.out_min, params.out_max);
 
         self.reverse = [
             params.rev.contains(Reverse::MOTOR_1),
@@ -152,7 +161,9 @@ impl<'a, M: MotorGroup> MotorGovernor<'a, M> {
 
     async fn run(&mut self) -> ! {
         let mut state = State::Disarmed;
-        self.startup_sequence().await;
+        self.send_state
+            .send(MotorsState::Disarmed(DisarmReason::Uninitialized));
+
         loop {
             state = match state {
                 State::Disarmed => self.run_disarmed().await,
@@ -161,48 +172,44 @@ impl<'a, M: MotorGroup> MotorGovernor<'a, M> {
         }
     }
 
-    async fn startup_sequence(&mut self) {
-        self.send_state
-            .send(MotorsState::Disarmed(DisarmReason::Uninitialized));
-
-        Timer::after_millis(2000).await;
-
-        let mut ms_ticker = Ticker::every(Duration::from_millis(1));
-
-        for _ in 0..1000 {
-            self.motors.set_motor_speeds_min().await;
-            ms_ticker.next().await;
-        }
-
-        for _ in 0..1000 {
-            self.motors.set_reverse_dir(self.reverse).await;
-            ms_ticker.next().await;
-        }
+    async fn configure_esc(&mut self) {
+        self.motors.set_reversed(self.reverse).await;
     }
 
     async fn run_disarmed(&mut self) -> State {
-        let mut ticker = Ticker::every(Duration::from_hz(100));
+        let mut esc_configure_ticker = Ticker::every(Duration::from_hz(2));
+        let mut zero_throttle_ticker = Ticker::every(Duration::from_hz(100));
         loop {
-            match select3(
-                self.recv_arm.changed_and(|&arm| arm == true),
-                ticker.next(),
-                CHANNEL.receive(),
+            match select4(
+                self.recv_channel.receive(),
+                self.recv_arm.changed(),
+                esc_configure_ticker.next(),
+                zero_throttle_ticker.next(),
             )
             .await
             {
-                Either3::First(_) => {
-                    info!("[motor_governor]: Arming motors as commanded");
-                    return State::Armed;
-                }
-                Either3::Second(()) => {
-                    self.motors.set_motor_speeds_min().await;
-                }
-                Either3::Third(message) => match message {
+                Either4::First(message) => match message {
                     Message::ReloadParams => {
+                        info!("[dshot_runner] Reloading parameters");
                         let params = params::TABLE.read().await;
-                        self.reconfigure(&params)
+                        self.on_params_reload(&params);
+                        self.configure_esc().await;
                     }
                 },
+                Either4::Second(true) => {
+                    info!("[dshot_runner] Arming motors as commanded");
+                    self.configure_esc().await;
+                    return State::Armed;
+                }
+                Either4::Second(false) => {
+                    warn!("[dshot_runner] Disarm commanded while already disarmed");
+                }
+                Either4::Third(()) => {
+                    self.configure_esc().await;
+                }
+                Either4::Fourth(()) => {
+                    self.motors.stop_motors().await;
+                }
             }
         }
     }
@@ -210,41 +217,34 @@ impl<'a, M: MotorGroup> MotorGovernor<'a, M> {
     async fn run_armed(&mut self) -> State {
         loop {
             match select(
-                self.recv_arm.changed_and(|&arm| arm == false),
+                self.recv_arm.changed(),
                 with_timeout(self.timeout, self.recv_motors.changed()),
             )
             .await
             {
-                Either::First(_) => {
-                    info!("[motor_governor]: Disarming motors as commanded");
-                    self.motors.set_motor_speeds_min().await;
+                Either::First(false) => {
+                    info!("[dshot_runner] Disarming motors as commanded");
+                    self.motors.stop_motors().await;
 
                     let state = MotorsState::Disarmed(DisarmReason::UserCommand);
                     self.send_state.send(state);
                     return State::Disarmed;
                 }
+                Either::First(true) => {
+                    warn!("[dshot_runner] Arm commanded while already armed");
+                }
                 Either::Second(Err(_)) => {
-                    warn!("[motor_governor]: Disarming motors due to timeout");
-                    self.motors.set_motor_speeds_min().await;
+                    warn!("[dshot_runner] Disarming motors due to timeout");
+                    self.motors.stop_motors().await;
 
                     let state = MotorsState::Disarmed(DisarmReason::Timeout);
                     self.send_state.send(state);
                     return State::Disarmed;
                 }
                 Either::Second(Ok(mut speeds)) => {
-                    speeds = speeds.map(|x1| {
-                        let x2 = self.motor_map.force_to_command(x1);
-                        let x3 = self.unscale.map(x2);
-                        // info!("x1: {x1}, x2: {x2}, x3: {x3}");
-                        x3
-                    });
-
-                    let speeds_u16 =
-                        core::array::from_fn(|idx| self.lowpass[idx].update(speeds[idx]) as u16);
-
-                    self.motors.set_motor_speeds(speeds_u16).await;
-
-                    let state = MotorsState::Armed(OutputsRaw(speeds_u16));
+                    speeds = speeds.map(|x| self.motor_map.force_to_command(x));
+                    self.motors.set_speeds(speeds).await;
+                    let state = MotorsState::Armed(MotorOutputs(speeds));
                     self.send_state.send(state);
                 }
             }

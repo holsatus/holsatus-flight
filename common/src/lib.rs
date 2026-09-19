@@ -57,9 +57,6 @@ pub use embassy_usb;
 #[cfg(feature = "mavlink")]
 pub mod mavlink;
 
-const DSHOT_MIN: u16 = 48;
-const DSHOT_MAX: u16 = 2047;
-
 const NUM_MAG: usize = 2;
 
 const MAX_IO_STREAMS: usize = 6;

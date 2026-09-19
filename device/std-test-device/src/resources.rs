@@ -1,4 +1,7 @@
-use common::abstraction::motor::MotorGroup;
+use common::abstraction::dshot_group::DshotCommand;
+use common::abstraction::dshot_group::DshotGroup;
+use common::abstraction::dshot_group::THROTTLE_MAX;
+use common::abstraction::dshot_group::THROTTLE_MIN;
 use common::nalgebra::SMatrix;
 use common::nalgebra::SVector;
 use common::types::measurements::ViconData;
@@ -74,18 +77,31 @@ pub mod imu_reader {
 pub async fn motor_governor(motors: SimulatedMotors) {
     struct Motors(SimulatedMotors);
 
-    impl MotorGroup for Motors {
-        async fn set_motor_speeds(&mut self, speeds: [u16; 4]) {
-            self.0.set_motor_speeds(speeds)
-        }
-        async fn set_motor_speeds_min(&mut self) {
+    impl DshotGroup for Motors {
+        async fn send_packets(
+            &mut self,
+            packets: [common::abstraction::dshot_group::DshotPacket; 4],
+        ) {
+            // Here we assume that if at least one packet is a throttle command,
+            // then all are. It is a bit crude but it works.
+            let speeds = packets.map(|packet| packet.as_speed().unwrap_or_default());
+            if speeds.iter().any(|speed| *speed >= THROTTLE_MIN) {
+                let speeds = speeds.map(|speed| speed.clamp(THROTTLE_MIN, THROTTLE_MAX));
+                self.0.set_motor_speeds(speeds);
+                return;
+            }
+
+            // From this point we ensure the motors should not be spinning
             self.0.set_motor_speeds_min();
-        }
-        async fn set_reverse_dir(&mut self, rev: [bool; 4]) {
-            self.0.set_reverse_dir(rev);
-        }
-        async fn make_beep(&mut self) {
-            self.0.make_beep()
+
+            // Currently we do not even support reversing motors
+            let mut reverse = [false; 4];
+            for (index, packet) in packets.iter().enumerate() {
+                if packet.get_raw() == DshotCommand::SpinDirectionReversed as u16 {
+                    reverse[index] = true
+                }
+            }
+            self.0.set_reverse_dir(reverse);
         }
     }
 

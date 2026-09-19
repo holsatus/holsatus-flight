@@ -1,7 +1,7 @@
 [package]
 name = "stm32-support"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [features]
 
@@ -21,12 +21,9 @@ defmt = "1.0.1"
 static_cell = "2"
 aligned = "0.4.2"
 
-dshot-encoder = { git = "https://github.com/peterkrull/dshot-encoder" }
-
 [dependencies.common]
 path = "../../common"
 default-features = false
-features = ["defmt"]
 
 [dependencies.embassy-futures]
 git = "https://github.com/embassy-rs/embassy"

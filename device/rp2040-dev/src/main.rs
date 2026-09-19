@@ -30,7 +30,7 @@ macro_rules! interrupt_executor {
         #[interrupt]
         #[allow(non_snake_case)]
         unsafe fn $interrupt() {
-            EXECUTOR.on_interrupt()
+            unsafe { EXECUTOR.on_interrupt() }
         }
 
         spawner

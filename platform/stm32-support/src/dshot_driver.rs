@@ -1,18 +1,14 @@
+///! Dshot driver for the STM32-family using a timer-backed PWM
 use core::marker::PhantomData;
-
-use common::embassy_time;
-///! Dshot driver for the stm32f405 using a timer-backed PWM
-use dshot_encoder;
 
 use embassy_stm32::interrupt::typelevel::Binding;
 use embassy_stm32::{
-    timer::{
-        simple_pwm::SimplePwm, Ch1, Ch2, Ch3, Ch4, Dma, GeneralInstance4Channel, TimerPin, UpDma,
-    },
     Peri,
+    timer::{
+        Ch1, Ch2, Ch3, Ch4, Dma, GeneralInstance4Channel, TimerPin, UpDma, simple_pwm::SimplePwm,
+    },
 };
 
-use common::abstraction::motor::MotorGroup;
 use static_cell::ConstStaticCell;
 
 const TRANSMIT_SIZE: usize = 24;
@@ -95,29 +91,16 @@ where
     }
 }
 
-impl<'d, T, WAV> MotorGroup for DshotDriver<'d, T, WAV>
+impl<'d, T, WAV> common::abstraction::dshot_group::DshotGroup for DshotDriver<'d, T, WAV>
 where
     T: GeneralInstance4Channel,
     WAV: WaveformGenerator<Timer = T>,
 {
-    async fn set_motor_speeds(&mut self, speed: [u16; 4]) {
-        self.transmit(speed.map(|s| dshot_encoder::throttle_clamp(s, false)))
-            .await
-    }
-
-    async fn set_reverse_dir(&mut self, direction: [bool; 4]) {
-        self.transmit(direction.map(dshot_encoder::reverse)).await
-    }
-
-    async fn set_motor_speeds_min(&mut self) {
-        self.transmit([dshot_encoder::command(dshot_encoder::DshotCmdT::DigitalCmdMotorStop); 4])
-            .await
-    }
-
-    async fn make_beep(&mut self) {
-        self.transmit([dshot_encoder::command(dshot_encoder::DshotCmdT::DigitalCmdBeep1); 4])
-            .await;
-        embassy_time::Timer::after_millis(260).await;
+    fn send_packets(
+        &mut self,
+        packets: [common::abstraction::dshot_group::DshotPacket; 4],
+    ) -> impl Future<Output = ()> {
+        self.transmit(packets.map(|packet| packet.get_raw()))
     }
 }
 

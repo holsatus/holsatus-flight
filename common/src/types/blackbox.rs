@@ -148,7 +148,7 @@ pub fn get_rate_log() -> Option<RateLog> {
             .into(),
         measurement: s::CAL_IMU_DATA.try_get()?.gyr,
         pid_int: s::RATE_PID_TERMS.try_get()?,
-        motors: s::MOTORS_STATE.try_get()?.as_speeds(),
+        motors: s::MOTORS_STATE.try_get()?.as_pwm_speeds(),
     })
 }
 

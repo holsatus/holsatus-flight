@@ -41,7 +41,7 @@ macro_rules! impl_usart_setup {
         #[allow(unused)]
         impl $UsartX {
             pub fn setup<'d>(&'d mut self, uart_cfg: common::types::config::UartConfig) -> $crate::setup_macros::UsartBuffered<'d> {
-                defmt::info!("Creating: {}", stringify!($UsartX));
+                ::defmt::info!("Creating: {}", stringify!($UsartX));
 
                 embassy_stm32::bind_interrupts!(struct Irqs {
                     $USARTX => embassy_stm32::usart::InterruptHandler<::embassy_stm32::peripherals::$USARTX_irq>;
@@ -97,7 +97,7 @@ macro_rules! impl_usart_setup {
             let io_stream_ref = IO_STREAM_RAW.init(io_stream_raw);
 
             if common::serial::insert(io_stream_ref).is_err() {
-                defmt::error!("[{}/setup]: Failed to register serial device", serial_id);
+                ::defmt::error!("[{}/setup]: Failed to register serial device", serial_id);
                 return;
             }
 
@@ -110,7 +110,7 @@ macro_rules! impl_usart_setup {
                 dev_cons.embedded_io_connect(tx, map_err),
             ).await;
 
-            defmt::warn!("[{}] Stream disconnected unexpectedly", serial_id)
+            ::defmt::warn!("[{}] Stream disconnected unexpectedly", serial_id)
         }
     };
 }
@@ -272,7 +272,7 @@ macro_rules! impl_up_dma_dshot_setup {
         $(,)?
     ) => {
         impl $MotorDriver {
-            pub fn setup(&mut self, dshot: common::types::config::DshotConfig) -> impl common::abstraction::motor::MotorGroup + '_ {
+            pub fn setup(&mut self, dshot: common::types::config::DshotConfig) -> impl common::abstraction::dshot_group::DshotGroup + '_ {
                 embassy_stm32::bind_interrupts!(struct Irqs {
                     $dma_irq => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::$dma_periph>;
                 });
@@ -299,7 +299,7 @@ macro_rules! impl_qs_dshot_setup {
         $(,)?
     ) => {
         impl $MotorDriver {
-            pub fn setup(&mut self, dshot: common::types::config::DshotConfig) -> impl common::abstraction::motor::MotorGroup + '_ {
+            pub fn setup(&mut self, dshot: common::types::config::DshotConfig) -> impl common::abstraction::dshot_group::DshotGroup + '_ {
                 embassy_stm32::bind_interrupts!(struct Irqs {
                     $dma_irq => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::$dma_periph>;
                 });

@@ -247,7 +247,7 @@ impl Generate for ServoOutputRaw {
         message.time_usec = time::us_u32();
 
         if let Some(speeds) = crate::signals::MOTORS_STATE.try_get() {
-            let speeds = speeds.as_speeds();
+            let speeds = speeds.as_pwm_speeds();
             message.servo1_raw = speeds[0];
             message.servo2_raw = speeds[1];
             message.servo3_raw = speeds[2];
