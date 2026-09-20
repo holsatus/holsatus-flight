@@ -8,7 +8,10 @@ pub trait SetFlightMode {
 
 use nalgebra::UnitQuaternion;
 
-#[cfg(feature = "multicopter")]
-pub use crate::multicopter::Multicopter as Vehicle;
+pub type Vehicle = cfg_select! {
+    feature = "multicopter" => crate::multicopter::Multicopter,
+    feature = "fixedwing" => crate::fixedwing::Fixedwing, // TODO
+    _ => compile_error!("A vehicle-type feature must be selected.")
+};
 
 pub type FlightModeKind = <Vehicle as SetFlightMode>::FlightModeKind;
