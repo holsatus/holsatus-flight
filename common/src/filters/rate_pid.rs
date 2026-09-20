@@ -108,8 +108,7 @@ impl RatePid {
             dm_out: meas_derivative,
         };
 
-        // Add all terms together
-        proportional + self.integral + ref_derivative + meas_derivative
+        self.terms.sum()
     }
 
     pub fn reset_integral(&mut self) {
