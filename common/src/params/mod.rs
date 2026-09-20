@@ -14,13 +14,20 @@ pub use task::{Request, Response, entry, request};
 /// This creates a [`ParamTable`] static and registers it with the global
 /// [`PARAM_TABLES`] distributed slice at link time.
 ///
-/// ```ignore
-/// crate::param_table!(pub static TABLE: Params as "eskf");
+/// ```
+/// /// Define the struct of parameters using `mav_param`
+/// #[derive(mav_param::Tree)]
+/// struct Params {
+///     my_param: u32
+/// }
 ///
-/// crate::param_table!(
-///     #[cfg(feature = "imu_count_2")]
-///     pub static IMU1: Params as "imu1"
-/// );
+/// /// Ensure we can const-default initialize the struct
+/// common::const_default! {
+///     Params => { my_param: 69 }
+/// };
+///
+/// /// Use this macro to define the table and its namespace
+/// common::param_table!(pub static TABLE: Params as "name");
 /// ```
 #[macro_export]
 macro_rules! param_table {
@@ -50,7 +57,7 @@ macro_rules! param_table {
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ParamError {
-    #[error("Invalid utf8 itentifier provided")]
+    #[error("Invalid UTF-8 identifier provided")]
     InvalidIdentifier,
     #[error("No table-level fragment specifier (.) found")]
     NoTableFragment,
