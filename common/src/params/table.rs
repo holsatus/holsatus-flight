@@ -162,6 +162,7 @@ impl<T: ?Sized> ParamTable<T> {
             Ok(_) => {
                 use super::task::{Request, request};
                 let _ = request(Request::LoadTable(self.name)).await;
+                self.generation.add(1, Ordering::Release);
                 self.load_state.store(LOADED, Ordering::Release);
                 self.waiters.wake_all();
             }
