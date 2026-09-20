@@ -86,7 +86,6 @@ fn firmware_entry(spawner: Spawner, r: Resources, sim: SimHandle) {
 
     // Might as well start the parameter storage module to get things loaded
     spawner.spawn(resources::param_storage(r.flash).unwrap());
-    spawner.spawn(common::params::load_all_task().unwrap());
 
     // ------------------ high-priority tasks -------------------
 
