@@ -132,8 +132,9 @@ where
     BIND: Binding<DMA::Interrupt, embassy_stm32::dma::InterruptHandler<DMA>>,
 {
     pub fn new(dma: Peri<'d, DMA>, irq: BIND) -> Self {
-        #[unsafe(link_section = ".ram_d3")]
-        static BUFFER: ConstStaticCell<[u16; 96]> = ConstStaticCell::new([0u16; 96]);
+        crate::dma_buffer! {
+            static BUFFER: ConstStaticCell<[u16; 96]> = ConstStaticCell::new([0u16; 96]);
+        }
         Self {
             dma,
             irq,

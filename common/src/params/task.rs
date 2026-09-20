@@ -17,9 +17,9 @@ use super::{
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Request {
+    SaveAll,
     SaveParam(Ident),
     SaveTable(&'static str),
-    SaveAll,
     LoadTable(&'static str),
 }
 
@@ -45,23 +45,6 @@ pub async fn request(req: Request) -> Option<Response> {
     PROCEDURE.request(req).await
 }
 
-/// Load persisted values for every registered parameter table into RAM.
-///
-/// This is optional: [`ParamTable::read`] loads a table on first use. Calling
-/// this once shortly after the parameter storage task has been started front-loads
-/// the work so no individual task has to pay for it later.
-pub async fn load_all() {
-    for table in PARAM_REGISTRY.iter() {
-        table.ensure_loaded().await;
-    }
-}
-
-/// [`embassy_executor::task`] wrapper around [`load_all`] for spawner-based startups.
-#[embassy_executor::task]
-pub async fn load_all_task() {
-    load_all().await;
-}
-
 struct StorageTask<F: NorFlash> {
     storage: ParamStorage<F, NoCache, 32>,
 }
@@ -78,7 +61,17 @@ impl<F: NorFlash> StorageTask<F> {
     }
 
     pub async fn run(&mut self) -> ! {
-        info!("[param_storage]: Task started");
+        info!("[param_storage]: Starting parameter preload");
+
+        // Ensure all parameter tables are loaded early at startup
+        for table in PARAM_REGISTRY.iter() {
+            if let Err(error) = self.handle_load_table(table.name()).await {
+                error!("[param_storage]: Error: {:?}", error);
+            }
+        }
+
+        info!("[param_storage]: Preload finished, looping");
+
         loop {
             if let Err(error) = self.run_inner().await {
                 error!("[param_storage]: Error: {:?}", error);
@@ -89,9 +82,9 @@ impl<F: NorFlash> StorageTask<F> {
     pub async fn run_inner(&mut self) -> Result<(), Error> {
         let (request, handle) = PROCEDURE.receive_request().await;
         let result = match request {
+            Request::SaveAll => self.handle_save_all().await,
             Request::SaveParam(ident) => self.handle_save_param(ident).await,
             Request::SaveTable(table) => self.handle_save_table(table).await,
-            Request::SaveAll => self.handle_save_all().await,
             Request::LoadTable(table) => self.handle_load_table(table).await,
         };
 
@@ -102,6 +95,15 @@ impl<F: NorFlash> StorageTask<F> {
         });
 
         result
+    }
+
+    /// Save all parameters in all tables to persistent storage
+    pub async fn handle_save_all(&mut self) -> Result<(), Error> {
+        for table in PARAM_REGISTRY.iter() {
+            self.handle_save_table(table.name()).await?;
+        }
+
+        Ok(())
     }
 
     /// Save a single parameter to persistent storage
@@ -121,15 +123,6 @@ impl<F: NorFlash> StorageTask<F> {
         for result in mav_param::param_iter_named(&*params, name) {
             let param = result.map_err(|_| ParamError::InvalidIdentifier)?;
             self.storage.save(param.ident.clone(), param.value).await?;
-        }
-
-        Ok(())
-    }
-
-    /// Save all parameters in all tables to persistent storage
-    pub async fn handle_save_all(&mut self) -> Result<(), Error> {
-        for table in PARAM_REGISTRY.iter() {
-            self.handle_save_table(table.name()).await?;
         }
 
         Ok(())

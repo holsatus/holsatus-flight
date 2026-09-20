@@ -1,6 +1,7 @@
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum MotorsState {
+    ArmedIdle,
     Armed(MotorOutputs),
     Disarmed(DisarmReason),
 }
@@ -31,7 +32,7 @@ impl MotorsState {
     }
 
     pub fn is_armed(&self) -> bool {
-        matches!(self, MotorsState::Armed(_))
+        !self.is_disarmed()
     }
 }
 

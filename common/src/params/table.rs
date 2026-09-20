@@ -16,21 +16,26 @@ const LOADED: u8 = 2;
 
 pub struct ParamTable<T: ?Sized> {
     name: &'static str,
-    generation: AtomicU8,
     waiters: WaitQueue,
+    generation: AtomicU8,
     load_state: AtomicU8,
-    load_waiters: WaitQueue,
     params: RwLock<T>,
 }
 
-pub struct TableReadGuard<'a, T: ?Sized>(RwLockReadGuard<'a, T>);
-pub struct TableWriteGuard<'a, T: ?Sized>(RwLockWriteGuard<'a, T>);
+pub struct TableReadGuard<'a, T: ?Sized> {
+    guard: RwLockReadGuard<'a, T>,
+}
+
+pub struct TableWriteGuard<'a, T: ?Sized> {
+    table: &'a ParamTable<T>,
+    guard: RwLockWriteGuard<'a, T>,
+}
 
 impl<T: ?Sized> Deref for TableReadGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.guard
     }
 }
 
@@ -38,13 +43,20 @@ impl<T: ?Sized> Deref for TableWriteGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.guard
     }
 }
 
 impl<T: ?Sized> DerefMut for TableWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        &mut self.guard
+    }
+}
+
+impl<T: ?Sized> Drop for TableWriteGuard<'_, T> {
+    fn drop(&mut self) {
+        // Assume a write has updated the table in some way
+        self.table.notify();
     }
 }
 
@@ -52,10 +64,9 @@ impl<T: mav_param::Node> ParamTable<T> {
     pub const fn new(name: &'static str, data: T) -> Self {
         ParamTable {
             name,
-            generation: AtomicU8::new(0),
             waiters: WaitQueue::new(),
+            generation: AtomicU8::new(0),
             load_state: AtomicU8::new(UNLOADED),
-            load_waiters: WaitQueue::new(),
             params: RwLock::new(data),
         }
     }
@@ -71,8 +82,7 @@ impl<T: mav_param::Node> ParamTable<T> {
     where
         T: crate::utils::const_default::ConstDefault,
     {
-        *self.params.write().await = T::DEFAULT;
-        self.notify();
+        *self.pure_write().await = T::DEFAULT;
     }
 
     /// Register an async callback which executes whenever the table has been updated.
@@ -117,12 +127,19 @@ impl<T: ?Sized> ParamTable<T> {
 
     /// Obtain a read-only lock on the table.
     pub fn pure_read(&self) -> impl Future<Output = TableReadGuard<'_, T>> {
-        self.params.read().map(TableReadGuard)
+        self.params.read().map(|guard| TableReadGuard { guard })
     }
 
     /// Obtain an exclusive write-capable lock on this table.
     pub fn pure_write(&self) -> impl Future<Output = TableWriteGuard<'_, T>> {
-        self.params.write().map(TableWriteGuard)
+        self.params
+            .write()
+            .map(|guard| TableWriteGuard { guard, table: self })
+    }
+
+    /// Obtain a scoped writer lock on this table.
+    pub fn scoped_write(&self, func: impl FnOnce(&mut T)) -> impl Future<Output = ()> {
+        self.pure_write().map(|mut table| func(&mut *table))
     }
 
     /// Notify anyone waiting, that one or more values in this table has been updated.
@@ -146,16 +163,17 @@ impl<T: ?Sized> ParamTable<T> {
                 use super::task::{Request, request};
                 let _ = request(Request::LoadTable(self.name)).await;
                 self.load_state.store(LOADED, Ordering::Release);
-                self.load_waiters.wake_all();
+                self.waiters.wake_all();
             }
-            Err(LOADING) => {
+            // Already loaded.
+            Err(LOADED) => {}
+            // Already _being_ loaded
+            Err(_) => {
                 _ = self
-                    .load_waiters
+                    .waiters
                     .wait_for(|| self.load_state.load(Ordering::Acquire) == LOADED)
                     .await;
             }
-            // Already loaded (or a previous load failed).
-            Err(_) => {}
         }
     }
 }
@@ -167,6 +185,8 @@ impl ParamTable<dyn mav_param::Node> {
     /// This should only be considered a hint, since the table may be modified after calling this function.
     pub async fn size_hint(&self) -> usize {
         let lock = self.pure_read().await;
-        mav_param::param_iter(&*lock).count()
+        mav_param::param_iter(&*lock)
+            .filter(|entry| entry.is_ok())
+            .count()
     }
 }

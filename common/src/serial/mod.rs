@@ -117,6 +117,7 @@ pub fn claim(ident: impl Into<StreamId>) -> Result<IoStream, Error> {
 /// and unlocked together.
 pub struct IoStreamRaw<'a> {
     name: StreamName,
+    // TODO: Full fat async mutex might be overkill here. Critical-section mutex + RefCell might be enough?
     reader: Mutex<Reader<'a, EmbeddedIoError>>,
     writer: Mutex<Writer<'a, EmbeddedIoError>>,
 }

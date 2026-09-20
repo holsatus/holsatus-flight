@@ -7,7 +7,7 @@ mod task;
 pub use linkme;
 pub use registry::{PARAM_REGISTRY, PARAM_TABLES};
 pub use table::{ParamTable, TableReadGuard, TableWriteGuard};
-pub use task::{Request, Response, entry, load_all, load_all_task, request};
+pub use task::{Request, Response, entry, request};
 
 /// Declare a globally discoverable parameter table.
 ///

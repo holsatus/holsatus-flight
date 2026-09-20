@@ -4,7 +4,7 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 const DEFAULT_REPEATS: usize = 10;
 
 /// Minimum number of milliseconds to wait after issuing a beep command.
-const BEEP_WAIT_MILLIS: u64 = 1000;
+const BEEP_WAIT_MILLIS: u64 = 500;
 
 /// Group of 4 DShot compatible motor outputs.
 pub trait DshotGroup {

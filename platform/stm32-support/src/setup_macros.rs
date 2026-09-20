@@ -67,7 +67,9 @@ macro_rules! impl_usart_setup {
                 // Provide a static buffer for the ring buffer.
                 use ::static_cell::ConstStaticCell;
 
-                static USART_BUFFER: ConstStaticCell<[u8; $rb_size]> = ConstStaticCell::new([0; $rb_size]);
+                $crate::dma_buffer! {
+                    static USART_BUFFER: ConstStaticCell<[u8; $rb_size]> = ConstStaticCell::new([0; $rb_size]);
+                }
                 let rx = rx.into_ring_buffered(USART_BUFFER.take());
 
                 $crate::setup_macros::UsartBuffered { rx, tx }
@@ -84,11 +86,13 @@ macro_rules! impl_usart_setup {
             use common::grantable_io::GrantableIo;
             use common::errors::adapter::embedded_io::EmbeddedIoError;
 
-            static BUF_TX: GrantableIo<$tx_size, EmbeddedIoError> = GrantableIo::new();
-            let (mut dev_prod, app_cons) = BUF_TX.claim_reader(); // Why does this panic!?
+            $crate::dma_buffer! {
+                static BUF_TX: GrantableIo<$tx_size, EmbeddedIoError> = GrantableIo::new();
+            }
+            let (mut dev_prod, app_cons) = BUF_TX.claim_reader();
 
             static BUF_RX: GrantableIo<$rx_size, EmbeddedIoError> = GrantableIo::new();
-            let (mut dev_cons, app_prod) = BUF_RX.claim_writer(); // Why does this panic!?
+            let (mut dev_cons, app_prod) = BUF_RX.claim_writer();
 
             let io_stream_raw = IoStreamRaw::new(serial_id, app_cons, app_prod);
 

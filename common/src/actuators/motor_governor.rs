@@ -3,6 +3,7 @@ use embassy_futures::select::{Either, Either4, select, select4};
 use embassy_time::{Duration, Ticker, with_timeout};
 
 use crate::{
+    abstraction::dshot_group::Beep,
     filters::motor_lin::MotorLin,
     multicopter::attitude_control::MOTORS_MIXED,
     signals::MOTORS_STATE,
@@ -36,10 +37,10 @@ pub mod params {
     );
 
     #[derive(mav_param::Node, Clone, Debug)]
-    pub struct Reverse(u16);
+    pub struct Reverse(pub u8);
 
     bitflags::bitflags! {
-        impl Reverse: u16 {
+        impl Reverse: u8 {
             const MOTOR_1 = 1 << 0;
             const MOTOR_2 = 1 << 1;
             const MOTOR_3 = 1 << 2;
@@ -86,6 +87,11 @@ enum State {
 
 pub enum Message {
     ReloadParams,
+    PlayBeep1,
+    PlayBeep2,
+    PlayBeep3,
+    PlayBeep4,
+    PlayBeep5,
 }
 
 static CHANNEL: channel::Channel<Message, 1> = channel::Channel::new();
@@ -178,7 +184,7 @@ impl<'a, M: DshotGroup> DshotRunner<'a, M> {
 
     async fn run_disarmed(&mut self) -> State {
         let mut esc_configure_ticker = Ticker::every(Duration::from_hz(2));
-        let mut zero_throttle_ticker = Ticker::every(Duration::from_hz(100));
+        let mut zero_throttle_ticker = Ticker::every(Duration::from_hz(20));
         loop {
             match select4(
                 self.recv_channel.receive(),
@@ -195,10 +201,17 @@ impl<'a, M: DshotGroup> DshotRunner<'a, M> {
                         self.on_params_reload(&params);
                         self.configure_esc().await;
                     }
+                    Message::PlayBeep1 => self.motors.play_beep(Beep::Kind1).await,
+                    Message::PlayBeep2 => self.motors.play_beep(Beep::Kind2).await,
+                    Message::PlayBeep3 => self.motors.play_beep(Beep::Kind3).await,
+                    Message::PlayBeep4 => self.motors.play_beep(Beep::Kind4).await,
+                    Message::PlayBeep5 => self.motors.play_beep(Beep::Kind5).await,
                 },
                 Either4::Second(true) => {
                     info!("[dshot_runner] Arming motors as commanded");
                     self.configure_esc().await;
+                    self.motors.play_beep(Beep::Kind1).await;
+                    self.send_state.send(MotorsState::ArmedIdle);
                     return State::Armed;
                 }
                 Either4::Second(false) => {
