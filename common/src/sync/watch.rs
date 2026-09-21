@@ -124,6 +124,11 @@ pub struct Receiver<'a, T, M: ScopedRawMutex = DefaultMutex> {
 }
 
 impl<T: Clone, M: ScopedRawMutex> Receiver<'_, T, M> {
+    pub fn fresh(mut self) -> Self {
+        self.msg_id = self.watch.get_msg_id();
+        self
+    }
+
     pub async fn changed(&mut self) -> T {
         loop {
             // The `Wait` is guaranteed to get woken by a `wake_all`
