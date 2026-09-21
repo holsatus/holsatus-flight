@@ -8,7 +8,7 @@
 use core::future::Future;
 
 use embassy_futures::select::{Either, select};
-use embassy_time::{Duration, with_timeout};
+use embassy_time::{Duration, Instant, with_timeout};
 use futures::TryFutureExt;
 
 use crate::{
@@ -182,6 +182,25 @@ bitflags::bitflags! {
         const GYR_CALIBRATED = 1 << 2;
         /// The accelerometer has been calibrated.
         const ACC_CALIBRATED = 1 << 3;
+    }
+}
+
+// Pull this into a more globally available place. And make it more complete.
+fn test_precondition(cond: Precondition) -> Result<(), Precondition> {
+    let mut failed = Precondition::empty();
+
+    if cond.contains(Precondition::MANUAL_CONTROL) {
+        if crate::signals::RC_ANALOG_UNIT.try_get().is_none_or(|rc| {
+            Instant::from_micros(rc.timestamp_us).elapsed() > Duration::from_millis(100)
+        }) {
+            failed.insert(Precondition::MANUAL_CONTROL);
+        }
+    }
+
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(failed)
     }
 }
 

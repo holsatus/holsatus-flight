@@ -1,5 +1,3 @@
-use embassy_time::{Duration, Instant};
-
 use super::{Action, Controls, EnterError, FlightMode, Precondition};
 use crate::{
     multicopter::attitude_control::AttitudeCommand,
@@ -39,28 +37,9 @@ pub struct RcAcrobatic {
     throttle_rate: Rates,
 }
 
-// Pull this into a more globally available place. And make it more complete.
-fn test_precondition(cond: Precondition) -> Result<(), Precondition> {
-    let mut failed = Precondition::empty();
-
-    if cond.contains(Precondition::MANUAL_CONTROL) {
-        if RC_ANALOG_UNIT.try_get().is_none_or(|rc| {
-            Instant::from_micros(rc.timestamp_us).elapsed() > Duration::from_millis(100)
-        }) {
-            failed.insert(Precondition::MANUAL_CONTROL);
-        }
-    }
-
-    if failed.is_empty() {
-        Ok(())
-    } else {
-        Err(failed)
-    }
-}
-
 impl FlightMode for RcAcrobatic {
     async fn enter(controls: &Controls) -> Result<Self, EnterError> {
-        test_precondition(Precondition::MANUAL_CONTROL | Precondition::GYR_CALIBRATED)
+        super::test_precondition(Precondition::MANUAL_CONTROL | Precondition::GYR_CALIBRATED)
             .map_err(EnterError::Precondition)?;
 
         let params = params::TABLE.read().await;

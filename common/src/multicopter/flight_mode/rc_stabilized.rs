@@ -49,23 +49,18 @@ pub struct RcStabilized {
 
 impl FlightMode for RcStabilized {
     async fn enter(controls: &Controls) -> Result<Self, EnterError> {
-        let mut missing = Precondition::empty();
-        if sig::RC_ANALOG_UNIT.try_get().is_none() {
-            missing.insert(Precondition::MANUAL_CONTROL);
-        }
-        if !missing.is_empty() {
-            return Err(EnterError::Precondition(missing));
-        }
-
-        let params = params::TABLE.read().await.clone();
+        super::test_precondition(Precondition::MANUAL_CONTROL | Precondition::GYR_CALIBRATED)
+            .map_err(EnterError::Precondition)?;
 
         let est_yaw_angle_rad = sig::ESKF_ESTIMATE
             .try_get()
             .map(|est| est.att.euler_angles().2)
             .unwrap_or_default();
 
+        let params = params::TABLE.read().await;
+
         Ok(Self {
-            recv_rc_analog: sig::RC_ANALOG_UNIT.receiver(),
+            recv_rc_analog: sig::RC_ANALOG_UNIT.receiver().fresh(),
             send_attitude: controls.attitude.sender(),
             send_throttle: controls.throttle.sender(),
             yaw_angle_rad: est_yaw_angle_rad,
