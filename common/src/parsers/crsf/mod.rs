@@ -5,7 +5,7 @@ pub mod packet_type;
 
 use super::RcParser;
 use crate::errors::adapter::embedded_io::map_ree;
-use crate::errors::{adapter::embedded_io::EmbeddedIoError, ParseError};
+use crate::errors::{ParseError, adapter::embedded_io::EmbeddedIoError};
 
 impl RcParser for CrsfParser {
     fn parse<'b>(
@@ -348,8 +348,8 @@ impl<'a, 'b> Iterator for IterPackets<'a, 'b> {
 #[cfg(test)]
 mod tests {
     use super::{
-        packet_definitions::rc_channels_packed::RcChannelsPacked, CrsfParser, Error, Packet,
-        PacketType, CRSF_SYNC_BYTE,
+        CRSF_SYNC_BYTE, CrsfParser, Error, Packet, PacketType,
+        packet_definitions::rc_channels_packed::RcChannelsPacked,
     };
 
     #[test]
@@ -534,10 +534,12 @@ mod tests {
         // Len
         assert!(reader.push_bytes(&[24]).0.is_none());
         // Type
-        assert!(reader
-            .push_bytes(&[PacketType::RcChannelsPacked as u8])
-            .0
-            .is_none());
+        assert!(
+            reader
+                .push_bytes(&[PacketType::RcChannelsPacked as u8])
+                .0
+                .is_none()
+        );
         // Payload
         assert!(reader.push_bytes(&[0; 22]).0.is_none());
         // Checksum

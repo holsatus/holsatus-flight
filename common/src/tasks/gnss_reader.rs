@@ -7,7 +7,7 @@ pub async fn main(stream_id: &'static str) -> ! {
     info!("{}: Task started", ID);
 
     let mut stream = crate::serial::claim(stream_id).unwrap();
-    let mut snd_raw_gnss_data = crate::signals::RAW_GNSS_DATA.sender();
+    let snd_raw_gnss_data = crate::signals::RAW_GNSS_DATA.sender();
     let mut parser: Parser<FixedBuffer<128>> = Parser::new_fixed();
 
     info!("{}: Entering main loop", ID);

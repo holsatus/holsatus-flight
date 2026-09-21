@@ -1,17 +1,15 @@
+///! Dshot driver for the STM32-family using a timer-backed PWM
 use core::marker::PhantomData;
-
-///! Dshot driver for the stm32f405 using a timer-backed PWM
-use dshot_encoder;
 
 use embassy_stm32::interrupt::typelevel::Binding;
 use embassy_stm32::{
-    timer::{
-        simple_pwm::SimplePwm, Ch1, Ch2, Ch3, Ch4, Dma, GeneralInstance4Channel, TimerPin, UpDma,
-    },
     Peri,
+    timer::{
+        Ch1, Ch2, Ch3, Ch4, Dma, GeneralInstance4Channel, TimerPin, UpDma, simple_pwm::SimplePwm,
+    },
 };
 
-use common::hw_abstraction::OutputGroup;
+use static_cell::ConstStaticCell;
 
 const TRANSMIT_SIZE: usize = 24;
 
@@ -93,26 +91,17 @@ where
     }
 }
 
-impl<'d, T, WAV> OutputGroup for DshotDriver<'d, T, WAV>
+impl<'d, T, WAV> common::abstraction::dshot_group::DshotGroup for DshotDriver<'d, T, WAV>
 where
     T: GeneralInstance4Channel,
     WAV: WaveformGenerator<Timer = T>,
 {
-    async fn set_motor_speeds(&mut self, speed: [u16; 4]) {
-        self.transmit(speed.map(|s| dshot_encoder::throttle_clamp(s, false)))
-            .await
+    fn send_packets(
+        &mut self,
+        packets: [common::abstraction::dshot_group::DshotPacket; 4],
+    ) -> impl Future<Output = ()> {
+        self.transmit(packets.map(|packet| packet.get_raw()))
     }
-
-    async fn set_reverse_dir(&mut self, direction: [bool; 4]) {
-        self.transmit(direction.map(dshot_encoder::reverse)).await
-    }
-
-    async fn set_motor_speeds_min(&mut self) {
-        self.transmit([dshot_encoder::throttle_minimum(false); 4])
-            .await
-    }
-
-    async fn make_beep(&mut self) {}
 }
 
 pub trait WaveformGenerator {
@@ -133,6 +122,7 @@ where
     dma: Peri<'d, DMA>,
     irq: BIND,
     _p: PhantomData<T>,
+    dmabuf: &'static mut [u16; 96],
 }
 
 impl<'d, T, DMA, BIND> UpDmaWaveform<'d, T, DMA, BIND>
@@ -142,10 +132,14 @@ where
     BIND: Binding<DMA::Interrupt, embassy_stm32::dma::InterruptHandler<DMA>>,
 {
     pub fn new(dma: Peri<'d, DMA>, irq: BIND) -> Self {
+        crate::dma_buffer! {
+            static BUFFER: ConstStaticCell<[u16; 96]> = ConstStaticCell::new([0u16; 96]);
+        }
         Self {
             dma,
             irq,
             _p: PhantomData,
+            dmabuf: BUFFER.take(),
         }
     }
 }
@@ -158,12 +152,11 @@ where
 {
     type Timer = T;
     async fn run_waveform(&mut self, pwm: &mut SimplePwm<'_, T>, cmd: &[[u16; TRANSMIT_SIZE]; 4]) {
-        let mut interleaved = [0u16; TRANSMIT_SIZE * 4];
         for i in 0..TRANSMIT_SIZE {
-            interleaved[i * 4 + 0] = cmd[0][i];
-            interleaved[i * 4 + 1] = cmd[1][i];
-            interleaved[i * 4 + 2] = cmd[2][i];
-            interleaved[i * 4 + 3] = cmd[3][i];
+            self.dmabuf[i * 4 + 0] = cmd[0][i];
+            self.dmabuf[i * 4 + 1] = cmd[1][i];
+            self.dmabuf[i * 4 + 2] = cmd[2][i];
+            self.dmabuf[i * 4 + 3] = cmd[3][i];
         }
 
         use embassy_stm32::timer::Channel;
@@ -172,7 +165,7 @@ where
             self.irq,
             Channel::Ch1,
             Channel::Ch4,
-            &interleaved,
+            self.dmabuf,
         )
         .await;
     }

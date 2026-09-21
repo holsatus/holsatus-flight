@@ -1,4 +1,7 @@
-use common::hw_abstraction::OutputGroup;
+use common::abstraction::dshot_group::DshotCommand;
+use common::abstraction::dshot_group::DshotGroup;
+use common::abstraction::dshot_group::THROTTLE_MAX;
+use common::abstraction::dshot_group::THROTTLE_MIN;
 use common::nalgebra::SMatrix;
 use common::nalgebra::SVector;
 use common::types::measurements::ViconData;
@@ -13,8 +16,9 @@ use rand_distr::Normal;
 
 pub mod imu_reader {
     use common::{
-        drivers::imu::{ImuInitialize, ImuSensor},
-        errors::ImuError,
+        ImuIndex,
+        abstraction::imu::{Imu, ImuInitialize},
+        errors::SensorError,
         tasks::imu_reader::ImuReader,
         types::measurements::Imu6DofData,
     };
@@ -23,35 +27,37 @@ pub mod imu_reader {
 
     #[embassy_executor::task]
     pub async fn main(imu: SimulatedImu) {
-        struct Imu<'a>(&'a mut SimulatedImu);
+        struct SimImu<'a>(&'a mut SimulatedImu);
 
-        impl ImuInitialize for Imu<'_> {
+        impl ImuInitialize for SimImu<'_> {
             type Config = ();
             type Interface = SimulatedImu;
             type Sensor<'a>
-                = Imu<'a>
+                = SimImu<'a>
             where
                 Self: 'a;
 
             async fn initialize<'a>(
                 interface: &'a mut Self::Interface,
                 _config: &Self::Config,
-            ) -> Result<Self::Sensor<'a>, ImuError>
+            ) -> Result<Self::Sensor<'a>, SensorError>
             where
                 Self: 'a,
             {
-                Ok(Imu(interface))
+                Ok(SimImu(interface))
             }
         }
 
-        impl ImuSensor for Imu<'_> {
-            fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+        impl Imu for SimImu<'_> {
+            fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], SensorError>> {
                 async { Ok(self.0.read_sim_acc()) }
             }
-            fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+            fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], SensorError>> {
                 async { Ok(self.0.read_sim_gyr()) }
             }
-            fn read_acc_gyr(&mut self) -> impl Future<Output = Result<Imu6DofData<f32>, ImuError>> {
+            fn read_acc_gyr(
+                &mut self,
+            ) -> impl Future<Output = Result<Imu6DofData<f32>, SensorError>> {
                 async {
                     Ok(Imu6DofData {
                         timestamp_us: Instant::now().as_micros(),
@@ -63,7 +69,7 @@ pub mod imu_reader {
         }
 
         let trigger = Ticker::every(Duration::from_hz(crate::SIM_FREQUENCY));
-        ImuReader::entry::<Imu<'_>>(imu, (), trigger).await
+        ImuReader::entry::<SimImu<'_>>(ImuIndex::Imu0, imu, (), trigger).await
     }
 }
 
@@ -71,24 +77,37 @@ pub mod imu_reader {
 pub async fn motor_governor(motors: SimulatedMotors) {
     struct Motors(SimulatedMotors);
 
-    impl OutputGroup for Motors {
-        async fn set_motor_speeds(&mut self, speeds: [u16; 4]) {
-            self.0.set_motor_speeds(speeds)
-        }
-        async fn set_motor_speeds_min(&mut self) {
+    impl DshotGroup for Motors {
+        async fn send_packets(
+            &mut self,
+            packets: [common::abstraction::dshot_group::DshotPacket; 4],
+        ) {
+            // Here we assume that if at least one packet is a throttle command,
+            // then all are. It is a bit crude but it works.
+            let speeds = packets.map(|packet| packet.as_speed().unwrap_or_default());
+            if speeds.iter().any(|speed| *speed >= THROTTLE_MIN) {
+                let speeds = speeds.map(|speed| speed.clamp(THROTTLE_MIN, THROTTLE_MAX));
+                self.0.set_motor_speeds(speeds);
+                return;
+            }
+
+            // From this point we ensure the motors should not be spinning
             self.0.set_motor_speeds_min();
-        }
-        async fn set_reverse_dir(&mut self, rev: [bool; 4]) {
-            self.0.set_reverse_dir(rev);
-        }
-        async fn make_beep(&mut self) {
-            self.0.make_beep()
+
+            // Currently we do not even support reversing motors
+            let mut reverse = [false; 4];
+            for (index, packet) in packets.iter().enumerate() {
+                if packet.get_raw() == DshotCommand::SpinDirectionReversed as u16 {
+                    reverse[index] = true
+                }
+            }
+            self.0.set_reverse_dir(reverse);
         }
     }
 
     let motors = Motors(motors);
 
-    common::tasks::motor_governor::main(motors).await
+    common::actuators::motor_governor::main(motors).await
 }
 
 #[embassy_executor::task]
@@ -127,5 +146,5 @@ pub async fn simulated_vicon(handle: SimHandle) {
 #[embassy_executor::task]
 pub async fn param_storage(flash: SimulatedFlash) {
     let range = flash.range_u32();
-    common::tasks::param_storage::entry(flash, range).await
+    common::params::entry(flash, range).await
 }

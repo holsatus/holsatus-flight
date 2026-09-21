@@ -1,13 +1,20 @@
 use core::num::NonZeroU16;
 
-use mavio::{default_dialect::{enums::{MavCmd, MavFrame}, messages::CommandAck}, dialects::common::{
-    enums::MavResult,
-    messages::{CommandInt, CommandLong},
-}, prelude::MaybeVersioned};
+use mavio::{
+    default_dialect::{
+        enums::{MavCmd, MavFrame},
+        messages::CommandAck,
+    },
+    dialects::common::{
+        enums::MavResult,
+        messages::{CommandInt, CommandLong},
+    },
+    prelude::MaybeVersioned,
+};
 
 use crate::mavlink::{GeneratorPeriod, params::Identity};
 
-use super::super::{messages::Generator, Message, CHANNEL};
+use super::super::{CHANNEL, Message, messages::Generator};
 
 /// A combined representation of [`CommandLong`] and [`CommandLong`].
 #[allow(unused)]
@@ -19,7 +26,7 @@ pub struct CommandUnion {
     pub param2: f32,
     pub param3: f32,
     pub param4: f32,
-    pub extra: Extra
+    pub extra: Extra,
 }
 
 /// The idea is to decide on a per-command basis whether it makes sense to
@@ -49,11 +56,11 @@ impl From<CommandLong> for CommandUnion {
             param2: value.param2,
             param3: value.param3,
             param4: value.param4,
-            extra: Extra::Long { 
+            extra: Extra::Long {
                 param5: value.param5,
                 param6: value.param6,
                 param7: value.param7,
-            }
+            },
         }
     }
 }
@@ -68,17 +75,17 @@ impl From<CommandInt> for CommandUnion {
             param2: value.param2,
             param3: value.param3,
             param4: value.param4,
-            extra: Extra::Int { 
+            extra: Extra::Int {
                 frame: value.frame,
                 x: value.x,
                 y: value.y,
                 z: value.z,
-            }
+            },
         }
     }
 }
 
-impl <V: MaybeVersioned> super::Handler<V> for CommandLong {
+impl<V: MaybeVersioned> super::Handler<V> for CommandLong {
     async fn handle_inner(
         self,
         server: &mut crate::mavlink::MavlinkServer,
@@ -89,7 +96,7 @@ impl <V: MaybeVersioned> super::Handler<V> for CommandLong {
     }
 }
 
-impl <V: MaybeVersioned> super::Handler<V> for CommandInt {
+impl<V: MaybeVersioned> super::Handler<V> for CommandInt {
     async fn handle_inner(
         self,
         server: &mut crate::mavlink::MavlinkServer,
@@ -100,13 +107,12 @@ impl <V: MaybeVersioned> super::Handler<V> for CommandInt {
     }
 }
 
-impl <V: MaybeVersioned> super::Handler<V> for CommandUnion {
+impl<V: MaybeVersioned> super::Handler<V> for CommandUnion {
     async fn handle_inner(
         self,
         server: &mut crate::mavlink::MavlinkServer,
         frame: mavio::Frame<V>,
     ) -> Result<(), crate::mavlink::Error> {
-
         let target = Identity {
             sys: self.target_system,
             com: self.target_component,
@@ -114,7 +120,7 @@ impl <V: MaybeVersioned> super::Handler<V> for CommandUnion {
 
         if target != server.param.id {
             debug!("[mavlink] Received command for {:?}, ignoring", target);
-            return Ok(())
+            return Ok(());
         }
 
         let source = Identity {
@@ -152,8 +158,8 @@ impl <V: MaybeVersioned> super::Handler<V> for CommandUnion {
 /// Make a request to the `Commander` task, converting its response into the equivalent `MavResult`
 async fn mav_commander_request(command: crate::tasks::commander::message::Command) -> MavResult {
     use crate::tasks::commander::{
-        message::{Origin, Request, Response},
         PROCEDURE,
+        message::{Origin, Request, Response},
     };
 
     // Always assume the request came from a GC
@@ -167,7 +173,7 @@ async fn mav_commander_request(command: crate::tasks::commander::message::Comman
     match response {
         Some(Response::Accepted) => MavResult::Accepted,
         Some(Response::Unchanged) => MavResult::Accepted,
-        Some(Response::Unavailble) => MavResult::TemporarilyRejected,
+        Some(Response::Unavailable) => MavResult::TemporarilyRejected,
         Some(Response::Rejected) => MavResult::TemporarilyRejected,
         Some(Response::Unsupported) => MavResult::Unsupported,
         Some(Response::Failed) => MavResult::Failed,
@@ -180,7 +186,10 @@ pub async fn set_message_interval(cmd: &CommandUnion) -> MavResult {
     let period_us = cmd.param2 as i32;
 
     let Some(generator) = Generator::from_id(message_id) else {
-        warn!("[mavlink] Generator for message id {} not available", message_id);
+        warn!(
+            "[mavlink] Generator for message id {} not available",
+            message_id
+        );
         return MavResult::Unsupported;
     };
 
@@ -194,8 +203,8 @@ pub async fn set_message_interval(cmd: &CommandUnion) -> MavResult {
         }
     };
 
-    let request = Message::StreamGenerator { 
-        generator, 
+    let request = Message::StreamGenerator {
+        generator,
         period_ms,
     };
 
@@ -230,7 +239,10 @@ pub async fn request_message(cmd: &CommandUnion, source: Identity) -> MavResult 
     let message_id = cmd.param1 as u32;
 
     let Some(generator) = Generator::from_id(message_id) else {
-        warn!("[mavlink] Generator for message id {} not available", message_id);
+        warn!(
+            "[mavlink] Generator for message id {} not available",
+            message_id
+        );
         return MavResult::Unsupported;
     };
 
@@ -239,9 +251,10 @@ pub async fn request_message(cmd: &CommandUnion, source: Identity) -> MavResult 
     // https://mavlink.io/en/messages/common.html#AUTOPILOT_VERSION
 
     CHANNEL
-        .send(Message::SendGenerator { 
-            generator, 
-            target: source.into() })
+        .send(Message::SendGenerator {
+            generator,
+            target: source.into(),
+        })
         .await;
     CHANNEL
         .send(Message::SendGenerator {

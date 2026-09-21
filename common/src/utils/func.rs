@@ -22,6 +22,10 @@ pub fn wrap<T: Float>(mut num: T, min: T, max: T) -> T {
     num
 }
 
+pub fn wrap_rad(num: f32) -> f32 {
+    wrap(num, -core::f32::consts::PI, core::f32::consts::PI)
+}
+
 /// Helper function to get a fixed-size array at the start of an immutable slice
 pub fn ref_array_start<const N: usize>(buf: &[u8]) -> Option<&[u8; N]> {
     buf.get(..N.min(buf.len()))?.try_into().ok()

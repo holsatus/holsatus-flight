@@ -70,6 +70,14 @@ impl<M: ScopedRawMutex, Req, Res, const N: usize> Procedure<Req, Res, N, M> {
         self.chan.send((req, None)).await;
     }
 
+    /// Send a request without waiting for a response, without blocking.
+    ///
+    /// Returns `Ok(())` if the request was queued, or `Err(req)` if the
+    /// channel is currently full.
+    pub fn try_send(&self, req: Req) -> Result<(), Req> {
+        self.chan.try_send((req, None)).map_err(|(req, _)| req)
+    }
+
     fn new_index(&self) -> usize {
         self.index.fetch_add(1, Ordering::Relaxed)
     }

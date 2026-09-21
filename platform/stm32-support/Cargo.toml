@@ -1,9 +1,15 @@
 [package]
 name = "stm32-support"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [features]
+
+# Internal: selected by chip features for MCUs that have a non-cached DMA SRAM
+# region (H7 `RAM_D3`/SRAM4). Enabling it makes `dma_buffer!` emit `.ram_d3`,
+# which requires the device's `memory.x` to map that section into the region.
+# Do not enable this directly; enable the chip feature instead.
+__use_ram_d3 = []
 
 stm32f405rg = [
     "embassy-stm32/stm32f405rg",
@@ -13,6 +19,7 @@ stm32f405rg = [
 stm32h743vi = [
     "embassy-stm32/stm32h743vi",
     "embassy-stm32/time-driver-tim2",
+    "__use_ram_d3",
 ]
 
 [dependencies]
@@ -21,12 +28,9 @@ defmt = "1.0.1"
 static_cell = "2"
 aligned = "0.4.2"
 
-dshot-encoder = { git = "https://github.com/peterkrull/dshot-encoder" }
-
 [dependencies.common]
 path = "../../common"
 default-features = false
-features = ["defmt"]
 
 [dependencies.embassy-futures]
 git = "https://github.com/embassy-rs/embassy"

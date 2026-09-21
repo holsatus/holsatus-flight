@@ -9,35 +9,40 @@ use embedded_hal_async::{i2c, spi};
 use futures::TryFutureExt as _;
 
 use crate::{
-    drivers::{imu::{ImuInitialize, ImuSensor, map_deg_to_rad, map_g_to_mpss}, wrapped::{WrappedI2c, WrappedSpi}}, errors::ImuError, types::measurements::Imu6DofData,
+    abstraction::imu::{Imu, ImuInitialize},
+    errors::SensorError,
+    types::measurements::Imu6DofData,
+    wrapped::{i2c::WrappedI2c, spi::WrappedSpi},
 };
+
+use super::{map_deg_to_rad, map_g_to_mpss};
 
 pub struct Bmi088<IACC, IGYR> {
     acc: Bmi088Accelerometer<IACC>,
     gyr: Bmi088Gyroscope<IGYR>,
 }
 
-impl<A: AsyncRegisterInterface<AddressType = u8>, G: AsyncRegisterInterface<AddressType = u8>>
-    ImuSensor for Bmi088<A, G>
+impl<A: AsyncRegisterInterface<AddressType = u8>, G: AsyncRegisterInterface<AddressType = u8>> Imu
+    for Bmi088<A, G>
 where
-    ImuError: From<A::Error>,
-    ImuError: From<G::Error>,
+    SensorError: From<A::Error>,
+    SensorError: From<G::Error>,
 {
-    fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+    fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], SensorError>> {
         self.acc
             .read_acc_scaled()
             .map_ok(map_g_to_mpss)
             .map_err(|e| e.into())
     }
 
-    fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+    fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], SensorError>> {
         self.gyr
             .read_gyro_scaled()
             .map_ok(map_deg_to_rad)
             .map_err(|e| e.into())
     }
 
-    async fn read_acc_gyr(&mut self) -> Result<Imu6DofData<f32>, ImuError> {
+    async fn read_acc_gyr(&mut self) -> Result<Imu6DofData<f32>, SensorError> {
         // The BMI088 cannot do a single contiguous read across both sensors :(
         let acc_data = self.read_acc().await?;
         let gyr_data = self.read_gyr().await?;
@@ -50,20 +55,20 @@ where
     }
 }
 
-fn map_spi_error<E: spi::Error>(error: Error<E>, whoami: u8) -> ImuError {
+fn map_spi_error<E: spi::Error>(error: Error<E>, whoami: u8) -> SensorError {
     match error {
-        Error::Transport(t) => ImuError::SpiInterface(t.kind().into()),
-        Error::ChipId(actual) => ImuError::WhoAmI {
+        Error::Transport(t) => SensorError::SpiInterface(t.kind().into()),
+        Error::ChipId(actual) => SensorError::WhoAmI {
             expected: whoami,
             actual: actual,
         },
     }
 }
 
-fn map_i2c_error<E: i2c::Error>(error: Error<E>, whoami: u8) -> ImuError {
+fn map_i2c_error<E: i2c::Error>(error: Error<E>, whoami: u8) -> SensorError {
     match error {
-        Error::Transport(t) => ImuError::I2cInterface(t.kind().into()),
-        Error::ChipId(actual) => ImuError::WhoAmI {
+        Error::Transport(t) => SensorError::I2cInterface(t.kind().into()),
+        Error::ChipId(actual) => SensorError::WhoAmI {
             expected: whoami,
             actual: actual,
         },
@@ -93,7 +98,7 @@ where
     async fn initialize<'a>(
         interface: &'a mut Self::Interface,
         config: &Self::Config,
-    ) -> Result<Self::Sensor<'a>, ImuError>
+    ) -> Result<Self::Sensor<'a>, SensorError>
     where
         Self: 'a,
     {
@@ -137,16 +142,18 @@ where
     async fn initialize<'a>(
         interface: &'a mut Self::Interface,
         config: &Self::Config,
-    ) -> Result<Self::Sensor<'a>, ImuError>
+    ) -> Result<Self::Sensor<'a>, SensorError>
     where
         Self: 'a,
     {
-        let acc = Bmi088Accelerometer::initialize_i2c(WrappedI2c(&mut interface.0), config.0, &mut Delay)
-            .map_err(|error| map_i2c_error(error, bmi088_driver::ACC_CHIP_ID))
-            .await?;
-        let mut gyr = Bmi088Gyroscope::initialize_i2c(WrappedI2c(&mut interface.1), config.1, &mut Delay)
-            .map_err(|error| map_i2c_error(error, bmi088_driver::GYR_CHIP_ID))
-            .await?;
+        let acc =
+            Bmi088Accelerometer::initialize_i2c(WrappedI2c(&mut interface.0), config.0, &mut Delay)
+                .map_err(|error| map_i2c_error(error, bmi088_driver::ACC_CHIP_ID))
+                .await?;
+        let mut gyr =
+            Bmi088Gyroscope::initialize_i2c(WrappedI2c(&mut interface.1), config.1, &mut Delay)
+                .map_err(|error| map_i2c_error(error, bmi088_driver::GYR_CHIP_ID))
+                .await?;
 
         if config.2.pin_3_int_data_ready {
             gyr.data_ready_int3_pin(true).await?;

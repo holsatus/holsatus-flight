@@ -141,14 +141,14 @@ pub fn get_rate_log() -> Option<RateLog> {
     use crate::signals as s;
     Some(RateLog {
         timestamp_us: Instant::now().as_micros(),
-        setpoint: s::TRUE_ATTITUDE_Q_SP
+        setpoint: s::AHRS_ATTITUDE_Q
             .try_get()?
             .as_vector()
             .clone_owned()
             .into(),
         measurement: s::CAL_IMU_DATA.try_get()?.gyr,
         pid_int: s::RATE_PID_TERMS.try_get()?,
-        motors: s::MOTORS_STATE.try_get()?.as_speeds(),
+        motors: s::MOTORS_STATE.try_get()?.as_pwm_speeds(),
     })
 }
 
@@ -168,7 +168,7 @@ pub fn get_angle_log() -> Option<AngleLog> {
     use crate::signals as s;
     Some(AngleLog {
         timestamp_us: Instant::now().as_micros(),
-        setpoint: s::TRUE_ATTITUDE_Q_SP
+        setpoint: s::AHRS_ATTITUDE_Q // TODO - Note the setpoint
             .try_get()?
             .as_vector()
             .clone_owned()
