@@ -90,6 +90,7 @@ struct Controller<'a> {
     angle_axes: [AngleAxis; 3],
 
     gyro_bias: Option<[f32; 3]>,
+    integrators_enabled: bool,
     flags: params::CtrlFlags,
 
     mode: ControlState,
@@ -218,6 +219,7 @@ impl Controller<'_> {
                 },
             ],
             gyro_bias: None,
+            integrators_enabled: false,
             flags: params.flags.clone(),
             mode: ControlState::Disabled,
             last_cmd_time: Instant::now(),
@@ -260,6 +262,7 @@ impl Controller<'_> {
             }
             Message::EnableIntegrators(enable) => {
                 debug!("[mc/attitude_control]: Integrators enabled: {}", enable);
+                self.integrators_enabled = enable;
                 for axis in self.rate_axes.iter_mut() {
                     axis.pid.enable_reset_integral(enable)
                 }
@@ -313,6 +316,8 @@ impl Controller<'_> {
         {
             axis.qint_gain = param.qint;
             axis.pid = RatePid::new(param.kp, param.ki, param.kd, param.dtau, self.dt);
+            // `RatePid::new` enables the integrator by default, so restore the in-flight state.
+            axis.pid.enable_reset_integral(self.integrators_enabled);
             axis.pred_model = Lowpass::new(param.pred, self.dt);
             axis.comp_filt = Complementary::new(param.comp, self.dt);
 
