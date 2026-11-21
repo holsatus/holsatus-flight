@@ -146,7 +146,7 @@ portable-atomic = "1.9"
 approx = "0.5"
 thiserror = { version = "2.0.18", default-features = false }
 
-mav-param = { git = "https://github.com/holsatus/mav-param", features = ["defmt", "serde"] }
+mav-param = { git = "https://github.com/holsatus/mav-param", rev = "c982184", features = ["defmt", "serde"] }
 tinympc-rs = { git = "https://github.com/peterkrull/tinympc-rs", optional = true, default-features = false }
 
 [dependencies.grantable-io]
