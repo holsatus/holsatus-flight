@@ -13,3 +13,15 @@ SECTIONS {
         KEEP(*(.boot2));
     } > BOOT2
 } INSERT BEFORE .text;
+
+SECTIONS
+{
+    /* `linkme` emits its distributed-slice contents into orphan sections named
+     * `linkme_<SLICE>`. Without an explicit placement the linker puts them in
+     * RAM with LMA == VMA, so the reset code never loads their initializers and
+     * the slice contains garbage. Fold them into the `.data` load mechanism. */
+    linkme_PARAM_TABLES : ALIGN(4)
+    {
+        KEEP(*(linkme_PARAM_TABLES));
+    } > RAM AT> FLASH
+} INSERT AFTER .data;
