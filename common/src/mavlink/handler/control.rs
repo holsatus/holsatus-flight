@@ -35,9 +35,8 @@ impl<V: MaybeVersioned> super::Handler<V> for SetAttitudeTarget {
             .type_mask
             .intersects(AttitudeTargetTypemask::ATTITUDE_IGNORE)
         {
-            // NOTE: MAVLink uses [w, x, y, z] nalgebra uses [x, y, z, w] ordering
             let att = UnitQuaternion::from_quaternion(Quaternion::new(
-                self.q[3], self.q[0], self.q[1], self.q[2],
+                self.q[0], self.q[1], self.q[2], self.q[3],
             ));
 
             Vehicle::set_attitude_setpoint(att);
