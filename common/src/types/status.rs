@@ -64,6 +64,12 @@ pub struct PidTerms {
     pub dm_out: f32,
 }
 
+impl PidTerms {
+    pub const fn sum(&self) -> f32 {
+        self.p_out + self.i_out + self.dr_out + self.dm_out
+    }
+}
+
 #[derive(Debug, Copy, Clone, Default, Serialize, Deserialize)]
 pub struct RcStatus {
     pub failsafe: bool,

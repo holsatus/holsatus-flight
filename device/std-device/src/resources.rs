@@ -28,17 +28,17 @@ pub fn setup_logging(mock: SimHandle) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-use common::drivers::imu::ImuInitialize;
-use common::drivers::imu::ImuSensor;
+use common::ImuIndex;
+use common::abstraction::imu::{Imu, ImuInitialize};
+use common::abstraction::motor::MotorGroup;
 use common::embassy_futures::select::Either;
 use common::embassy_futures::select::select;
 use common::embassy_time::Duration;
 use common::embassy_time::Instant;
 use common::embassy_time::Ticker;
-use common::errors::ImuError;
+use common::errors::SensorError;
 use common::errors::adapter::embedded_io::EmbeddedIoError;
 use common::grantable_io::GrantableIo;
-use common::hw_abstraction::OutputGroup;
 use common::serial::IoStreamRaw;
 use common::tasks::imu_reader::ImuReader;
 use common::types::measurements::Imu6DofData;
@@ -58,35 +58,35 @@ use tokio::io::AsyncWriteExt;
 
 #[embassy_executor::task]
 pub async fn imu_reader(imu: SimulatedImu) {
-    struct Imu<'a>(&'a mut SimulatedImu);
+    struct SimImu<'a>(&'a mut SimulatedImu);
 
-    impl ImuInitialize for Imu<'_> {
+    impl ImuInitialize for SimImu<'_> {
         type Config = ();
         type Interface = SimulatedImu;
         type Sensor<'a>
-            = Imu<'a>
+            = SimImu<'a>
         where
             Self: 'a;
 
         async fn initialize<'a>(
             interface: &'a mut Self::Interface,
             _config: &Self::Config,
-        ) -> Result<Self::Sensor<'a>, ImuError>
+        ) -> Result<Self::Sensor<'a>, SensorError>
         where
             Self: 'a,
         {
-            Ok(Imu(interface))
+            Ok(SimImu(interface))
         }
     }
 
-    impl ImuSensor for Imu<'_> {
-        fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+    impl Imu for SimImu<'_> {
+        fn read_acc(&mut self) -> impl Future<Output = Result<[f32; 3], SensorError>> {
             async { Ok(self.0.read_sim_acc()) }
         }
-        fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], ImuError>> {
+        fn read_gyr(&mut self) -> impl Future<Output = Result<[f32; 3], SensorError>> {
             async { Ok(self.0.read_sim_gyr()) }
         }
-        fn read_acc_gyr(&mut self) -> impl Future<Output = Result<Imu6DofData<f32>, ImuError>> {
+        fn read_acc_gyr(&mut self) -> impl Future<Output = Result<Imu6DofData<f32>, SensorError>> {
             async {
                 let (acc, gyr) = self.0.read_sim_acc_gyr();
                 Ok(Imu6DofData {
@@ -99,14 +99,14 @@ pub async fn imu_reader(imu: SimulatedImu) {
     }
 
     let trigger = Ticker::every(Duration::from_hz(1000));
-    ImuReader::entry::<Imu<'_>>(imu, (), trigger).await
+    ImuReader::entry::<SimImu<'_>>(ImuIndex::Imu0, imu, (), trigger).await
 }
 
 #[embassy_executor::task]
 pub async fn motor_governor(motors: SimulatedMotors) {
     struct Motors(SimulatedMotors);
 
-    impl OutputGroup for Motors {
+    impl MotorGroup for Motors {
         async fn set_motor_speeds(&mut self, speeds: [u16; 4]) {
             self.0.set_motor_speeds(speeds)
         }
@@ -123,7 +123,7 @@ pub async fn motor_governor(motors: SimulatedMotors) {
 
     let motors = Motors(motors);
 
-    common::tasks::motor_governor::main(motors).await
+    common::actuators::motor_governor::main(motors).await
 }
 
 // // TODO Simulated vicon should be sent over MAVLink
@@ -180,7 +180,7 @@ pub fn run_simulated_vicon(handle: SimHandle) {
 #[embassy_executor::task]
 pub async fn param_storage(flash: SimulatedFlash) {
     let range = flash.range_u32();
-    common::tasks::param_storage::entry(flash, range).await
+    common::params::entry(flash, range).await
 }
 
 pub(crate) fn simulation_runner(sitl: SimHandle, frequency: usize) {

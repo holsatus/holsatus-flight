@@ -1,7 +1,7 @@
 [package]
 name = "rp2040-dev"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 
 [features]
@@ -20,6 +20,7 @@ panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 
 common = { path = "../../common", default-features = false, features = [
     "imu_count_1",
+    "multicopter",
     "mavlink",
     "defmt",
     "gnss",

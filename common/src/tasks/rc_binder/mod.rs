@@ -1,3 +1,5 @@
+use embassy_time::Instant;
+
 use crate::{
     signals as s,
     tasks::{commander, rc_binder::params::analog},
@@ -17,7 +19,7 @@ pub async fn main() -> ! {
     let mut rcv_rc_channels = s::RC_CHANNELS_RAW.receiver();
 
     // Output signals
-    let mut snd_rc_controls_unit = s::RC_ANALOG_UNIT.sender();
+    let snd_rc_controls_unit = s::RC_ANALOG_UNIT.sender();
 
     let params = params::TABLE.read().await;
     let rc_bindings = params.channel_binding.clone();
@@ -27,13 +29,15 @@ pub async fn main() -> ! {
     // Store previous packet to detect changes in digital channels
     let mut prev_rc_channels = None;
 
-    let mut rc_analog = RcAnalog([0.0; 8]);
+    let mut rc_analog = [0.0; 8];
 
     info!("{}: Entering main loop", ID);
     'infinite: loop {
         let Some(rc_channels) = rcv_rc_channels.changed().await else {
             continue 'infinite;
         };
+
+        let timestamp = Instant::now();
 
         for index in 0..params::NUM_CHANNELS {
             let rc_value = rc_channels[index];
@@ -49,7 +53,7 @@ pub async fn main() -> ! {
                     let unit_value = analog.map(rc_value);
 
                     // Update the result
-                    rc_analog.0[analog.axis as u8 as usize] = unit_value;
+                    rc_analog[analog.axis as u8 as usize] = unit_value;
                 }
                 params::Binding::Digital(digital) => {
                     // If value is same as previous, skip to avoid spamming
@@ -63,14 +67,14 @@ pub async fn main() -> ! {
                             continue;
                         }
 
-                        let Ok(command) = (bind.event).try_into() else {
+                        let Ok(event_command) = (bind.event).try_into() else {
                             continue;
                         };
 
                         info!("{}: Sending digital event: {:?}", ID, bind.event);
                         commander::PROCEDURE
                             .send(commander::Request {
-                                command,
+                                command: event_command,
                                 origin: commander::Origin::RemoteControl,
                             })
                             .await;
@@ -81,6 +85,9 @@ pub async fn main() -> ! {
 
         // Save the packet for next iteration and transmit analog values
         prev_rc_channels = Some(rc_channels);
-        snd_rc_controls_unit.send(rc_analog);
+        snd_rc_controls_unit.send(RcAnalog {
+            timestamp_us: timestamp.as_micros(),
+            values: rc_analog,
+        });
     }
 }

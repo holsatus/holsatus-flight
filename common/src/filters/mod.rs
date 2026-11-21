@@ -1,8 +1,10 @@
 pub mod angle_pid;
-pub mod linear_lut;
 pub mod motor_lin;
 pub mod rate_pid;
 pub mod statistics;
+
+mod ramp_smoother;
+pub use ramp_smoother::RampSmoother;
 
 use core::array::from_fn;
 use num_traits::Float;
@@ -267,11 +269,13 @@ impl<T: Float> IntegratingHighpass<T> {
 
     /// Set the cross-over frequency of the filter with a time-constant `tau`
     pub fn set_dt(&mut self, dt: T) {
+        self.dt = dt;
         self.alpha = dt / (self.tau + dt);
     }
 
     /// Set the cross-over frequency of the filter with a time-constant `tau`
     pub fn set_tau(&mut self, tau: T) {
+        self.tau = tau;
         self.alpha = self.dt / (tau + self.dt);
     }
 }
@@ -315,83 +319,14 @@ impl<T: Float> IntegratingComplementary<T> {
 
     /// Set the cross-over frequency of the filter with a time-constant `tau`
     pub fn set_dt(&mut self, dt: T) {
+        self.dt = dt;
         self.alpha = dt / (self.tau + dt);
     }
 
     /// Set the cross-over frequency of the filter with a time-constant `tau`
     pub fn set_tau(&mut self, tau: T) {
+        self.tau = tau;
         self.alpha = self.dt / (tau + self.dt);
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum RatesType {
-    Actual,
-    Kiss,
-}
-
-impl<T: Float> Default for ExpoRates<T> {
-    fn default() -> Self {
-        Self {
-            rates_type: RatesType::Actual,
-            expo: T::from(0.2).unwrap(),
-            max_rates: T::from(31.41).unwrap(),
-            center_sens: T::from(0.4).unwrap(),
-        }
-    }
-}
-
-impl<T: Float> SisoFilter for ExpoRates<T> {
-    type Type = T;
-    fn update(&mut self, input: Self::Type) -> Self::Type {
-        self.apply(input)
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct ExpoRates<T: Float> {
-    rates_type: RatesType,
-    expo: T,
-    max_rates: T,
-    center_sens: T,
-}
-
-impl<T: Float> ExpoRates<T> {
-    pub fn new(rates_type: RatesType, expo: T, max_rates: T, center_sens: T) -> Self {
-        Self {
-            rates_type,
-            expo,
-            max_rates,
-            center_sens,
-        }
-    }
-
-    pub fn apply(&self, rc_command: T) -> T {
-        match self.rates_type {
-            RatesType::Actual => self.apply_actual_rates(rc_command),
-            RatesType::Kiss => self.apply_kiss_rates(rc_command),
-        }
-    }
-
-    fn apply_actual_rates(&self, rc_command: T) -> T {
-        let rc_command_abs = rc_command.abs();
-        let expof =
-            rc_command_abs * (rc_command.powi(5) * self.expo + rc_command * (T::one() - self.expo));
-
-        let center_sensitivity = self.center_sens * self.max_rates;
-        let stick_movement = T::zero().max(self.max_rates - center_sensitivity);
-        rc_command * center_sensitivity + stick_movement * expof
-    }
-
-    fn apply_kiss_rates(&self, rc_command: T) -> T {
-        let kiss_rpy_use_rates = T::one()
-            / (T::one()
-                - rc_command.abs() * self.max_rates.max(T::from(0.01).unwrap()).min(T::one()));
-        let kiss_rc_command =
-            (rc_command.powi(3) * self.expo + rc_command * (T::one() - self.expo)) * self.max_rates;
-        kiss_rpy_use_rates * kiss_rc_command
     }
 }
 

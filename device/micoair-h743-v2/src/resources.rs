@@ -40,8 +40,8 @@ assign_resources! {
     },
     usart_1: Usart1 {
         periph: USART1,
-        rx_pin: PB15,
-        tx_pin: PB14,
+        rx_pin: PA10,
+        tx_pin: PA9,
         rx_dma: DMA2_CH6,
         tx_dma: DMA2_CH7,
     },
@@ -110,10 +110,12 @@ pub mod i2c {
 
 pub mod spi {
     use common::{
-        drivers::imu::{trigger::OnRising, Bmi088Config, Bmi088Spi, Bmi270Config, Bmi270Spi},
+        abstraction::trigger::OnRising,
+        drivers::imu::{Bmi088Config, Bmi088Spi, Bmi270Config, Bmi270Spi},
         embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex},
         embedded_hal_bus::spi::ExclusiveDevice,
         tasks::imu_reader::ImuReader,
+        ImuIndex,
     };
     use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
     use embassy_stm32::exti::InterruptHandler;
@@ -142,7 +144,13 @@ pub mod spi {
         let mut config = Bmi088Config::default();
         config.pin_3_int_data_ready = true;
 
-        ImuReader::entry::<(Bmi088Spi, _, _)>((acc_spi, gyr_spi), config, OnRising(int_pin)).await
+        ImuReader::entry::<(Bmi088Spi, _, _)>(
+            ImuIndex::Imu0,
+            (acc_spi, gyr_spi),
+            config,
+            OnRising(int_pin),
+        )
+        .await
     }
 
     stm32_support::impl_spi_setup!(super::Spi3: MODE_3, DMA1_STREAM6 => DMA1_CH6, DMA1_STREAM7 => DMA1_CH7);
@@ -161,7 +169,8 @@ pub mod spi {
         let mut config = Bmi270Config::default();
         config.pin_1_int_data_ready = true;
 
-        ImuReader::entry::<(Bmi270Spi, _)>(spi_device, config, OnRising(int_pin)).await
+        ImuReader::entry::<(Bmi270Spi, _)>(ImuIndex::Imu1, spi_device, config, OnRising(int_pin))
+            .await
     }
 }
 
@@ -184,7 +193,7 @@ pub mod flash {
     #[embassy_executor::task]
     pub(crate) async fn param_storage(flash: super::Flash, range: core::ops::Range<u32>) -> ! {
         let flash = flash.setup();
-        common::tasks::param_storage::entry(flash, range).await
+        common::params::entry(flash, range).await
     }
 }
 
@@ -197,7 +206,7 @@ pub mod motors {
         dshot_cfg: common::types::config::DshotConfig,
     ) -> ! {
         let motors = motors.setup(dshot_cfg);
-        common::tasks::motor_governor::main(motors).await
+        common::actuators::motor_governor::main(motors).await
     }
 }
 

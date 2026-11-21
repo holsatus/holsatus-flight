@@ -1,7 +1,7 @@
 use embassy_time::{Duration, Ticker};
 
-use crate::types::blackbox::{get_angle_log, LoggableType};
-use crate::types::blackbox::{get_rate_log, LogPreset};
+use crate::types::blackbox::{LogPreset, get_rate_log};
+use crate::types::blackbox::{LoggableType, get_angle_log};
 
 use crate::errors::BlackboxError;
 use crate::signals as s;

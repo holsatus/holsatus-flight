@@ -7,9 +7,9 @@ pub struct Statistics<T> {
     variance: T,
 }
 
-impl <T> Statistics<T>
-where 
-T: Real,
+impl<T> Statistics<T>
+where
+    T: Real,
 {
     /// Creates a new IIR statistics filter.
     /// `alpha` is the smoothing factor, typically a small value (e.g., 0.01).
@@ -36,11 +36,11 @@ T: Real,
         } else {
             // Welford's IIR update algorithm
             let delta = sample - self.mean;
-            
+
             // Update mean
             // M_n = M_{n-1} + alpha * delta
-            self.mean = self.mean + delta * self.alpha; 
-            
+            self.mean = self.mean + delta * self.alpha;
+
             // Update variance
             // V_n = (1 - alpha) * (V_{n-1} + alpha * delta^2)
             self.variance = (self.variance + delta * delta * self.alpha) * (T::one() - self.alpha);

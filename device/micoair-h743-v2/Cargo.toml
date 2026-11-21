@@ -21,8 +21,6 @@ defmt = "1.0.1"
 defmt-rtt = "1.0.0"
 panic-probe = { version = "1.0.0" }
 
-dshot-encoder = { git = "https://github.com/peterkrull/dshot-encoder" }
-
 assign-resources = "0.5.0"
 static_cell = "2"   # Used to allocate buffers and interrupt executors
 aligned = "0.4.2"   # Used to implement BlockDevice on wrapper type
@@ -32,6 +30,7 @@ path = "../../common"
 default-features = false
 features = [
     "imu_count_2",
+    "multicopter",
     "defmt",
 ]
 

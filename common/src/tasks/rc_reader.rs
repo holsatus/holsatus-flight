@@ -35,8 +35,8 @@ pub async fn main(serial_id: &'static str) -> ! {
     let mut serial = crate::serial::claim(serial_id).unwrap();
 
     // Output signals
-    let mut snd_rc_channels = s::RC_CHANNELS_RAW.sender();
-    let mut snd_rc_status = s::RC_STATUS.sender();
+    let snd_rc_channels = s::RC_CHANNELS_RAW.sender();
+    let snd_rc_status = s::RC_STATUS.sender();
 
     let parser_variant = ParserVariant::Crsf;
     let mut parser = Parser::from(parser_variant);

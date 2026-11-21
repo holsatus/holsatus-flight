@@ -14,8 +14,8 @@ pub async fn main() {
     let mut rcv_mag_data = s::CAL_MULTI_MAG_DATA[0].receiver();
 
     // Task outputs
-    let mut snd_ahrs_attitude_q = s::AHRS_ATTITUDE_Q.sender();
-    let mut snd_ahrs_attitude = s::AHRS_ATTITUDE.sender();
+    let snd_ahrs_attitude_q = s::AHRS_ATTITUDE_Q.sender();
+    let snd_ahrs_attitude = s::AHRS_ATTITUDE.sender();
 
     let dt = 1.0 / get_ctrl_freq!() as f32;
 

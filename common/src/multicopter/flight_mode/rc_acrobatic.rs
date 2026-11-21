@@ -1,0 +1,74 @@
+use super::{Action, Controls, EnterError, FlightMode, Precondition};
+use crate::{
+    multicopter::attitude_control::AttitudeCommand,
+    signals::{RC_ANALOG_UNIT, ThrottleCommand},
+    sync::watch::{Receiver, Sender},
+    tasks::rc_binder::rates::Rates,
+    types::control::RcAnalog,
+};
+
+pub mod params {
+    use crate::tasks::rc_binder::rates::{Actual, Linear, Rates};
+
+    #[derive(Clone, Debug, mav_param::Tree)]
+    pub struct Params {
+        /// Rates applied to RC sticks in acro (rate) mode
+        pub axis: [Rates; 3],
+        /// Throttle mapping from unit RC throttle (0..1) to thrust setpoint
+        pub thrt: Rates,
+    }
+
+    crate::const_default!(
+        Params => {
+            axis: [const { Rates::Actual(Actual::const_default()) }; 3],
+            thrt: Rates::Linear(Linear { fact: 12.0, offs: 1.0 }),
+        }
+    );
+
+    crate::param_table!(pub static TABLE: Params as "acro");
+}
+
+/// Acro mode. RC sticks are mapped to angular-rate setpoints.
+pub struct RcAcrobatic {
+    recv_rc_analog: Receiver<'static, RcAnalog>,
+    send_attitude: Sender<'static, AttitudeCommand>,
+    send_throttle: Sender<'static, ThrottleCommand>,
+    axis_rates: [Rates; 3],
+    throttle_rate: Rates,
+}
+
+impl FlightMode for RcAcrobatic {
+    async fn enter(controls: &Controls) -> Result<Self, EnterError> {
+        super::test_precondition(Precondition::MANUAL_CONTROL | Precondition::GYR_CALIBRATED)
+            .map_err(EnterError::Precondition)?;
+
+        let params = params::TABLE.read().await;
+
+        Ok(Self {
+            recv_rc_analog: RC_ANALOG_UNIT.receiver(),
+            send_attitude: controls.attitude.sender(),
+            send_throttle: controls.throttle.sender(),
+            axis_rates: params.axis,
+            throttle_rate: params.thrt,
+        })
+    }
+
+    async fn step(&mut self) -> Action {
+        let rc = self.recv_rc_analog.changed().await;
+
+        // Apply RC "expo" mappings
+        let mut rate = rc.roll_pitch_yaw();
+        for axis in 0..3 {
+            rate[axis] = self.axis_rates[axis].apply(rate[axis]);
+        }
+
+        let throttle = self.throttle_rate.apply(rc.throttle());
+
+        critical_section::with(|_cs| {
+            self.send_attitude.send(AttitudeCommand::Rate(rate.into()));
+            self.send_throttle.send(ThrottleCommand(throttle));
+        });
+
+        Action::None
+    }
+}

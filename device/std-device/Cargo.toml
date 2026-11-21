@@ -8,7 +8,7 @@ default = ["rerun"]
 rerun = ["dep:rerun"]
 
 [dependencies]
-common = { path = "../../common", default-features = false, features = ["std", "log", "mpc", "mavlink", "imu_count_1"] }
+common = { path = "../../common", default-features = false, features = ["multicopter", "std", "log", "mpc", "mavlink", "imu_count_1"] }
 holsatus-sim = { path = "../../holsatus-sim" }
 
 static_cell = "2"

@@ -1,12 +1,13 @@
 use common::{
+    abstraction::dshot_group::DshotGroup,
+    embassy_time::Timer,
     embedded_io,
     errors::adapter::embedded_io::EmbeddedIoError,
-    hw_abstraction::OutputGroup,
     serial::IoStreamRaw,
     types::config::{DshotConfig, I2cConfig, UartConfig},
 };
 
-use embassy_rp::{bind_interrupts, peripherals, Peri, Peripherals};
+use embassy_rp::{Peri, Peripherals, bind_interrupts, peripherals};
 
 /// Define the clock configuration for the board.
 pub(crate) fn config() -> embassy_rp::config::Config {
@@ -82,9 +83,10 @@ impl I2c0 {
 
 pub mod imu_reader {
     use common::{
+        ImuIndex,
         drivers::imu::{
-            icm20948::{AccDlp, AccRange, AccUnit, Config, GyrDlp, GyrRange, GyrUnit},
             Icm209486DofI2c,
+            icm20948::{AccDlp, AccRange, AccUnit, Config, GyrDlp, GyrRange, GyrUnit},
         },
         embassy_time::{Duration, Ticker},
         tasks::imu_reader::ImuReader,
@@ -107,7 +109,8 @@ pub mod imu_reader {
         };
 
         let trigger = Ticker::every(Duration::from_hz(1125));
-        ImuReader::entry::<(Icm209486DofI2c, _)>(i2c, (0x69, imu_cfg), trigger).await
+        ImuReader::entry::<(Icm209486DofI2c, _)>(ImuIndex::Imu0, i2c, (0x69, imu_cfg), trigger)
+            .await
     }
 }
 
@@ -128,7 +131,7 @@ impl Flash {
 #[embassy_executor::task]
 pub(crate) async fn param_storage(flash: Flash) -> ! {
     let flash = flash.setup();
-    common::tasks::param_storage::entry(flash, 0..{ 2 * 1024 * 1024 }).await
+    common::params::entry(flash, 0..{ 2 * 1024 * 1024 }).await
 }
 
 // ----------------------------------------------------------
@@ -139,29 +142,18 @@ struct PioMotors<'a, PIO: embassy_rp::pio::Instance> {
     inner: crate::dshot_pio::DshotPio<'a, 4, PIO>,
 }
 
-impl<'a, PIO: embassy_rp::pio::Instance> OutputGroup for PioMotors<'a, PIO> {
-    async fn set_motor_speeds(&mut self, speeds: [u16; 4]) {
-        self.inner
-            .command(speeds.map(|speed| dshot_encoder::throttle_clamp(speed, false)));
-    }
-
-    async fn set_motor_speeds_min(&mut self) {
-        self.inner
-            .command([dshot_encoder::throttle_minimum(false); 4]);
-    }
-
-    async fn set_reverse_dir(&mut self, rev: [bool; 4]) {
-        self.inner
-            .command(rev.map(|rev| dshot_encoder::reverse(rev)));
-    }
-
-    async fn make_beep(&mut self) {
-        // Library does not support beeping yet
+impl<'a, PIO: embassy_rp::pio::Instance> DshotGroup for PioMotors<'a, PIO> {
+    fn send_packets(
+        &mut self,
+        packets: [common::abstraction::dshot_group::DshotPacket; 4],
+    ) -> impl Future<Output = ()> {
+        self.inner.command(packets.map(|packet| packet.get_raw()));
+        Timer::after_micros(150) // A bit more than time between fully packed DShot150 packets
     }
 }
 
 impl MotorDriver {
-    pub fn setup(self, _dshot: DshotConfig) -> impl OutputGroup {
+    pub fn setup(self, _dshot: DshotConfig) -> impl DshotGroup {
         bind_interrupts!( struct Pio0Irqs {
             PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<peripherals::PIO0>;
         });
@@ -183,7 +175,7 @@ impl MotorDriver {
 #[embassy_executor::task]
 pub(crate) async fn motor_governor(motors: MotorDriver, dshot_cfg: DshotConfig) -> ! {
     let motors = motors.setup(dshot_cfg);
-    common::tasks::motor_governor::main(motors).await
+    common::actuators::motor_governor::main(motors).await
 }
 
 // ----------------------------------------------------------
@@ -260,8 +252,12 @@ static BUF_RX0: GrantableIo<512, EmbeddedIoError> = GrantableIo::new();
 static BUF_TX1: GrantableIo<256, EmbeddedIoError> = GrantableIo::new();
 static BUF_RX1: GrantableIo<512, EmbeddedIoError> = GrantableIo::new();
 
-impl_ring_buffered_usart_setup!(run_uart0, Uart0, UART0_IRQ, UART0, 32, 128, BUF_RX0, BUF_TX0);
-impl_ring_buffered_usart_setup!(run_uart1, Uart1, UART1_IRQ, UART1, 32, 128, BUF_RX1, BUF_TX1);
+impl_ring_buffered_usart_setup!(
+    run_uart0, Uart0, UART0_IRQ, UART0, 32, 128, BUF_RX0, BUF_TX0
+);
+impl_ring_buffered_usart_setup!(
+    run_uart1, Uart1, UART1_IRQ, UART1, 32, 128, BUF_RX1, BUF_TX1
+);
 
 // ----------------------------------------------------------
 // --------------- USB for PC-FW connection -----------------

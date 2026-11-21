@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod block_device;
+pub mod dma_buffer;
 pub mod dshot_driver;
 pub mod setup_macros;
 
